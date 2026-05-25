@@ -1,0 +1,13 @@
+{
+  "name": "medflow",
+  "version": "1.0.0",
+  "private": true,
+  "scripts": {
+    "db:up": "docker compose up postgres -d",
+    "db:seed": "cd backend && npm run db:seed",
+    "db:setup": "cd backend && npx prisma db push && npm run db:seed",
+    "dev:api": "cd backend && npm run dev",
+    "dev:web": "cd frontend && npm run dev",
+    "install:all": "cd backend && npm install && cd ../frontend && npm install"
+  }
+}

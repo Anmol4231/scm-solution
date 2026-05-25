@@ -1,0 +1,531 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum UserRole {
+  PHARMACIST
+  STOREKEEPER
+  NURSE_ADMIN
+  PROVINCIAL_MANAGER
+}
+
+enum PrescriptionStatus {
+  ACTIVE
+  COMPLETED
+  CANCELLED
+}
+
+enum StockTransactionType {
+  RECEIPT
+  CONSUMPTION
+  ADJUSTMENT
+  DISPENSING
+  EXPIRED
+  RETURN_IN
+  RETURN_OUT
+  TRANSFER_OUT
+  TRANSFER_IN
+}
+
+enum ReturnType {
+  FACILITY_TO_AMS
+  PATIENT_RETURN
+  INTER_FACILITY
+}
+
+enum MedicineCondition {
+  UNOPENED
+  OPENED_UNDAMAGED
+  DAMAGED_CONTAMINATED
+}
+
+enum AlertType {
+  SHORTFALL
+  LOW_STOCK
+  STOCKOUT
+  EXPIRY_WARNING
+  EXPIRY_CRITICAL
+  NON_REPORTING
+  DISPENSING_SPIKE
+  TRANSFER_PENDING
+}
+
+enum AlertSeverity {
+  INFO
+  WARNING
+  CRITICAL
+}
+
+enum TransferStatus {
+  PENDING
+  IN_TRANSIT
+  RECEIVED
+  CANCELLED
+}
+
+enum DispensingRecipientType {
+  PATIENT
+  HEALTHCARE_WORKER
+}
+
+enum WorkerStatus {
+  ACTIVE
+  INACTIVE
+  ON_LEAVE
+}
+
+enum PrescriptionPriority {
+  ROUTINE
+  URGENT
+  EMERGENCY
+}
+
+enum VendorOrderStatus {
+  DRAFT
+  SUBMITTED
+  CONFIRMED
+  RECEIVED
+  CANCELLED
+}
+
+model Facility {
+  id        String   @id @default(cuid())
+  name      String
+  code      String   @unique
+  province  String?
+  district  String?
+  phone     String?
+  isActive  Boolean  @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  users              User[]
+  patients           Patient[]
+  healthcareWorkers  HealthcareWorker[]
+  stockBatches       StockBatch[]
+  stockTransactions  StockTransaction[]
+  dispensingRecords  DispensingRecord[]
+  prescriptions      Prescription[]
+  medicineReturns    MedicineReturn[]
+  transfersFrom      Transfer[]         @relation("TransferFrom")
+  transfersTo        Transfer[]         @relation("TransferTo")
+  alerts             Alert[]
+  auditLogs          AuditLog[]
+  consumptionReports ConsumptionReport[]
+  stockOrders        StockOrder[]
+}
+
+model User {
+  id           String   @id @default(cuid())
+  email        String   @unique
+  passwordHash String
+  firstName    String
+  lastName     String
+  role         UserRole
+  facilityId   String?
+  facility     Facility? @relation(fields: [facilityId], references: [id])
+  phone        String?
+  isActive     Boolean  @default(true)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  stockTransactions StockTransaction[] @relation("PerformedBy")
+  dispensingRecords DispensingRecord[]
+  medicineReturns   MedicineReturn[]
+  transfersCreated  Transfer[]         @relation("TransferCreatedBy")
+  transfersReceived Transfer[]         @relation("TransferReceivedBy")
+  alertsAcknowledged Alert[]           @relation("AlertAcknowledgedBy")
+  auditLogs          AuditLog[]
+  passwordResetTokens PasswordResetToken[]
+  stockOrdersCreated  StockOrder[]
+}
+
+model PasswordResetToken {
+  id        String    @id @default(cuid())
+  userId    String
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  token     String    @unique
+  expiresAt DateTime
+  usedAt    DateTime?
+  createdAt DateTime  @default(now())
+
+  @@index([token])
+}
+
+model HealthcareWorker {
+  id           String       @id @default(cuid())
+  workerId     String       @unique
+  firstName    String
+  lastName     String
+  department   String
+  role         String
+  phone        String?
+  facilityId   String
+  facility     Facility     @relation(fields: [facilityId], references: [id])
+  status       WorkerStatus @default(ACTIVE)
+  createdAt    DateTime     @default(now())
+  updatedAt    DateTime     @updatedAt
+
+  dispensingRecords DispensingRecord[]
+
+  @@index([facilityId, status])
+}
+
+model Patient {
+  id               String   @id @default(cuid())
+  patientId        String   @unique
+  firstName        String
+  lastName         String
+  gender           String
+  age              Int
+  phoneNumber      String?
+  address          String?
+  facilityId       String
+  facility         Facility @relation(fields: [facilityId], references: [id])
+  registrationDate DateTime @default(now())
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+
+  prescriptions     Prescription[]
+  dispensingRecords DispensingRecord[]
+  medicineReturns   MedicineReturn[]
+}
+
+model Prescription {
+  id                      String             @id @default(cuid())
+  prescriptionId          String             @unique
+  patientId               String
+  patient                 Patient            @relation(fields: [patientId], references: [id])
+  facilityId              String
+  facility                Facility           @relation(fields: [facilityId], references: [id])
+  doctorName              String?
+  department              String?
+  diagnosisNotes          String?
+  symptoms                String?
+  followUpDate            DateTime?
+  allergies               String?
+  prescriptionNotes       String?
+  priority                PrescriptionPriority @default(ROUTINE)
+  prescriptionDate        DateTime           @default(now())
+  uploadedPrescriptionUrl String?
+  status                  PrescriptionStatus @default(ACTIVE)
+  createdAt               DateTime           @default(now())
+  updatedAt               DateTime           @updatedAt
+
+  medicines           PrescriptionMedicine[]
+  dispensingRecords   DispensingRecord[]
+}
+
+model PrescriptionMedicine {
+  id             String       @id @default(cuid())
+  prescriptionId String
+  prescription   Prescription @relation(fields: [prescriptionId], references: [id], onDelete: Cascade)
+  medicineId     String
+  medicine       Medicine     @relation(fields: [medicineId], references: [id])
+  dosage         String?
+  form           String?
+  quantity       Float?
+  duration       String?
+  notes          String?
+}
+
+model MedicineCategory {
+  id          String   @id @default(cuid())
+  name        String   @unique
+  description String?
+  sortOrder   Int      @default(0)
+  isActive    Boolean  @default(true)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  medicines Medicine[]
+}
+
+model Medicine {
+  id               String   @id @default(cuid())
+  medicineName     String
+  genericName      String?
+  dosageForm       String?
+  strength         String?
+  unitType         String   @default("tablets")
+  reorderThreshold      Float    @default(50)
+  storageCondition      String?
+  temperatureSensitive  Boolean  @default(false)
+  priorityLevel         String?  @default("ROUTINE")
+  emergencyStockFlag    Boolean  @default(false)
+  categoryId            String?
+  category              MedicineCategory? @relation(fields: [categoryId], references: [id])
+  isActive              Boolean  @default(true)
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+
+  stockBatches           StockBatch[]
+  prescriptionMedicines  PrescriptionMedicine[]
+  stockTransactions      StockTransaction[]
+  dispensingRecords      DispensingRecord[]
+  medicineReturns          MedicineReturn[]
+  transfers                Transfer[]
+  consumptionReports       ConsumptionReport[]
+  stockOrderLines          StockOrderLine[]
+}
+
+model StockBatch {
+  id         String   @id @default(cuid())
+  medicineId String
+  medicine   Medicine @relation(fields: [medicineId], references: [id])
+  facilityId String
+  facility   Facility @relation(fields: [facilityId], references: [id])
+  batchNumber      String
+  expiryDate       DateTime
+  quantity         Float    @default(0)
+  unitCost         Float?
+  supplierSource   String?
+  storageCondition String?
+  createdAt        DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  stockTransactions StockTransaction[]
+  dispensingRecords DispensingRecord[]
+  medicineReturns   MedicineReturn[]
+  transfers         Transfer[]
+
+  @@unique([medicineId, facilityId, batchNumber])
+  @@index([expiryDate])
+  @@index([facilityId, medicineId])
+}
+
+model StockTransaction {
+  id              String               @id @default(cuid())
+  facilityId      String
+  facility        Facility             @relation(fields: [facilityId], references: [id])
+  medicineId      String
+  medicine        Medicine             @relation(fields: [medicineId], references: [id])
+  batchId         String?
+  batch           StockBatch?          @relation(fields: [batchId], references: [id])
+  type            StockTransactionType
+  quantity        Float
+  balanceAfter    Float?
+  requestedQty    Float?
+  receivedQty     Float?
+  shortfallFlag   Boolean              @default(false)
+  shortfallPercent Float?
+  reason          String?
+  reportingPeriod String?
+  performedById   String
+  performedBy     User                 @relation("PerformedBy", fields: [performedById], references: [id])
+  patientId       String?
+  prescriptionId  String?
+  transferId      String?
+  notes           String?
+  createdAt       DateTime             @default(now())
+
+  @@index([facilityId, createdAt])
+  @@index([medicineId, type])
+}
+
+model DispensingRecord {
+  id                   String                  @id @default(cuid())
+  facilityId           String
+  facility             Facility                @relation(fields: [facilityId], references: [id])
+  recipientType        DispensingRecipientType @default(PATIENT)
+  patientId            String?
+  patient              Patient?                @relation(fields: [patientId], references: [id])
+  healthcareWorkerId   String?
+  healthcareWorker     HealthcareWorker?       @relation(fields: [healthcareWorkerId], references: [id])
+  prescriptionId       String?
+  prescription         Prescription?           @relation(fields: [prescriptionId], references: [id])
+  medicineId           String
+  medicine             Medicine                @relation(fields: [medicineId], references: [id])
+  batchId              String
+  batch                StockBatch              @relation(fields: [batchId], references: [id])
+  batchNumber          String
+  expiryDate           DateTime
+  dosage               String?
+  form                 String?
+  quantity             Float
+  duration             String?
+  notes                String?
+  dispensingPurpose    String?
+  prescribingDepartment String?
+  dispensedById        String
+  dispensedBy          User                    @relation(fields: [dispensedById], references: [id])
+  dispensedAt          DateTime                @default(now())
+
+  @@index([patientId, dispensedAt])
+  @@index([healthcareWorkerId, dispensedAt])
+  @@index([facilityId, dispensedAt])
+  @@index([recipientType, facilityId])
+}
+
+model MedicineReturn {
+  id              String             @id @default(cuid())
+  returnType      ReturnType
+  facilityId      String
+  facility        Facility           @relation(fields: [facilityId], references: [id])
+  medicineId      String
+  medicine        Medicine           @relation(fields: [medicineId], references: [id])
+  batchId         String?
+  batch           StockBatch?        @relation(fields: [batchId], references: [id])
+  batchNumber     String?
+  expiryDate      DateTime?
+  quantity        Float
+  returnReason    String
+  returnDestination String?
+  patientId       String?
+  patient         Patient?           @relation(fields: [patientId], references: [id])
+  condition       MedicineCondition?
+  reusable        Boolean            @default(false)
+  stockAdjusted   Boolean            @default(false)
+  transferCode    String?
+  receivingFacilityId String?
+  processedById   String
+  processedBy     User               @relation(fields: [processedById], references: [id])
+  notes           String?
+  createdAt       DateTime           @default(now())
+
+  @@index([facilityId, returnType])
+}
+
+model Transfer {
+  id                  String         @id @default(cuid())
+  transferCode        String         @unique
+  fromFacilityId      String
+  fromFacility        Facility       @relation("TransferFrom", fields: [fromFacilityId], references: [id])
+  toFacilityId        String
+  toFacility          Facility       @relation("TransferTo", fields: [toFacilityId], references: [id])
+  medicineId          String
+  medicine            Medicine       @relation(fields: [medicineId], references: [id])
+  batchId             String
+  batch               StockBatch     @relation(fields: [batchId], references: [id])
+  batchNumber         String
+  expiryDate          DateTime
+  quantity            Float
+  quantityReceived    Float?
+  status              TransferStatus @default(PENDING)
+  authorizationNotes  String?
+  createdById         String
+  createdBy           User           @relation("TransferCreatedBy", fields: [createdById], references: [id])
+  receivedById        String?
+  receivedBy          User?          @relation("TransferReceivedBy", fields: [receivedById], references: [id])
+  receivedAt          DateTime?
+  createdAt           DateTime       @default(now())
+  updatedAt           DateTime       @updatedAt
+
+  @@index([fromFacilityId, status])
+  @@index([toFacilityId, status])
+}
+
+model ConsumptionReport {
+  id              String   @id @default(cuid())
+  facilityId      String
+  facility        Facility @relation(fields: [facilityId], references: [id])
+  medicineId      String
+  medicine        Medicine @relation(fields: [medicineId], references: [id])
+  quantityUsed    Float
+  reportingPeriod String
+  reportedAt      DateTime @default(now())
+
+  @@index([facilityId, reportingPeriod])
+}
+
+model Alert {
+  id             String        @id @default(cuid())
+  facilityId     String?
+  facility       Facility?     @relation(fields: [facilityId], references: [id])
+  type           AlertType
+  severity       AlertSeverity @default(WARNING)
+  title          String
+  message        String
+  medicineId     String?
+  batchId        String?
+  metadata       Json?
+  isRead         Boolean       @default(false)
+  acknowledgedById String?
+  acknowledgedBy User?         @relation("AlertAcknowledgedBy", fields: [acknowledgedById], references: [id])
+  createdAt      DateTime      @default(now())
+
+  @@index([facilityId, isRead, createdAt])
+}
+
+model AuditLog {
+  id          String   @id @default(cuid())
+  facilityId  String?
+  facility    Facility? @relation(fields: [facilityId], references: [id])
+  userId      String?
+  user        User?    @relation(fields: [userId], references: [id])
+  action      String
+  entityType  String
+  entityId    String?
+  details     Json?
+  createdAt   DateTime @default(now())
+
+  @@index([facilityId, createdAt])
+}
+
+model Vendor {
+  id          String   @id @default(cuid())
+  name        String
+  code        String   @unique
+  contactName String?
+  phone       String?
+  email       String?
+  address     String?
+  isActive    Boolean  @default(true)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  stockOrders StockOrder[]
+}
+
+model StockOrder {
+  id                   String            @id @default(cuid())
+  orderCode            String            @unique
+  facilityId           String
+  facility             Facility          @relation(fields: [facilityId], references: [id])
+  vendorId             String
+  vendor               Vendor            @relation(fields: [vendorId], references: [id])
+  status               VendorOrderStatus @default(SUBMITTED)
+  priority             String?           @default("ROUTINE")
+  expectedDeliveryDate DateTime?
+  notes                String?
+  orderedById          String
+  orderedBy            User              @relation(fields: [orderedById], references: [id])
+  createdAt            DateTime          @default(now())
+  updatedAt            DateTime          @updatedAt
+
+  lines StockOrderLine[]
+
+  @@index([facilityId, status])
+  @@index([vendorId])
+}
+
+model StockOrderLine {
+  id               String     @id @default(cuid())
+  orderId          String
+  order            StockOrder @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  medicineId       String
+  medicine         Medicine   @relation(fields: [medicineId], references: [id])
+  quantityOrdered  Float
+  quantityReceived Float?
+  unitCost         Float?
+  notes            String?
+}
+
+model ExpiredMedicineRecord {
+  id              String   @id @default(cuid())
+  facilityId      String
+  medicineId      String
+  batchNumber     String
+  expiryDate      DateTime
+  quantity        Float
+  disposalMethod  String
+  disposalWitness String?
+  approvalStatus  String?  @default("APPROVED")
+  processedById   String
+  createdAt       DateTime @default(now())
+}
