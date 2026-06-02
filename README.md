@@ -18,7 +18,8 @@ A lightweight hospital supply chain management (SCM) platform for medicine inven
 ## User Roles
 
 **Facility users:** Pharmacist, Storekeeper, Nurse/Admin  
-**Provincial:** Admin/Provincial Manager
+**Provincial:** Provincial Manager (cross-facility admin dashboard)  
+**System:** Super Admin (all facilities — command dashboard at `/admin`)
 
 ## Quick Start (Local)
 
@@ -61,6 +62,7 @@ If port 4000 is in use, stop the other process or set `PORT=4001` in `backend/.e
 
 API: http://localhost:4000  
 Health: http://localhost:4000/health
+LAN health for Android testing: http://192.168.1.5:4000/health
 
 ### 4. Frontend
 
@@ -68,10 +70,12 @@ Health: http://localhost:4000/health
 cd frontend
 npm install
 # .env.local should contain: NEXT_PUBLIC_API_URL=http://localhost:4000/api
+# For Android on the same Wi-Fi: NEXT_PUBLIC_API_URL=http://192.168.1.5:4000/api
 npm run dev
 ```
 
 App: http://localhost:3000 (Next.js may use 3001/3002 if busy — CORS allows all localhost ports in dev)
+Android / phone browser URL: http://192.168.1.5:3000
 
 ## Docker (Full Stack)
 
@@ -93,6 +97,7 @@ Reload demo data anytime: `cd backend && npm run db:seed`
 
 | Email | Role | Demo highlights |
 |-------|------|-----------------|
+| superadmin@scm.local | Super Admin | Command dashboard, all locations, alert center |
 | manager@scm.local | Provincial Manager | Admin dashboard, facility comparison |
 | pharmacist@hc001.local | Pharmacist @ Goroka | 6 alerts, low stock, expiry, dispensing |
 | storekeeper@hc001.local | Storekeeper @ Goroka | Stock receipt shortfall |

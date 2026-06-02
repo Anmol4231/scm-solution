@@ -12,13 +12,16 @@ import { AlertType, AlertSeverity } from "@prisma/client";
 const router = Router();
 router.use(authenticate, requireFacility);
 
+const positiveWholeNumber = z.number().int("Quantity must be a whole number").positive("Quantity must be greater than zero");
+const nonNegativeWholeNumber = z.number().int("Count must be a whole number").min(0, "Count cannot be negative");
+
 // Stock receipt
 const receiptSchema = z.object({
   medicineId: z.string(),
-  batchNumber: z.string(),
-  expiryDate: z.string(),
-  quantityReceived: z.number().positive(),
-  quantityRequested: z.number().positive().optional(),
+  batchNumber: z.string().trim().min(1, "Batch Number is mandatory"),
+  expiryDate: z.string().trim().min(1, "Expiry Date is mandatory"),
+  quantityReceived: positiveWholeNumber,
+  quantityRequested: positiveWholeNumber.optional(),
   notes: z.string().optional(),
 });
 
@@ -102,7 +105,7 @@ router.post("/receipt", async (req, res, next) => {
 // Consumption reporting
 const consumptionSchema = z.object({
   medicineId: z.string(),
-  quantityUsed: z.number().positive(),
+  quantityUsed: positiveWholeNumber,
   reportingPeriod: z.string(),
 });
 
@@ -158,7 +161,7 @@ router.post("/consumption", async (req, res, next) => {
 // Stock adjustment
 const adjustmentSchema = z.object({
   medicineId: z.string(),
-  physicalCount: z.number().min(0),
+  physicalCount: nonNegativeWholeNumber,
   reason: z.string(),
 });
 

@@ -2,6 +2,7 @@ import { Request, Response, NextFunction } from "express";
 import jwt from "jsonwebtoken";
 import { config } from "../utils/config";
 import { UserRole } from "@prisma/client";
+import { isCrossFacilityRole } from "../utils/roles";
 
 export interface AuthPayload {
   userId: string;
@@ -44,14 +45,14 @@ export function requireRoles(...roles: UserRole[]) {
 }
 
 export function requireFacility(req: Request, res: Response, next: NextFunction) {
-  if (!req.user?.facilityId && req.user?.role !== "PROVINCIAL_MANAGER") {
+  if (!req.user?.facilityId && !isCrossFacilityRole(req.user!.role)) {
     return res.status(400).json({ error: "Facility selection required" });
   }
   next();
 }
 
 export function getFacilityId(req: Request, queryFacilityId?: string): string | null {
-  if (req.user?.role === "PROVINCIAL_MANAGER" && queryFacilityId) {
+  if (isCrossFacilityRole(req.user!.role) && queryFacilityId) {
     return queryFacilityId;
   }
   return req.user?.facilityId ?? null;

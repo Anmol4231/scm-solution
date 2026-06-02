@@ -18,11 +18,17 @@ import returnRoutes from "./routes/returns";
 import transferRoutes from "./routes/transfers";
 import alertRoutes from "./routes/alerts";
 import dashboardRoutes from "./routes/dashboard";
+import adminRoutes from "./routes/admin";
+import searchRoutes from "./routes/search";
+import chatRoutes from "./routes/chat";
+import shipmentRoutes from "./routes/shipments";
 import whatsappRoutes from "./routes/whatsapp";
 
 const app = express();
 
 const allowedOrigins = config.corsOrigin.split(",").map((o) => o.trim());
+const devNetworkOriginPattern =
+  /^https?:\/\/(localhost|127\.0\.0\.1|10\.\d{1,3}\.\d{1,3}\.\d{1,3}|172\.(1[6-9]|2\d|3[0-1])\.\d{1,3}\.\d{1,3}|192\.168\.\d{1,3}\.\d{1,3})(:\d+)?$/;
 
 app.use(
   cors({
@@ -31,7 +37,7 @@ app.use(
       if (allowedOrigins.includes(origin)) return callback(null, true);
       if (
         config.nodeEnv === "development" &&
-        /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/.test(origin)
+        devNetworkOriginPattern.test(origin)
       ) {
         return callback(null, true);
       }
@@ -53,12 +59,17 @@ app.use("/api/medicines", medicineRoutes);
 app.use("/api/categories", categoryRoutes);
 app.use("/api/stock", stockRoutes);
 app.use("/api/vendor-orders", vendorOrderRoutes);
+app.use("/api/orders", vendorOrderRoutes);
 app.use("/api/dispensing", dispensingRoutes);
 app.use("/api/expiry", expiryRoutes);
 app.use("/api/returns", returnRoutes);
 app.use("/api/transfers", transferRoutes);
 app.use("/api/alerts", alertRoutes);
 app.use("/api/dashboard", dashboardRoutes);
+app.use("/api/admin", adminRoutes);
+app.use("/api/search", searchRoutes);
+app.use("/api/chat", chatRoutes);
+app.use("/api/shipments", shipmentRoutes);
 app.use("/api/whatsapp", whatsappRoutes);
 
 app.use(errorHandler);

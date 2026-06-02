@@ -91,7 +91,7 @@ export default function SendTransferPage() {
     }
   };
 
-  if (user?.role === "PROVINCIAL_MANAGER" && !user.facilityId) {
+  if ((user?.role === "PROVINCIAL_MANAGER" || user?.role === "SUPER_ADMIN") && !user.facilityId) {
     return (
       <div className="mx-auto max-w-lg space-y-4">
         <h1 className="text-2xl font-bold">Send Transfer</h1>

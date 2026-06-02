@@ -8,12 +8,12 @@ import { downloadAuthenticatedFile } from "@/lib/download";
 import { Download } from "lucide-react";
 
 const actions = [
-  { href: "/stock/vendor-orders", label: "Vendor Stock Order", desc: "Order medicines from approved suppliers" },
-  { href: "/stock/receipt", label: "Stock Receipt", desc: "Receive batches with supplier & unit cost" },
+  { href: "/stock/orders", label: "Order", desc: "Order medicines for replenishment" },
+  { href: "/stock/receipt", label: "Stock Receipt", desc: "Receive batches into stock" },
   { href: "/stock/consumption", label: "Monthly Usage Report", desc: "AMS monthly usage summary (not dispensing)" },
   { href: "/stock/adjustment", label: "Physical Adjustment", desc: "Count corrections" },
   { href: "/stock/transactions", label: "Transaction History", desc: "All stock movements" },
-  { href: "/medicines", label: "Medicine Master", desc: "Intelligence hub per medicine" },
+  { href: "/medicines", label: "Medicines", desc: "Intelligence hub per medicine" },
   { href: "/expiry", label: "Expiry Management", desc: "Alerts, filters & redistribution" },
   { href: "/transfers/send", label: "Send Transfer", desc: "Inter-facility redistribution" },
   { href: "/returns", label: "Returns", desc: "Patient & facility returns" },
@@ -42,7 +42,7 @@ export default function StockPage() {
         <div>
           <h1 className="text-2xl font-bold">Stock Operations</h1>
           <p className="text-sm text-muted-foreground">
-            Stock metrics are available in the Dashboard, Medicine Master, and Expiry modules.
+            Stock metrics are available in the Dashboard, Medicines, and Expiry modules.
           </p>
         </div>
         <Button onClick={exportExcel} disabled={exporting} className="gap-2">

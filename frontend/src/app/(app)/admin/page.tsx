@@ -1,94 +1,133 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import {
-  BarChart,
-  Bar,
-  XAxis,
-  YAxis,
-  CartesianGrid,
-  Tooltip,
-  ResponsiveContainer,
-  Cell,
-} from "recharts";
+import { useRouter } from "next/navigation";
 import { api } from "@/lib/api";
+import { useAuth } from "@/lib/auth-context";
+import { isAdminDashboardRole, adminRoleLabel } from "@/lib/roles";
+import { LocationFilter } from "@/components/admin/location-filter";
+import { AdminSummaryCards, type AdminSummary } from "@/components/admin/summary-cards";
+import { FacilityComparison, ExpiryHeatmapTable, type FacilityStat } from "@/components/admin/facility-comparison";
+import { AdminTrendCharts } from "@/components/admin/trend-charts";
+import { AlertCenter } from "@/components/admin/alert-center";
+import { FacilityMapView } from "@/components/admin/facility-map";
+import { TransferRecommendationsPanel } from "@/components/admin/transfer-recommendations";
+import {
+  PendingSyncWidget,
+  GlobalActivityFeed,
+} from "@/components/admin/admin-widgets";
 import { FacilitySwitcher } from "@/components/layout/facility-switcher";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import Link from "next/link";
+import { Button } from "@/components/ui/button";
+import { ArrowLeftRight } from "lucide-react";
+
+interface AdminDashboardData {
+  summary: AdminSummary;
+  facilityStats: FacilityStat[];
+  expiryHeatmap: {
+    facility: string;
+    medicine: string;
+    batch: string;
+    days: number;
+    quantity: number;
+    medicineId?: string;
+  }[];
+  nonReportingFacilities?: unknown[];
+  recentActivity?: {
+    type: string;
+    medicine: { medicineName: string };
+    quantity: number;
+    createdAt: string;
+    facility?: { name: string };
+  }[];
+  trends: {
+    stockMovement: {
+      daily: { date: string; inbound: number; outbound: number }[];
+      weekly: { date: string; inbound: number; outbound: number }[];
+      monthly: { date: string; inbound: number; outbound: number }[];
+    };
+    dispensing: { date: string; quantity: number }[];
+    transfers: { date: string; created: number; completed: number }[];
+    expiry: { period: string; quantity: number }[];
+  };
+}
 
 export default function AdminDashboardPage() {
-  const [data, setData] = useState<Record<string, unknown> | null>(null);
+  const { user } = useAuth();
+  const router = useRouter();
+  const [locationId, setLocationId] = useState("");
+  const [data, setData] = useState<AdminDashboardData | null>(null);
+  const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    api<Record<string, unknown>>("/dashboard/admin").then(setData).catch(console.error);
-  }, []);
+    if (user && !isAdminDashboardRole(user.role)) {
+      router.replace("/dashboard");
+    }
+  }, [user, router]);
 
-  const stats = (data?.facilityStats as { facility: { name: string }; stockoutCount: number; lowCount: number; expiringBatches: number; nonReporting: boolean }[]) || [];
-  const heatmap = (data?.expiryHeatmap as { facility: string; medicine: string; days: number }[]) || [];
+  useEffect(() => {
+    if (!user || !isAdminDashboardRole(user.role)) return;
+    setLoading(true);
+    const q = locationId ? `?facilityId=${locationId}` : "";
+    api<AdminDashboardData>(`/dashboard/admin${q}`)
+      .then(setData)
+      .catch(console.error)
+      .finally(() => setLoading(false));
+  }, [user, locationId]);
 
-  const chartData = stats.map((s) => ({
-    name: s.facility.name.split(" ")[0],
-    stockouts: s.stockoutCount,
-    low: s.lowCount,
-    expiring: s.expiringBatches,
-  }));
+  if (!user || !isAdminDashboardRole(user.role)) {
+    return null;
+  }
 
   return (
     <div className="space-y-6">
-      <h1 className="text-2xl font-bold">Provincial Admin Dashboard</h1>
-      <FacilitySwitcher />
-
-      <div className="grid gap-4 md:grid-cols-3">
-        {stats.map((s, i) => (
-          <Card key={i}>
-            <CardHeader><CardTitle className="text-base">{s.facility.name}</CardTitle></CardHeader>
-            <CardContent className="text-sm space-y-1">
-              <p>Stockouts: <strong className="text-red-600">{s.stockoutCount}</strong></p>
-              <p>Low stock: <strong className="text-amber-600">{s.lowCount}</strong></p>
-              <p>Expiring batches: {s.expiringBatches}</p>
-              {s.nonReporting && <p className="text-red-600 font-semibold">⚠ Non-reporting &gt;7 days</p>}
-            </CardContent>
-          </Card>
-        ))}
+      <div className="flex flex-col gap-4 border-b border-slate-200 pb-4 sm:flex-row sm:items-end sm:justify-between">
+        <div>
+          <p className="text-xs font-semibold uppercase tracking-wider text-medflow-600">
+            Healthcare Command Center
+          </p>
+          <h1 className="text-2xl font-bold">Admin Dashboard</h1>
+          <p className="text-sm text-slate-500">
+            {adminRoleLabel(user.role)} — monitor all facilities from one place
+          </p>
+        </div>
+        <div className="flex flex-wrap gap-2">
+          <Button asChild variant="outline" size="sm">
+            <Link href="/admin/transfers">
+              <ArrowLeftRight className="mr-2 h-4 w-4" />
+              Redistribution
+            </Link>
+          </Button>
+          <Button asChild variant="outline" size="sm">
+            <a href="#alert-center">Alert Center</a>
+          </Button>
+        </div>
       </div>
 
-      <Card>
-        <CardHeader><CardTitle>Facility Comparison</CardTitle></CardHeader>
-        <CardContent className="h-64">
-          <ResponsiveContainer width="100%" height="100%">
-            <BarChart data={chartData}>
-              <CartesianGrid strokeDasharray="3 3" />
-              <XAxis dataKey="name" />
-              <YAxis />
-              <Tooltip />
-              <Bar dataKey="stockouts" fill="#ef4444" name="Stockouts" />
-              <Bar dataKey="low" fill="#f59e0b" name="Low Stock" />
-              <Bar dataKey="expiring" fill="#0ea5e9" name="Expiring" />
-            </BarChart>
-          </ResponsiveContainer>
-        </CardContent>
-      </Card>
+      <div className="grid gap-4 lg:grid-cols-[minmax(0,280px)_1fr]">
+        <LocationFilter value={locationId} onChange={setLocationId} />
+        <FacilitySwitcher />
+      </div>
 
-      <Card>
-        <CardHeader><CardTitle>Expiry Heatmap</CardTitle></CardHeader>
-        <CardContent className="overflow-x-auto">
-          <table className="w-full text-sm">
-            <thead><tr className="border-b"><th className="p-2 text-left">Facility</th><th className="p-2 text-left">Medicine</th><th className="p-2">Days left</th></tr></thead>
-            <tbody>
-              {heatmap.slice(0, 20).map((h, i) => (
-                <tr key={i} className="border-b">
-                  <td className="p-2">{h.facility}</td>
-                  <td className="p-2">{h.medicine}</td>
-                  <td className="p-2">
-                    <span className={h.days <= 30 ? "font-bold text-red-600" : h.days <= 90 ? "text-amber-600" : ""}>
-                      {h.days}
-                    </span>
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </CardContent>
-      </Card>
+      {loading && !data && (
+        <p className="text-center text-sm text-slate-500 py-12">Loading command dashboard…</p>
+      )}
+
+      {data && (
+        <>
+          <AdminSummaryCards summary={data.summary} />
+          <div className="grid gap-4 md:grid-cols-2">
+            <PendingSyncWidget nonReportingCount={data.nonReportingFacilities?.length ?? 0} />
+            <GlobalActivityFeed activity={data.recentActivity ?? []} />
+          </div>
+          <FacilityMapView />
+          <TransferRecommendationsPanel facilityFilter={locationId} />
+          <FacilityComparison stats={data.facilityStats} />
+          {data.trends && <AdminTrendCharts trends={data.trends} />}
+          <ExpiryHeatmapTable rows={data.expiryHeatmap} />
+          <AlertCenter facilityFilter={locationId} />
+        </>
+      )}
     </div>
   );
 }

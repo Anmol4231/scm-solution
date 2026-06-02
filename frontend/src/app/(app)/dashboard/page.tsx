@@ -15,10 +15,21 @@ import {
 } from "recharts";
 import { api } from "@/lib/api";
 import { useAuth } from "@/lib/auth-context";
+import { isCrossFacilityRole } from "@/lib/roles";
 import { FacilitySwitcher } from "@/components/layout/facility-switcher";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
-import { Pill, Users, AlertTriangle, Package } from "lucide-react";
+import {
+  Pill,
+  Users,
+  AlertTriangle,
+  Package,
+  ArrowLeftRight,
+  RotateCcw,
+  Stethoscope,
+  Building2,
+} from "lucide-react";
+import type { LucideIcon } from "lucide-react";
 
 interface FacilityDashboard {
   dispensingToday: number;
@@ -31,7 +42,17 @@ interface FacilityDashboard {
   topConsumedMedicines?: { medicine: { id: string; medicineName: string }; quantity: number }[];
   nearStockoutPrediction?: { medicine: { id: string; medicineName: string }; balance: number; daysToStockout: number }[];
   stockMovementTrend?: { date: string; inbound: number; outbound: number }[];
-  monthlyDispensing?: { recipientType: string; _count: number; _sum: { quantity: number | null } }[];
+  widgets?: {
+    totalMedicines: number;
+    totalPatients: number;
+    totalHealthcareWorkers: number;
+    totalFacilities: number;
+    dispensingToday: number;
+    lowStockCount: number;
+    nearExpiryCount: number;
+    pendingTransfers: number;
+    pendingReturns: number;
+  };
 }
 
 function formatCategoryChart(categories: { category: string; totalStock: number }[]) {
@@ -39,10 +60,7 @@ function formatCategoryChart(categories: { category: string; totalStock: number 
   const top = sorted.slice(0, 7);
   const rest = sorted.slice(7);
   if (rest.length > 0) {
-    top.push({
-      category: "Other",
-      totalStock: rest.reduce((sum, c) => sum + c.totalStock, 0),
-    });
+    top.push({ category: "Other", totalStock: rest.reduce((sum, c) => sum + c.totalStock, 0) });
   }
   return top.map((c) => ({
     ...c,
@@ -59,15 +77,20 @@ export default function DashboardPage() {
     api<FacilityDashboard>(`/dashboard/facility${q}`).then(setData).catch(console.error);
   }, [user?.facilityId]);
 
-  if (user?.role === "PROVINCIAL_MANAGER" && !user.facilityId) {
+  if (isCrossFacilityRole(user?.role) && !user.facilityId) {
     return (
       <div>
         <h1 className="mb-4 text-2xl font-bold">SCM Solution — Provincial Overview</h1>
         <FacilitySwitcher />
-        <p className="text-muted-foreground">Select a facility above or visit the <Link href="/admin" className="text-medflow-600 underline">Admin Dashboard</Link>.</p>
+        <p className="text-muted-foreground">
+          Select a facility above or visit the{" "}
+          <Link href="/admin" className="text-medflow-600 underline">Admin Dashboard</Link>.
+        </p>
       </div>
     );
   }
+
+  const w = data?.widgets;
 
   return (
     <div className="space-y-6">
@@ -79,11 +102,16 @@ export default function DashboardPage() {
         <FacilitySwitcher />
       </div>
 
-      <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
-        <StatCard icon={Pill} label="Dispensed today" value={data?.dispensingToday ?? 0} />
-        <StatCard icon={Users} label="Patients served" value={data?.patientsServedToday ?? 0} />
-        <StatCard icon={AlertTriangle} label="Low stock items" value={data?.lowStock?.length ?? 0} color="text-amber-600" />
-        <StatCard icon={Package} label="Expiring batches" value={data?.expiring?.length ?? 0} color="text-red-600" />
+      <div className="grid grid-cols-2 gap-3 md:grid-cols-3 lg:grid-cols-5">
+        <StatCard icon={Pill} label="Medicines" value={w?.totalMedicines ?? 0} />
+        <StatCard icon={Users} label="Patients" value={w?.totalPatients ?? 0} />
+        <StatCard icon={Stethoscope} label="Staff" value={w?.totalHealthcareWorkers ?? 0} />
+        <StatCard icon={Building2} label="Facilities" value={w?.totalFacilities ?? 1} />
+        <StatCard icon={Pill} label="Dispensed today" value={w?.dispensingToday ?? data?.dispensingToday ?? 0} />
+        <StatCard icon={AlertTriangle} label="Low stock" value={w?.lowStockCount ?? data?.lowStock?.length ?? 0} color="text-amber-600" />
+        <StatCard icon={Package} label="Near expiry" value={w?.nearExpiryCount ?? data?.expiring?.length ?? 0} color="text-red-600" />
+        <StatCard icon={ArrowLeftRight} label="Pending transfers" value={w?.pendingTransfers ?? 0} />
+        <StatCard icon={RotateCcw} label="Pending returns" value={w?.pendingReturns ?? 0} />
       </div>
 
       <div className="grid gap-4 lg:grid-cols-2">
@@ -91,30 +119,14 @@ export default function DashboardPage() {
           <Card>
             <CardHeader>
               <CardTitle>Stock by Category</CardTitle>
-              <p className="text-xs text-muted-foreground">Units on hand — top categories shown</p>
             </CardHeader>
             <CardContent className="h-64">
               <ResponsiveContainer width="100%" height="100%">
-                <BarChart
-                  layout="vertical"
-                  data={formatCategoryChart(data.categoryBreakdown)}
-                  margin={{ top: 4, right: 12, left: 4, bottom: 4 }}
-                >
+                <BarChart layout="vertical" data={formatCategoryChart(data.categoryBreakdown)} margin={{ top: 4, right: 12, left: 4, bottom: 4 }}>
                   <CartesianGrid strokeDasharray="3 3" horizontal={false} />
                   <XAxis type="number" tick={{ fontSize: 11 }} />
-                  <YAxis
-                    type="category"
-                    dataKey="shortLabel"
-                    width={108}
-                    tick={{ fontSize: 11 }}
-                    interval={0}
-                  />
-                  <Tooltip
-                    formatter={(value: number) => [value, "Units"]}
-                    labelFormatter={(_, payload) =>
-                      payload?.[0]?.payload?.category ?? ""
-                    }
-                  />
+                  <YAxis type="category" dataKey="shortLabel" width={108} tick={{ fontSize: 11 }} interval={0} />
+                  <Tooltip />
                   <Bar dataKey="totalStock" fill="#0284c7" radius={[0, 4, 4, 0]} barSize={18} />
                 </BarChart>
               </ResponsiveContainer>
@@ -166,7 +178,6 @@ export default function DashboardPage() {
             <Link href="/patients"><Button size="lg" variant="secondary" className="h-16 w-full">Patients</Button></Link>
             <Link href="/medicines"><Button size="lg" variant="outline" className="h-16 w-full">Medicines</Button></Link>
             <Link href="/expiry"><Button size="lg" variant="outline" className="h-16 w-full">Expiry</Button></Link>
-            <Link href="/prescriptions"><Button size="lg" variant="outline" className="h-16 w-full">Prescriptions</Button></Link>
           </CardContent>
         </Card>
 
@@ -231,7 +242,7 @@ export default function DashboardPage() {
   );
 }
 
-function StatCard({ icon: Icon, label, value, color }: { icon: typeof Pill; label: string; value: number; color?: string }) {
+function StatCard({ icon: Icon, label, value, color }: { icon: LucideIcon; label: string; value: number; color?: string }) {
   return (
     <Card>
       <CardContent className="flex items-center gap-3 p-4">

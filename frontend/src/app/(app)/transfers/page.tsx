@@ -70,7 +70,7 @@ export default function TransfersPage() {
         </Link>
       </div>
 
-      {user?.role === "PROVINCIAL_MANAGER" && (
+      {(user?.role === "PROVINCIAL_MANAGER" || user?.role === "SUPER_ADMIN") && (
         <Link href="/admin/transfers">
           <Button variant="outline" className="w-full">
             Provincial redistribution recommendations

@@ -1,0 +1,7 @@
+<?xml version='1.0' encoding='utf-8'?>
+<resources>
+    <string name="app_name">SCM Solution</string>
+    <string name="title_activity_main">SCM Solution</string>
+    <string name="package_name">com.scm.solution</string>
+    <string name="custom_url_scheme">com.scm.solution</string>
+</resources>

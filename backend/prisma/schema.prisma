@@ -12,6 +12,16 @@ enum UserRole {
   STOREKEEPER
   NURSE_ADMIN
   PROVINCIAL_MANAGER
+  SUPER_ADMIN
+}
+
+enum FacilityType {
+  HOSPITAL
+  CLINIC
+  PHARMACY
+  WAREHOUSE
+  REGIONAL_STORE
+  AMS_CENTRAL
 }
 
 enum PrescriptionStatus {
@@ -93,17 +103,36 @@ enum VendorOrderStatus {
   CANCELLED
 }
 
-model Facility {
-  id        String   @id @default(cuid())
-  name      String
-  code      String   @unique
-  province  String?
-  district  String?
-  phone     String?
-  isActive  Boolean  @default(true)
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
+enum ShipmentStatus {
+  SUBMITTED
+  PROCESSING
+  DISPATCHED
+  IN_TRANSIT
+  ARRIVED
+  RECEIVED
+}
 
+enum ShipmentType {
+  VENDOR_ORDER
+  TRANSFER
+}
+
+model Facility {
+  id           String        @id @default(cuid())
+  name         String
+  code         String        @unique
+  facilityType FacilityType? @default(HOSPITAL)
+  province     String?
+  district     String?
+  phone        String?
+  latitude     Float?
+  longitude    Float?
+  isActive     Boolean       @default(true)
+  createdAt    DateTime      @default(now())
+  updatedAt    DateTime      @updatedAt
+
+  shipmentsFrom      Shipment[] @relation("ShipmentSource")
+  shipmentsTo        Shipment[] @relation("ShipmentDestination")
   users              User[]
   patients           Patient[]
   healthcareWorkers  HealthcareWorker[]
@@ -143,6 +172,9 @@ model User {
   auditLogs          AuditLog[]
   passwordResetTokens PasswordResetToken[]
   stockOrdersCreated  StockOrder[]
+  medicinesDeleted    Medicine[]         @relation("MedicineDeletedBy")
+  categoriesDeleted   MedicineCategory[] @relation("CategoryDeletedBy")
+  stockOrdersDeleted  StockOrder[]       @relation("StockOrderDeletedBy")
 }
 
 model PasswordResetToken {
@@ -240,6 +272,9 @@ model MedicineCategory {
   description String?
   sortOrder   Int      @default(0)
   isActive    Boolean  @default(true)
+  deletedAt   DateTime?
+  deletedById String?
+  deletedBy   User?    @relation("CategoryDeletedBy", fields: [deletedById], references: [id])
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
 
@@ -248,12 +283,14 @@ model MedicineCategory {
 
 model Medicine {
   id               String   @id @default(cuid())
-  medicineName     String
+  medicineName     String   @unique
   genericName      String?
   dosageForm       String?
   strength         String?
   unitType         String   @default("tablets")
   reorderThreshold      Float    @default(50)
+  leadTimeDays          Int?
+  minimumOrderLevel     Int?
   storageCondition      String?
   temperatureSensitive  Boolean  @default(false)
   priorityLevel         String?  @default("ROUTINE")
@@ -261,9 +298,13 @@ model Medicine {
   categoryId            String?
   category              MedicineCategory? @relation(fields: [categoryId], references: [id])
   isActive              Boolean  @default(true)
+  deletedAt             DateTime?
+  deletedById           String?
+  deletedBy             User?    @relation("MedicineDeletedBy", fields: [deletedById], references: [id])
   createdAt        DateTime @default(now())
   updatedAt        DateTime @updatedAt
 
+  strengths              MedicineStrength[]
   stockBatches           StockBatch[]
   prescriptionMedicines  PrescriptionMedicine[]
   stockTransactions      StockTransaction[]
@@ -272,6 +313,23 @@ model Medicine {
   transfers                Transfer[]
   consumptionReports       ConsumptionReport[]
   stockOrderLines          StockOrderLine[]
+
+  @@index([medicineName])
+  @@index([deletedAt])
+}
+
+model MedicineStrength {
+  id         String   @id @default(cuid())
+  medicineId String
+  medicine   Medicine @relation(fields: [medicineId], references: [id], onDelete: Cascade)
+  strength   String
+  sortOrder  Int      @default(0)
+  isActive   Boolean  @default(true)
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  @@unique([medicineId, strength])
+  @@index([strength])
 }
 
 model StockBatch {
@@ -415,6 +473,7 @@ model Transfer {
   receivedAt          DateTime?
   createdAt           DateTime       @default(now())
   updatedAt           DateTime       @updatedAt
+  shipment            Shipment?
 
   @@index([fromFacilityId, status])
   @@index([toFacilityId, status])
@@ -444,12 +503,14 @@ model Alert {
   medicineId     String?
   batchId        String?
   metadata       Json?
-  isRead         Boolean       @default(false)
+  isRead           Boolean       @default(false)
+  resolvedAt       DateTime?
   acknowledgedById String?
-  acknowledgedBy User?         @relation("AlertAcknowledgedBy", fields: [acknowledgedById], references: [id])
-  createdAt      DateTime      @default(now())
+  acknowledgedBy   User?         @relation("AlertAcknowledgedBy", fields: [acknowledgedById], references: [id])
+  createdAt        DateTime      @default(now())
 
   @@index([facilityId, isRead, createdAt])
+  @@index([facilityId, resolvedAt])
 }
 
 model AuditLog {
@@ -492,16 +553,59 @@ model StockOrder {
   status               VendorOrderStatus @default(SUBMITTED)
   priority             String?           @default("ROUTINE")
   expectedDeliveryDate DateTime?
+  leadTimeDays         Int?
+  minimumOrderLevel    Int?
   notes                String?
   orderedById          String
   orderedBy            User              @relation(fields: [orderedById], references: [id])
+  deletedAt            DateTime?
+  deletedById          String?
+  deletedBy            User?             @relation("StockOrderDeletedBy", fields: [deletedById], references: [id])
   createdAt            DateTime          @default(now())
   updatedAt            DateTime          @updatedAt
 
-  lines StockOrderLine[]
+  lines    StockOrderLine[]
+  shipment Shipment?
 
   @@index([facilityId, status])
   @@index([vendorId])
+  @@index([deletedAt])
+}
+
+model Shipment {
+  id                    String         @id @default(cuid())
+  shipmentCode          String         @unique
+  shipmentType          ShipmentType
+  status                ShipmentStatus @default(SUBMITTED)
+  stockOrderId          String?        @unique
+  stockOrder            StockOrder?    @relation(fields: [stockOrderId], references: [id])
+  transferId            String?        @unique
+  transfer              Transfer?      @relation(fields: [transferId], references: [id])
+  sourceFacilityId      String?
+  sourceFacility        Facility?      @relation("ShipmentSource", fields: [sourceFacilityId], references: [id])
+  destinationFacilityId String
+  destinationFacility   Facility       @relation("ShipmentDestination", fields: [destinationFacilityId], references: [id])
+  estimatedDeliveryDate DateTime?
+  notes                 String?
+  createdAt             DateTime       @default(now())
+  updatedAt             DateTime       @updatedAt
+
+  events ShipmentEvent[]
+
+  @@index([status, shipmentType])
+  @@index([destinationFacilityId])
+}
+
+model ShipmentEvent {
+  id          String         @id @default(cuid())
+  shipmentId  String
+  shipment    Shipment       @relation(fields: [shipmentId], references: [id], onDelete: Cascade)
+  status      ShipmentStatus
+  note        String?
+  createdById String?
+  createdAt   DateTime       @default(now())
+
+  @@index([shipmentId, createdAt])
 }
 
 model StockOrderLine {

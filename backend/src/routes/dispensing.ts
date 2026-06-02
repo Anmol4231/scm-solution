@@ -9,6 +9,8 @@ import { checkLowStockAndStockout } from "../services/alerts";
 const router = Router();
 router.use(authenticate, requireFacility);
 
+const positiveWholeNumber = z.number().int("Quantity must be a whole number").positive("Quantity must be greater than zero");
+
 const dispenseSchema = z.object({
   patientId: z.string().min(1),
   prescriptionId: z.string().min(1),
@@ -16,7 +18,7 @@ const dispenseSchema = z.object({
   batchId: z.string(),
   dosage: z.string().optional(),
   form: z.string().optional(),
-  quantity: z.number().positive(),
+  quantity: positiveWholeNumber,
   duration: z.string().optional(),
   notes: z.string().optional(),
   dispensingPurpose: z.string().optional(),

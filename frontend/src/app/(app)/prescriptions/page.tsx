@@ -1,13 +1,15 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { api } from "@/lib/api";
+import { api, resolveApiUrl } from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 
-const API_BASE = process.env.NEXT_PUBLIC_API_URL?.replace("/api", "") || "http://localhost:4000";
+function apiBaseUrl() {
+  return resolveApiUrl().replace(/\/api$/, "");
+}
 
 export default function PrescriptionsPage() {
   const [list, setList] = useState<Record<string, unknown>[]>([]);
@@ -166,7 +168,7 @@ export default function PrescriptionsPage() {
               </div>
               <p className="mt-1 text-xs text-muted-foreground">{r.status} · {new Date(r.prescriptionDate).toLocaleDateString()}</p>
               {r.uploadedPrescriptionUrl && (
-                <a href={`${API_BASE}${r.uploadedPrescriptionUrl}`} target="_blank" rel="noreferrer" className="mt-2 inline-block text-xs text-medflow-600 hover:underline">
+                <a href={`${apiBaseUrl()}${r.uploadedPrescriptionUrl}`} target="_blank" rel="noreferrer" className="mt-2 inline-block text-xs text-medflow-600 hover:underline">
                   View uploaded file →
                 </a>
               )}

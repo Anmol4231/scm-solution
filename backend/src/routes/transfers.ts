@@ -10,21 +10,25 @@ const TRANSFER_CREATOR_ROLES: UserRole[] = [
   UserRole.STOREKEEPER,
   UserRole.NURSE_ADMIN,
   UserRole.PROVINCIAL_MANAGER,
+  UserRole.SUPER_ADMIN,
 ];
 import { generateTransferCode } from "../utils/ids";
 import { logAudit } from "../services/audit";
 import { whatsappService } from "../whatsapp/service";
 import { createAlert } from "../services/alerts";
 import { AlertType, AlertSeverity } from "@prisma/client";
+import { createShipmentForTransfer } from "../services/shipment";
 
 const router = Router();
 router.use(authenticate);
+
+const positiveWholeNumber = z.number().int("Quantity must be a whole number").positive("Quantity must be greater than zero");
 
 const createSchema = z.object({
   toFacilityId: z.string(),
   medicineId: z.string(),
   batchId: z.string(),
-  quantity: z.number().positive(),
+  quantity: positiveWholeNumber,
   authorizationNotes: z.string().optional(),
 });
 
@@ -47,7 +51,7 @@ router.post("/", async (req, res, next) => {
       return res.status(400).json({ error: "Receiving facility must differ from sending facility" });
     }
 
-    if (req.user!.role !== UserRole.PROVINCIAL_MANAGER) {
+    if (req.user!.role !== UserRole.PROVINCIAL_MANAGER && req.user!.role !== UserRole.SUPER_ADMIN) {
       if (!req.user!.facilityId) {
         return res.status(400).json({ error: "Facility selection required" });
       }
@@ -102,6 +106,13 @@ router.post("/", async (req, res, next) => {
       `Transfer ${transfer.transferCode} incoming. Confirm receipt in SCM Solution.`
     );
 
+    await createShipmentForTransfer({
+      transferId: transfer.id,
+      sourceFacilityId: batch.facilityId,
+      destinationFacilityId: data.toFacilityId,
+      userId: req.user!.userId,
+    });
+
     res.status(201).json(transfer);
   } catch (e) {
     next(e);
@@ -111,7 +122,7 @@ router.post("/", async (req, res, next) => {
 router.post("/receive", async (req, res, next) => {
   try {
     const { transferCode, quantityReceived } = z
-      .object({ transferCode: z.string(), quantityReceived: z.number().positive() })
+      .object({ transferCode: z.string(), quantityReceived: positiveWholeNumber })
       .parse(req.body);
 
     const transfer = await prisma.transfer.findUnique({

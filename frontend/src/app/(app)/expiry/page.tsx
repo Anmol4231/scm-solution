@@ -83,7 +83,7 @@ export default function ExpiryPage() {
   useEffect(() => {
     api<Category[]>("/categories").then(setCategories);
     api<{ id: string; medicineName: string }[]>("/medicines").then(setMedicines);
-    if (user?.role === "PROVINCIAL_MANAGER") {
+    if (user?.role === "PROVINCIAL_MANAGER" || user?.role === "SUPER_ADMIN") {
       api<{ id: string; name: string }[]>("/auth/facilities").then(setFacilities);
     }
   }, [user?.role]);
@@ -147,7 +147,7 @@ export default function ExpiryPage() {
               ))}
             </select>
           </div>
-          {user?.role === "PROVINCIAL_MANAGER" && facilities.length > 0 && (
+          {(user?.role === "PROVINCIAL_MANAGER" || user?.role === "SUPER_ADMIN") && facilities.length > 0 && (
             <div className="min-w-[160px] flex-1">
               <Label className="text-xs">Facility</Label>
               <select className="mt-1 h-11 w-full rounded-lg border px-3" value={facilityFilter} onChange={(e) => setFacilityFilter(e.target.value)}>

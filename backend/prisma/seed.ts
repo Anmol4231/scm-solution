@@ -41,6 +41,8 @@ async function clearDemoData() {
   await prisma.healthcareWorker.deleteMany();
   await prisma.consumptionReport.deleteMany();
   await prisma.stockTransaction.deleteMany();
+  await prisma.shipmentEvent.deleteMany();
+  await prisma.shipment.deleteMany();
   await prisma.transfer.deleteMany();
   await prisma.prescriptionMedicine.deleteMany();
   await prisma.prescription.deleteMany();
@@ -53,19 +55,27 @@ async function main() {
   await clearDemoData();
 
   const facilityDefs = [
-    { code: "HC-001", name: "Goroka", province: "Eastern Highlands", district: "Goroka", phone: "+67553210001" },
-    { code: "HC-002", name: "Mt Hagen", province: "Western Highlands", district: "Mt Hagen", phone: "+67554210002" },
-    { code: "HC-003", name: "Lae", province: "Morobe", district: "Lae", phone: "+67547210003" },
-    { code: "HC-004", name: "Port Moresby", province: "National Capital", district: "Port Moresby", phone: "+67532510004" },
-    { code: "HC-005", name: "Kagamuga", province: "Western Highlands", district: "Kagamuga", phone: "+67554210005" },
-    { code: "HC-006", name: "Pai", province: "Enga", district: "Wabag", phone: "+67554710006" },
+    { code: "HC-001", name: "Goroka Hospital", facilityType: "HOSPITAL" as const, province: "Eastern Highlands", district: "Goroka", phone: "+67553210001", latitude: -6.083, longitude: 145.387 },
+    { code: "HC-002", name: "Mt Hagen Hospital", facilityType: "HOSPITAL" as const, province: "Western Highlands", district: "Mt Hagen", phone: "+67554210002", latitude: -5.867, longitude: 144.217 },
+    { code: "HC-003", name: "Lae Clinic", facilityType: "CLINIC" as const, province: "Morobe", district: "Lae", phone: "+67547210003", latitude: -6.733, longitude: 147.0 },
+    { code: "HC-004", name: "Port Moresby Pharmacy", facilityType: "PHARMACY" as const, province: "National Capital", district: "Port Moresby", phone: "+67532510004", latitude: -9.478, longitude: 147.15 },
+    { code: "HC-005", name: "Kagamuga Regional Warehouse", facilityType: "REGIONAL_STORE" as const, province: "Western Highlands", district: "Kagamuga", phone: "+67554210005", latitude: -5.826, longitude: 144.296 },
+    { code: "HC-006", name: "AMS Central Medical Store", facilityType: "AMS_CENTRAL" as const, province: "Enga", district: "Wabag", phone: "+67554710006", latitude: -5.483, longitude: 143.717 },
   ];
 
   const facilities = await Promise.all(
     facilityDefs.map((f) =>
       prisma.facility.upsert({
         where: { code: f.code },
-        update: { name: f.name, province: f.province, district: f.district, phone: f.phone },
+        update: {
+          name: f.name,
+          province: f.province,
+          district: f.district,
+          phone: f.phone,
+          facilityType: f.facilityType,
+          latitude: f.latitude,
+          longitude: f.longitude,
+        },
         create: f,
       })
     )
@@ -84,6 +94,19 @@ async function main() {
       lastName: "Manager",
       role: UserRole.PROVINCIAL_MANAGER,
       phone: "+263771000000",
+    },
+  });
+
+  await prisma.user.upsert({
+    where: { email: "superadmin@scm.local" },
+    update: { passwordHash, role: UserRole.SUPER_ADMIN },
+    create: {
+      email: "superadmin@scm.local",
+      passwordHash,
+      firstName: "Super",
+      lastName: "Admin",
+      role: UserRole.SUPER_ADMIN,
+      phone: "+263771000001",
     },
   });
 

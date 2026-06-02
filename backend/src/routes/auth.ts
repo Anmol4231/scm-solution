@@ -6,6 +6,7 @@ import { z } from "zod";
 import { prisma } from "../lib/prisma";
 import { config } from "../utils/config";
 import { authenticate } from "../middleware/auth";
+import { isCrossFacilityRole } from "../utils/roles";
 
 const router = Router();
 
@@ -81,8 +82,8 @@ const facilitySwitchSchema = z.object({ facilityId: z.string() });
 
 router.post("/switch-facility", authenticate, async (req, res, next) => {
   try {
-    if (req.user!.role !== "PROVINCIAL_MANAGER") {
-      return res.status(403).json({ error: "Only provincial managers can switch facilities" });
+    if (!isCrossFacilityRole(req.user!.role)) {
+      return res.status(403).json({ error: "Only admin roles can switch facilities" });
     }
     const { facilityId } = facilitySwitchSchema.parse(req.body);
     const facility = await prisma.facility.findUnique({ where: { id: facilityId } });

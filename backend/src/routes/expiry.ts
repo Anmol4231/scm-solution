@@ -120,7 +120,7 @@ router.get("/alerts", async (req, res, next) => {
   }
 });
 
-router.get("/redistribution", requireRoles("PROVINCIAL_MANAGER"), async (_req, res, next) => {
+router.get("/redistribution", requireRoles("PROVINCIAL_MANAGER", "SUPER_ADMIN"), async (_req, res, next) => {
   try {
     const batches = await prisma.stockBatch.findMany({
       where: { quantity: { gt: 0 } },

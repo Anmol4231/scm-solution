@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 import { api } from "@/lib/api";
 import { useAuth } from "@/lib/auth-context";
+import { isCrossFacilityRole } from "@/lib/roles";
 import { Label } from "@/components/ui/label";
 
 interface Facility {
@@ -16,12 +17,12 @@ export function FacilitySwitcher() {
   const [facilities, setFacilities] = useState<Facility[]>([]);
 
   useEffect(() => {
-    if (user?.role === "PROVINCIAL_MANAGER") {
+    if (isCrossFacilityRole(user?.role)) {
       api<Facility[]>("/auth/facilities").then(setFacilities).catch(console.error);
     }
   }, [user?.role]);
 
-  if (user?.role !== "PROVINCIAL_MANAGER" || !facilities.length) return null;
+  if (!isCrossFacilityRole(user?.role) || !facilities.length) return null;
 
   return (
     <div className="mb-4">
@@ -31,7 +32,7 @@ export function FacilitySwitcher() {
         value={user.facilityId || ""}
         onChange={(e) => e.target.value && switchFacility(e.target.value)}
       >
-        <option value="">All facilities (admin view)</option>
+        <option value="">All Locations (operational context)</option>
         {facilities.map((f) => (
           <option key={f.id} value={f.id}>
             {f.name} ({f.code})
