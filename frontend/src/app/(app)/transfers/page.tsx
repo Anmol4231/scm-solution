@@ -4,119 +4,139 @@ import { useEffect, useState } from "react";
 import Link from "next/link";
 import { api } from "@/lib/api";
 import { useAuth } from "@/lib/auth-context";
+import { isCrossFacilityRole } from "@/lib/roles";
 import { Button } from "@/components/ui/button";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 
 interface Transfer {
   id: string;
   transferCode: string;
   status: string;
-  quantity: number;
-  quantityReceived?: number | null;
-  batchNumber: string;
+  priority: string;
   createdAt: string;
-  fromFacilityId: string;
-  toFacilityId: string;
-  fromFacility: { name: string; code: string };
-  toFacility: { name: string; code: string };
-  medicine: { medicineName: string };
+  fromFacility: { id: string; name: string; code: string };
+  toFacility: { id: string; name: string; code: string };
+  medicine: { medicineName: string } | null;
+  lines: { id: string; medicine: { medicineName: string }; quantityTransferred: number; quantityReceived: number | null }[];
+  createdBy: { firstName: string; lastName: string } | null;
+  authorizedBy: { firstName: string; lastName: string } | null;
 }
+
+const STATUS_COLORS: Record<string, string> = {
+  PENDING: "bg-amber-100 text-amber-700",
+  AUTHORIZED: "bg-blue-100 text-blue-700",
+  IN_TRANSIT: "bg-cyan-100 text-cyan-700",
+  RECEIVED: "bg-emerald-100 text-emerald-700",
+  PARTIALLY_RECEIVED: "bg-orange-100 text-orange-700",
+  CANCELLED: "bg-red-100 text-red-600",
+};
 
 export default function TransfersPage() {
   const { user } = useAuth();
+  const isAdmin = isCrossFacilityRole(user?.role);
   const [transfers, setTransfers] = useState<Transfer[]>([]);
+  const [status, setStatus] = useState("");
+  const [loading, setLoading] = useState(true);
 
-  useEffect(() => {
-    const q = user?.facilityId ? `?facilityId=${user.facilityId}` : "";
-    api<Transfer[]>(`/transfers${q}`).then(setTransfers).catch(console.error);
-  }, [user?.facilityId]);
+  const load = () => {
+    setLoading(true);
+    const params = new URLSearchParams();
+    if (status) params.set("status", status);
+    api<Transfer[]>(`/transfers?${params}`).then(setTransfers).finally(() => setLoading(false));
+  };
+
+  useEffect(() => { load(); }, [status]);
 
   const pendingIncoming = transfers.filter(
-    (t) => user?.facilityId && t.toFacilityId === user.facilityId && t.status !== "RECEIVED"
+    (t) => user?.facilityId && t.toFacility.id === user.facilityId && t.status === "IN_TRANSIT"
   );
+  const pendingAuth = transfers.filter(
+    (t) => user?.facilityId && t.fromFacility.id === user.facilityId && t.status === "PENDING"
+  );
+
+  const linesSummary = (t: Transfer) => {
+    if (t.lines.length > 0) return `${t.lines.length} item${t.lines.length > 1 ? "s" : ""}`;
+    if (t.medicine) return t.medicine.medicineName;
+    return "—";
+  };
 
   return (
     <div className="space-y-4">
-      <h1 className="text-2xl font-bold">Inter-Facility Transfers</h1>
-      <p className="text-sm text-muted-foreground">
-        Move medicine between health facilities. Receiving facility confirms with the transfer code.
-      </p>
-
-      {pendingIncoming.length > 0 && (
-        <Card className="border-amber-300 bg-amber-50">
-          <CardContent className="p-4">
-            <p className="font-semibold text-amber-800">
-              {pendingIncoming.length} incoming transfer{pendingIncoming.length > 1 ? "s" : ""} awaiting receipt
-            </p>
-            <Link href="/transfers/receive">
-              <Button className="mt-2" size="sm">
-                Receive now
-              </Button>
-            </Link>
-          </CardContent>
-        </Card>
-      )}
-
-      <div className="grid grid-cols-2 gap-3">
+      <div className="flex items-center justify-between">
+        <div>
+          <Link href="/stock" className="text-sm text-medflow-600 hover:underline">← Stock Management</Link>
+          <h1 className="mt-1 text-2xl font-bold">Transfers</h1>
+        </div>
         <Link href="/transfers/send">
-          <Button size="lg" className="h-20 w-full">
-            Send to Facility
-          </Button>
-        </Link>
-        <Link href="/transfers/receive">
-          <Button size="lg" variant="secondary" className="h-20 w-full">
-            Receive Transfer
-          </Button>
+          <Button>New Transfer</Button>
         </Link>
       </div>
 
-      {(user?.role === "PROVINCIAL_MANAGER" || user?.role === "SUPER_ADMIN") && (
-        <Link href="/admin/transfers">
-          <Button variant="outline" className="w-full">
-            Provincial redistribution recommendations
-          </Button>
-        </Link>
+      {/* Action banners */}
+      {pendingIncoming.length > 0 && (
+        <div className="rounded-lg border border-amber-300 bg-amber-50 p-4">
+          <p className="font-semibold text-amber-800">{pendingIncoming.length} incoming transfer{pendingIncoming.length > 1 ? "s" : ""} in transit — awaiting your receipt</p>
+        </div>
+      )}
+      {pendingAuth.length > 0 && (
+        <div className="rounded-lg border border-blue-300 bg-blue-50 p-4">
+          <p className="font-semibold text-blue-800">{pendingAuth.length} outgoing transfer{pendingAuth.length > 1 ? "s" : ""} awaiting authorization</p>
+        </div>
       )}
 
-      <Card>
-        <CardHeader>
-          <CardTitle>Recent Transfers</CardTitle>
-        </CardHeader>
-        <CardContent className="space-y-3">
-          {transfers.length === 0 && (
-            <p className="text-sm text-muted-foreground">No transfers yet</p>
-          )}
-          {transfers.map((t) => (
-            <div key={t.id} className="rounded-lg border p-3 text-sm">
-              <div className="flex flex-wrap items-center justify-between gap-2">
-                <span className="font-mono font-semibold">{t.transferCode}</span>
-                <span
-                  className={
-                    t.status === "RECEIVED"
-                      ? "text-green-600"
-                      : t.status === "PENDING"
-                        ? "text-amber-600"
-                        : ""
-                  }
-                >
-                  {t.status}
-                </span>
-              </div>
-              <p className="mt-1 font-medium">{t.medicine.medicineName}</p>
-              <p className="text-muted-foreground">
-                {t.fromFacility.name} → {t.toFacility.name}
-              </p>
-              <p>
-                Batch {t.batchNumber} · Sent {t.quantity}
-                {t.quantityReceived != null && ` · Received ${t.quantityReceived}`}
-              </p>
-              <p className="text-xs text-muted-foreground">
-                {new Date(t.createdAt).toLocaleString()}
-              </p>
-            </div>
-          ))}
-        </CardContent>
-      </Card>
+      {/* Status filter */}
+      <div className="flex flex-wrap gap-2">
+        {["", "PENDING", "AUTHORIZED", "IN_TRANSIT", "RECEIVED", "PARTIALLY_RECEIVED", "CANCELLED"].map((s) => (
+          <button key={s} onClick={() => setStatus(s)}
+            className={`rounded-full px-3 py-1 text-sm font-medium ${status === s ? "bg-medflow-600 text-white" : "bg-slate-100 text-slate-600 hover:bg-slate-200"}`}>
+            {s || "All"}
+          </button>
+        ))}
+      </div>
+
+      {loading ? (
+        <p className="text-sm text-slate-500">Loading…</p>
+      ) : (
+        <div className="overflow-x-auto rounded-lg border bg-white">
+          <table className="w-full text-sm">
+            <thead className="border-b bg-slate-50">
+              <tr>
+                <th className="px-4 py-3 text-left font-medium text-slate-600">Code</th>
+                <th className="px-4 py-3 text-left font-medium text-slate-600">Status</th>
+                <th className="px-4 py-3 text-left font-medium text-slate-600">From</th>
+                <th className="px-4 py-3 text-left font-medium text-slate-600">To</th>
+                <th className="px-4 py-3 text-left font-medium text-slate-600">Contents</th>
+                <th className="px-4 py-3 text-left font-medium text-slate-600">Priority</th>
+                <th className="px-4 py-3 text-left font-medium text-slate-600">Date</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y">
+              {transfers.length === 0 ? (
+                <tr><td colSpan={7} className="py-8 text-center text-slate-400">No transfers found.</td></tr>
+              ) : (
+                transfers.map((t) => (
+                  <tr key={t.id} className="hover:bg-slate-50">
+                    <td className="px-4 py-3">
+                      <Link href={`/transfers/${t.id}`} className="font-mono text-medflow-600 hover:underline">{t.transferCode}</Link>
+                    </td>
+                    <td className="px-4 py-3">
+                      <span className={`rounded-full px-2 py-0.5 text-xs font-medium ${STATUS_COLORS[t.status] ?? ""}`}>{t.status.replace(/_/g, " ")}</span>
+                    </td>
+                    <td className="px-4 py-3 text-slate-700">{t.fromFacility.name}</td>
+                    <td className="px-4 py-3 text-slate-700">{t.toFacility.name}</td>
+                    <td className="px-4 py-3 text-slate-600">{linesSummary(t)}</td>
+                    <td className="px-4 py-3">
+                      <span className={`rounded-full px-2 py-0.5 text-xs font-medium ${t.priority === "EMERGENCY" ? "bg-red-100 text-red-700" : t.priority === "URGENT" ? "bg-amber-100 text-amber-700" : "bg-slate-100 text-slate-600"}`}>
+                        {t.priority}
+                      </span>
+                    </td>
+                    <td className="px-4 py-3 text-slate-500">{new Date(t.createdAt).toLocaleDateString()}</td>
+                  </tr>
+                ))
+              )}
+            </tbody>
+          </table>
+        </div>
+      )}
     </div>
   );
 }

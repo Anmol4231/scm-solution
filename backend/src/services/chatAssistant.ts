@@ -567,7 +567,7 @@ async function ruleBasedHandler(
           ? filtered
               .map((t) => {
                 const direction = t.toFacilityId === scope.facilityId ? "inbound transfer" : t.fromFacilityId === scope.facilityId ? "outbound transfer" : "transfer";
-                return `- ${t.transferCode}: ${t.medicine.medicineName}, ${formatNumber(t.quantity)} units, ${formatRoute(scope, t.fromFacility.name, t.toFacility.name, direction)}, ${t.status.replace(/_/g, " ")}`;
+                return `- ${t.transferCode}: ${t.medicine?.medicineName ?? "multi-item"}, ${formatNumber(t.quantity ?? 0)} units, ${formatRoute(scope, t.fromFacility.name, t.toFacility.name, direction)}, ${t.status.replace(/_/g, " ")}`;
               })
               .join("\n")
           : delayedOnly

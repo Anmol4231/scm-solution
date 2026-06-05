@@ -1,87 +1,129 @@
 "use client";
 
-import { useState } from "react";
 import Link from "next/link";
-import { Button } from "@/components/ui/button";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { downloadAuthenticatedFile } from "@/lib/download";
-import { Download } from "lucide-react";
+import {
+  ShoppingCart,
+  Truck,
+  ArrowLeftRight,
+  Scale,
+  RotateCcw,
+  AlertTriangle,
+  History,
+  BarChart3,
+  ClipboardList,
+  type LucideIcon,
+} from "lucide-react";
 
-const actions = [
-  { href: "/stock/orders", label: "Order", desc: "Order medicines for replenishment" },
-  { href: "/stock/receipt", label: "Stock Receipt", desc: "Receive batches into stock" },
-  { href: "/stock/consumption", label: "Monthly Usage Report", desc: "AMS monthly usage summary (not dispensing)" },
-  { href: "/stock/adjustment", label: "Physical Adjustment", desc: "Count corrections" },
-  { href: "/stock/transactions", label: "Transaction History", desc: "All stock movements" },
-  { href: "/medicines", label: "Medicines", desc: "Intelligence hub per medicine" },
-  { href: "/expiry", label: "Expiry Management", desc: "Alerts, filters & redistribution" },
-  { href: "/transfers/send", label: "Send Transfer", desc: "Inter-facility redistribution" },
-  { href: "/returns", label: "Returns", desc: "Patient & facility returns" },
+interface HubItem {
+  href: string;
+  label: string;
+  description: string;
+  icon: LucideIcon;
+  color: string;
+}
+
+const HUB_ITEMS: HubItem[] = [
+  {
+    href: "/stock/in-hand",
+    label: "Stock Report",
+    description: "Real-time inventory across all batches",
+    icon: BarChart3,
+    color: "text-medflow-600 bg-medflow-50",
+  },
+  {
+    href: "/requisitions",
+    label: "Requisitions",
+    description: "Request stock from AMS or supply stores",
+    icon: ClipboardList,
+    color: "text-indigo-600 bg-indigo-50",
+  },
+  {
+    href: "/stock/orders",
+    label: "Vendor Orders",
+    description: "Place and manage external vendor orders",
+    icon: ShoppingCart,
+    color: "text-blue-600 bg-blue-50",
+  },
+  {
+    href: "/stock/pending-receipts",
+    label: "Pending Receipts",
+    description: "Vouchers and orders waiting to be received",
+    icon: Truck,
+    color: "text-emerald-600 bg-emerald-50",
+  },
+  {
+    href: "/transfers",
+    label: "Transfers",
+    description: "Transfer stock between facilities",
+    icon: ArrowLeftRight,
+    color: "text-violet-600 bg-violet-50",
+  },
+  {
+    href: "/returns",
+    label: "Returns",
+    description: "Process patient and facility returns",
+    icon: RotateCcw,
+    color: "text-rose-600 bg-rose-50",
+  },
+  {
+    href: "/expiry",
+    label: "Expiry Management",
+    description: "Track and dispose of expiring stock",
+    icon: AlertTriangle,
+    color: "text-orange-600 bg-orange-50",
+  },
+  {
+    href: "/stock/adjustment",
+    label: "Adjustments",
+    description: "Physical count and stock corrections",
+    icon: Scale,
+    color: "text-amber-600 bg-amber-50",
+  },
+  {
+    href: "/stock/movement",
+    label: "Stock Movement",
+    description: "Opening + receipts − issues = closing balance",
+    icon: BarChart3,
+    color: "text-teal-600 bg-teal-50",
+  },
+  {
+    href: "/stock/transactions",
+    label: "Transaction History",
+    description: "Full audit log of stock movements",
+    icon: History,
+    color: "text-slate-600 bg-slate-100",
+  },
 ];
 
-export default function StockPage() {
-  const [exporting, setExporting] = useState(false);
-  const [exportError, setExportError] = useState("");
-
-  const exportExcel = async () => {
-    setExporting(true);
-    setExportError("");
-    try {
-      const date = new Date().toISOString().slice(0, 10);
-      await downloadAuthenticatedFile("/stock/export", `scm-stock-${date}.csv`);
-    } catch (err) {
-      setExportError(err instanceof Error ? err.message : "Export failed");
-    } finally {
-      setExporting(false);
-    }
-  };
-
+export default function StockManagementPage() {
   return (
-    <div className="space-y-4">
-      <div className="flex flex-wrap items-start justify-between gap-3">
-        <div>
-          <h1 className="text-2xl font-bold">Stock Operations</h1>
-          <p className="text-sm text-muted-foreground">
-            Stock metrics are available in the Dashboard, Medicines, and Expiry modules.
-          </p>
-        </div>
-        <Button onClick={exportExcel} disabled={exporting} className="gap-2">
-          <Download className="h-4 w-4" />
-          {exporting ? "Exporting…" : "Export to Excel"}
-        </Button>
+    <div className="space-y-5">
+      <div>
+        <h1 className="text-2xl font-bold tracking-tight">Stock Management</h1>
+        <p className="mt-1 text-sm text-muted-foreground">
+          Central inventory hub — select an action below.
+        </p>
       </div>
 
-      {exportError && <p className="rounded-lg bg-red-50 p-3 text-sm text-red-700">{exportError}</p>}
-
-      <p className="text-xs text-muted-foreground">
-        Excel export downloads a CSV file (opens in Microsoft Excel) with all batches, quantities, expiry, and 30-day inbound/outbound supply.
-      </p>
-
-      <div className="rounded-lg border border-blue-100 bg-blue-50/50 p-4 text-sm">
-        <p className="font-medium text-medflow-800">Dispense vs usage reporting</p>
-        <ul className="mt-2 space-y-1 text-muted-foreground">
-          <li>
-            <strong className="text-slate-700">Dispense Medicine</strong> (sidebar) — issue stock to a <strong>patient</strong> with a mandatory active prescription.
-          </li>
-          <li>
-            <strong className="text-slate-700">Monthly Usage Report</strong> (below) — submit total units used for AMS/provincial reporting; does not dispense or change stock.
-          </li>
-        </ul>
-      </div>
-      <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
-        {actions.map((a) => (
-          <Link key={a.href} href={a.href}>
-            <Card className="h-full transition hover:border-medflow-300 hover:shadow-sm">
-              <CardHeader className="pb-2">
-                <CardTitle className="text-base">{a.label}</CardTitle>
-              </CardHeader>
-              <CardContent>
-                <p className="text-sm text-muted-foreground">{a.desc}</p>
-                <span className="mt-2 inline-block text-sm text-medflow-600">Open →</span>
-              </CardContent>
-            </Card>
-          </Link>
-        ))}
+      <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+        {HUB_ITEMS.map((item) => {
+          const Icon = item.icon;
+          return (
+            <Link key={item.href} href={item.href}>
+              <div className="group flex h-full flex-col gap-3 rounded-xl border bg-white p-4 transition hover:border-medflow-300 hover:shadow-sm">
+                <span className={`w-fit rounded-lg p-2.5 ${item.color}`}>
+                  <Icon className="h-5 w-5" />
+                </span>
+                <div>
+                  <p className="font-semibold text-slate-800 group-hover:text-medflow-700">
+                    {item.label}
+                  </p>
+                  <p className="mt-0.5 text-xs text-slate-500">{item.description}</p>
+                </div>
+              </div>
+            </Link>
+          );
+        })}
       </div>
     </div>
   );

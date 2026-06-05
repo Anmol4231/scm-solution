@@ -5,6 +5,10 @@ import { config } from "./utils/config";
 import { errorHandler } from "./middleware/errorHandler";
 
 import authRoutes from "./routes/auth";
+import userRoutes from "./routes/users";
+import roleRoutes from "./routes/roles";
+import facilityRoutes from "./routes/facilities";
+import auditRoutes from "./routes/audit";
 import healthcareWorkerRoutes from "./routes/healthcare-workers";
 import patientRoutes from "./routes/patients";
 import prescriptionRoutes from "./routes/prescriptions";
@@ -21,6 +25,8 @@ import dashboardRoutes from "./routes/dashboard";
 import adminRoutes from "./routes/admin";
 import searchRoutes from "./routes/search";
 import chatRoutes from "./routes/chat";
+import requisitionRoutes from "./routes/requisitions";
+import issueVoucherRoutes from "./routes/issue-vouchers";
 import shipmentRoutes from "./routes/shipments";
 import whatsappRoutes from "./routes/whatsapp";
 
@@ -50,8 +56,15 @@ app.use(express.json());
 app.use("/uploads", express.static(path.join(process.cwd(), "uploads")));
 
 app.get("/health", (_req, res) => res.json({ status: "ok", service: "scm-solution-api" }));
+app.get("/api/config", (_req, res) =>
+  res.json({ emailEnabled: config.email.enabled && !!config.email.smtpHost })
+);
 
 app.use("/api/auth", authRoutes);
+app.use("/api/users", userRoutes);
+app.use("/api/roles", roleRoutes);
+app.use("/api/facilities", facilityRoutes);
+app.use("/api/audit", auditRoutes);
 app.use("/api/healthcare-workers", healthcareWorkerRoutes);
 app.use("/api/patients", patientRoutes);
 app.use("/api/prescriptions", prescriptionRoutes);
@@ -69,6 +82,8 @@ app.use("/api/dashboard", dashboardRoutes);
 app.use("/api/admin", adminRoutes);
 app.use("/api/search", searchRoutes);
 app.use("/api/chat", chatRoutes);
+app.use("/api/requisitions", requisitionRoutes);
+app.use("/api/issue-vouchers", issueVoucherRoutes);
 app.use("/api/shipments", shipmentRoutes);
 app.use("/api/whatsapp", whatsappRoutes);
 

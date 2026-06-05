@@ -1,31 +1,180 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
+import Link from "next/link";
 import { api } from "@/lib/api";
-import { Card, CardContent } from "@/components/ui/card";
+import { useAuth } from "@/lib/auth-context";
+import { isAdminDashboardRole } from "@/lib/roles";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+
+interface Tx {
+  id: string;
+  type: string;
+  quantity: number;
+  balanceAfter: number | null;
+  reason: string | null;
+  notes: string | null;
+  createdAt: string;
+  facilityId: string;
+  medicine: { id: string; medicineName: string } | null;
+  batch: { batchNumber: string; expiryDate: string } | null;
+  performedBy: { firstName: string; lastName: string } | null;
+  facility: { id: string; name: string; code: string } | null;
+}
+
+interface TxResponse { total: number; skip: number; take: number; transactions: Tx[] }
+
+const TYPE_COLORS: Record<string, string> = {
+  RECEIPT: "bg-emerald-100 text-emerald-700",
+  CONSUMPTION: "bg-orange-100 text-orange-700",
+  ADJUSTMENT: "bg-slate-100 text-slate-600",
+  DISPENSING: "bg-blue-100 text-blue-700",
+  EXPIRED: "bg-red-100 text-red-700",
+  RETURN_IN: "bg-teal-100 text-teal-700",
+  RETURN_OUT: "bg-rose-100 text-rose-700",
+  TRANSFER_OUT: "bg-violet-100 text-violet-700",
+  TRANSFER_IN: "bg-cyan-100 text-cyan-700",
+};
+
+const ALL_TYPES = ["RECEIPT", "CONSUMPTION", "ADJUSTMENT", "DISPENSING", "EXPIRED", "RETURN_IN", "RETURN_OUT", "TRANSFER_OUT", "TRANSFER_IN"];
+const PAGE_SIZE = 50;
 
 export default function TransactionsPage() {
-  const [txs, setTxs] = useState<Record<string, unknown>[]>([]);
+  const { user } = useAuth();
+  const isAdmin = isAdminDashboardRole(user?.role);
+
+  const [data, setData] = useState<TxResponse | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [page, setPage] = useState(0);
+
+  // Filters
+  const [type, setType] = useState("");
+  const [from, setFrom] = useState("");
+  const [to, setTo] = useState("");
+  const [facilityId, setFacilityId] = useState("");
+  const [facilities, setFacilities] = useState<{ id: string; name: string; code: string }[]>([]);
 
   useEffect(() => {
-    api("/stock/transactions").then(setTxs);
-  }, []);
+    if (isAdmin) api<{ id: string; name: string; code: string }[]>("/auth/facilities").then(setFacilities).catch(() => {});
+  }, [isAdmin]);
+
+  const load = useCallback(() => {
+    setLoading(true);
+    const params = new URLSearchParams({ skip: String(page * PAGE_SIZE), take: String(PAGE_SIZE) });
+    if (type) params.set("type", type);
+    if (from) params.set("from", from);
+    if (to) params.set("to", to);
+    if (isAdmin && facilityId) params.set("facilityId", facilityId);
+    api<TxResponse>(`/stock/transactions?${params}`)
+      .then(setData)
+      .finally(() => setLoading(false));
+  }, [type, from, to, facilityId, isAdmin, page]);
+
+  useEffect(() => { load(); }, [load]);
+
+  const totalPages = data ? Math.ceil(data.total / PAGE_SIZE) : 0;
 
   return (
     <div className="space-y-4">
-      <h1 className="text-2xl font-bold">Stock Transactions</h1>
-      {txs.map((tx, i) => {
-        const t = tx as { type: string; medicine: { medicineName: string }; quantity: number; createdAt: string; performedBy: { firstName: string; lastName: string } };
-        return (
-          <Card key={i}>
-            <CardContent className="p-4 text-sm">
-              <p className="font-semibold">{t.type} — {t.medicine?.medicineName}</p>
-              <p>Qty: {t.quantity} · {t.performedBy?.firstName} {t.performedBy?.lastName}</p>
-              <p className="text-muted-foreground">{new Date(t.createdAt).toLocaleString()}</p>
-            </CardContent>
-          </Card>
-        );
-      })}
+      <div>
+        <Link href="/stock" className="text-sm text-medflow-600 hover:underline">← Stock Management</Link>
+        <h1 className="mt-1 text-2xl font-bold">Transaction History</h1>
+        <p className="text-sm text-slate-500">Immutable ledger of all stock movements</p>
+      </div>
+
+      {/* Filters */}
+      <div className="flex flex-wrap items-end gap-3 rounded-lg border bg-slate-50 p-3">
+        {isAdmin && (
+          <div>
+            <label className="mb-1 block text-xs font-medium text-slate-600">Facility</label>
+            <select value={facilityId} onChange={(e) => { setFacilityId(e.target.value); setPage(0); }} className="h-9 rounded-lg border px-2 text-sm">
+              <option value="">All Facilities</option>
+              {facilities.map((f) => <option key={f.id} value={f.id}>{f.name} ({f.code})</option>)}
+            </select>
+          </div>
+        )}
+        <div>
+          <label className="mb-1 block text-xs font-medium text-slate-600">Type</label>
+          <select value={type} onChange={(e) => { setType(e.target.value); setPage(0); }} className="h-9 rounded-lg border px-2 text-sm">
+            <option value="">All Types</option>
+            {ALL_TYPES.map((t) => <option key={t} value={t}>{t.replace(/_/g, " ")}</option>)}
+          </select>
+        </div>
+        <div>
+          <label className="mb-1 block text-xs font-medium text-slate-600">From</label>
+          <Input type="date" value={from} onChange={(e) => { setFrom(e.target.value); setPage(0); }} className="h-9 w-36" />
+        </div>
+        <div>
+          <label className="mb-1 block text-xs font-medium text-slate-600">To</label>
+          <Input type="date" value={to} onChange={(e) => { setTo(e.target.value); setPage(0); }} className="h-9 w-36" />
+        </div>
+        {(type || from || to || facilityId) && (
+          <Button variant="outline" size="sm" onClick={() => { setType(""); setFrom(""); setTo(""); setFacilityId(""); setPage(0); }}>
+            Clear
+          </Button>
+        )}
+      </div>
+
+      {data && (
+        <p className="text-sm text-slate-500">
+          {data.total} transaction{data.total !== 1 ? "s" : ""} · showing {data.skip + 1}–{Math.min(data.skip + PAGE_SIZE, data.total)}
+        </p>
+      )}
+
+      <div className="overflow-x-auto rounded-lg border bg-white">
+        <table className="w-full min-w-[760px] text-sm">
+          <thead className="border-b bg-slate-50 text-xs text-slate-500">
+            <tr>
+              <th className="px-3 py-2 text-left font-medium">Date & Time</th>
+              <th className="px-3 py-2 text-left font-medium">Type</th>
+              <th className="px-3 py-2 text-left font-medium">Medicine</th>
+              {isAdmin && <th className="px-3 py-2 text-left font-medium">Facility</th>}
+              <th className="px-3 py-2 text-left font-medium">Batch</th>
+              <th className="px-3 py-2 text-right font-medium">Qty</th>
+              <th className="px-3 py-2 text-right font-medium">Balance After</th>
+              <th className="px-3 py-2 text-left font-medium">Reason</th>
+              <th className="px-3 py-2 text-left font-medium">Performed By</th>
+            </tr>
+          </thead>
+          <tbody className="divide-y">
+            {loading ? (
+              <tr><td colSpan={isAdmin ? 9 : 8} className="py-8 text-center text-slate-400">Loading…</td></tr>
+            ) : !data?.transactions.length ? (
+              <tr><td colSpan={isAdmin ? 9 : 8} className="py-8 text-center text-slate-400">No transactions found.</td></tr>
+            ) : (
+              data.transactions.map((t) => (
+                <tr key={t.id} className="hover:bg-slate-50">
+                  <td className="px-3 py-2 whitespace-nowrap text-slate-500 text-xs">{new Date(t.createdAt).toLocaleString()}</td>
+                  <td className="px-3 py-2">
+                    <span className={`rounded-full px-2 py-0.5 text-[11px] font-medium ${TYPE_COLORS[t.type] ?? "bg-slate-100 text-slate-600"}`}>
+                      {t.type.replace(/_/g, " ")}
+                    </span>
+                  </td>
+                  <td className="px-3 py-2 font-medium text-slate-800">{t.medicine?.medicineName ?? "—"}</td>
+                  {isAdmin && <td className="px-3 py-2 text-slate-600 text-xs">{t.facility?.name ?? "—"}</td>}
+                  <td className="px-3 py-2 font-mono text-xs text-slate-500">{t.batch?.batchNumber ?? "—"}</td>
+                  <td className={`px-3 py-2 text-right font-semibold ${t.quantity < 0 ? "text-red-600" : "text-emerald-600"}`}>
+                    {t.quantity > 0 ? `+${t.quantity}` : t.quantity}
+                  </td>
+                  <td className="px-3 py-2 text-right text-slate-600">{t.balanceAfter ?? "—"}</td>
+                  <td className="px-3 py-2 text-xs text-slate-500 max-w-[160px] truncate" title={t.reason ?? t.notes ?? ""}>{t.reason ?? t.notes ?? "—"}</td>
+                  <td className="px-3 py-2 text-xs text-slate-500">{t.performedBy ? `${t.performedBy.firstName} ${t.performedBy.lastName}` : "—"}</td>
+                </tr>
+              ))
+            )}
+          </tbody>
+        </table>
+      </div>
+
+      {/* Pagination */}
+      {totalPages > 1 && (
+        <div className="flex items-center gap-2">
+          <Button variant="outline" size="sm" disabled={page === 0} onClick={() => setPage(page - 1)}>Previous</Button>
+          <span className="text-sm text-slate-600">Page {page + 1} of {totalPages}</span>
+          <Button variant="outline" size="sm" disabled={page >= totalPages - 1} onClick={() => setPage(page + 1)}>Next</Button>
+        </div>
+      )}
     </div>
   );
 }
