@@ -8,6 +8,7 @@ export interface AuthPayload {
   userId: string;
   email: string;
   role: UserRole;
+  roleId?: string | null;
   facilityId?: string | null;
 }
 

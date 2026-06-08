@@ -103,6 +103,8 @@ enum VendorOrderStatus {
   DRAFT
   SUBMITTED
   CONFIRMED
+  IN_TRANSIT
+  PARTIALLY_RECEIVED
   RECEIVED
   CANCELLED
 }
@@ -173,6 +175,7 @@ model Facility {
   auditLogs          AuditLog[]
   consumptionReports ConsumptionReport[]
   stockOrders              StockOrder[]
+  stockReceipts            StockReceipt[]
   requisitionsRequesting   StockRequisition[] @relation("RequisitionRequesting")
   requisitionsIssuing      StockRequisition[] @relation("RequisitionIssuing")
   returnsReceived          MedicineReturn[]   @relation("ReturnReceivingFacility")
@@ -223,9 +226,11 @@ model User {
   alertsAcknowledged Alert[]           @relation("AlertAcknowledgedBy")
   auditLogs          AuditLog[]
   passwordResetTokens PasswordResetToken[]
-  stockOrdersCreated  StockOrder[]
-  medicinesDeleted    Medicine[]         @relation("MedicineDeletedBy")
-  categoriesDeleted   MedicineCategory[] @relation("CategoryDeletedBy")
+  stockOrdersCreated       StockOrder[]
+  stockReceiptsReceived    StockReceipt[]     @relation("StockReceiptReceivedBy")
+  stockReceiptsLastEdited  StockReceipt[]     @relation("StockReceiptLastEditedBy")
+  medicinesDeleted         Medicine[]         @relation("MedicineDeletedBy")
+  categoriesDeleted        MedicineCategory[] @relation("CategoryDeletedBy")
   stockOrdersDeleted       StockOrder[]       @relation("StockOrderDeletedBy")
   requisitionsRequested    StockRequisition[] @relation("RequisitionRequestedBy")
   requisitionsApproved     StockRequisition[] @relation("RequisitionApprovedBy")
@@ -375,6 +380,7 @@ model Medicine {
   transfers                Transfer[]
   consumptionReports       ConsumptionReport[]
   stockOrderLines          StockOrderLine[]
+  stockReceiptLines        StockReceiptLine[]
   requisitionLines         RequisitionLine[]
   issueVoucherLines        IssueVoucherLine[]
   transferLines            TransferLine[]
@@ -418,6 +424,7 @@ model StockBatch {
   transfers         Transfer[]
   transferLines     TransferLine[]
   issueVoucherLines IssueVoucherLine[]
+  receiptLines      StockReceiptLine[]
 
   @@unique([medicineId, facilityId, batchNumber])
   @@index([expiryDate])
@@ -658,6 +665,7 @@ model StockOrder {
   updatedAt            DateTime          @updatedAt
 
   lines    StockOrderLine[]
+  receipts StockReceipt[]
   shipment Shipment?
 
   @@index([facilityId, status])
@@ -711,6 +719,55 @@ model StockOrderLine {
   quantityReceived Float?
   unitCost         Float?
   notes            String?
+
+  receiptLines StockReceiptLine[]
+
+  @@index([orderId])
+}
+
+model StockReceipt {
+  id             String    @id @default(cuid())
+  receiptCode    String    @unique
+  orderId        String
+  order          StockOrder @relation(fields: [orderId], references: [id])
+  receivedById   String
+  receivedBy     User      @relation("StockReceiptReceivedBy", fields: [receivedById], references: [id])
+  facilityId     String
+  facility       Facility  @relation(fields: [facilityId], references: [id])
+  notes          String?
+  lastEditedById String?
+  lastEditedBy   User?     @relation("StockReceiptLastEditedBy", fields: [lastEditedById], references: [id])
+  lastEditedAt   DateTime?
+  lastEditReason String?
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+
+  lines StockReceiptLine[]
+
+  @@index([orderId])
+  @@index([facilityId])
+}
+
+model StockReceiptLine {
+  id               String         @id @default(cuid())
+  receiptId        String
+  receipt          StockReceipt   @relation(fields: [receiptId], references: [id], onDelete: Cascade)
+  orderLineId      String
+  orderLine        StockOrderLine @relation(fields: [orderLineId], references: [id])
+  medicineId       String
+  medicine         Medicine       @relation(fields: [medicineId], references: [id])
+  batchId          String
+  batch            StockBatch     @relation(fields: [batchId], references: [id])
+  batchNumber      String
+  expiryDate       DateTime
+  quantityReceived Float
+  unitCost         Float?
+  notes            String?
+  createdAt        DateTime       @default(now())
+  updatedAt        DateTime       @updatedAt
+
+  @@index([receiptId])
+  @@index([orderLineId])
 }
 
 model ExpiredMedicineRecord {

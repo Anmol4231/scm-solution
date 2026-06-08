@@ -3,15 +3,8 @@ import { z } from "zod";
 import { TransferStatus, StockTransactionType } from "@prisma/client";
 import { prisma } from "../lib/prisma";
 import { authenticate, getFacilityId } from "../middleware/auth";
+import { requirePermission } from "../middleware/permission";
 import { UserRole } from "@prisma/client";
-
-const TRANSFER_CREATOR_ROLES: UserRole[] = [
-  UserRole.PHARMACIST,
-  UserRole.STOREKEEPER,
-  UserRole.NURSE_ADMIN,
-  UserRole.PROVINCIAL_MANAGER,
-  UserRole.SUPER_ADMIN,
-];
 import { generateTransferCode } from "../utils/ids";
 import { logAudit } from "../services/audit";
 import { whatsappService } from "../whatsapp/service";
@@ -21,6 +14,11 @@ import { createShipmentForTransfer } from "../services/shipment";
 
 const router = Router();
 router.use(authenticate);
+
+const transferView    = requirePermission("transfers", "view");
+const transferCreate  = requirePermission("transfers", "create");
+const transferEdit    = requirePermission("transfers", "edit");
+const transferApprove = requirePermission("transfers", "approve");
 
 const positiveWholeNumber = z.number().int("Quantity must be a whole number").positive("Quantity must be greater than zero");
 
@@ -32,12 +30,8 @@ const createSchema = z.object({
   authorizationNotes: z.string().optional(),
 });
 
-router.post("/", async (req, res, next) => {
+router.post("/", transferCreate, async (req, res, next) => {
   try {
-    if (!TRANSFER_CREATOR_ROLES.includes(req.user!.role)) {
-      return res.status(403).json({ error: "Insufficient permissions to create transfers" });
-    }
-
     const data = createSchema.parse(req.body);
     const batch = await prisma.stockBatch.findUnique({
       where: { id: data.batchId },
@@ -119,7 +113,7 @@ router.post("/", async (req, res, next) => {
   }
 });
 
-router.post("/receive", async (req, res, next) => {
+router.post("/receive", transferApprove, async (req, res, next) => {
   try {
     const { transferCode, quantityReceived } = z
       .object({ transferCode: z.string(), quantityReceived: positiveWholeNumber })
@@ -224,7 +218,7 @@ router.post("/receive", async (req, res, next) => {
   }
 });
 
-router.get("/", async (req, res, next) => {
+router.get("/", transferView, async (req, res, next) => {
   try {
     const facilityId = getFacilityId(req, req.query.facilityId as string);
     const status = req.query.status as string | undefined;
@@ -250,7 +244,7 @@ router.get("/", async (req, res, next) => {
   }
 });
 
-router.get("/:id", async (req, res, next) => {
+router.get("/:id", transferView, async (req, res, next) => {
   try {
     const transfer = await prisma.transfer.findUnique({
       where: { id: req.params.id },
@@ -282,7 +276,7 @@ const newTransferSchema = z.object({
   })).min(1),
 });
 
-router.post("/new", async (req, res, next) => {
+router.post("/new", transferCreate, async (req, res, next) => {
   try {
     const data = newTransferSchema.parse(req.body);
     const userId = req.user!.userId;
@@ -344,7 +338,7 @@ router.post("/new", async (req, res, next) => {
 });
 
 // POST /transfers/:id/authorize — PENDING → AUTHORIZED
-router.post("/:id/authorize", async (req, res, next) => {
+router.post("/:id/authorize", transferApprove, async (req, res, next) => {
   try {
     const transfer = await prisma.transfer.findUnique({ where: { id: req.params.id } });
     if (!transfer) return res.status(404).json({ error: "Not found" });
@@ -369,7 +363,7 @@ router.post("/:id/authorize", async (req, res, next) => {
 });
 
 // POST /transfers/:id/dispatch — AUTHORIZED → IN_TRANSIT, deduct stock
-router.post("/:id/dispatch", async (req, res, next) => {
+router.post("/:id/dispatch", transferEdit, async (req, res, next) => {
   try {
     const transfer = await prisma.transfer.findUnique({ where: { id: req.params.id }, include: { lines: true } });
     if (!transfer) return res.status(404).json({ error: "Not found" });
@@ -422,7 +416,7 @@ const receiveMultiSchema = z.object({
   })),
 });
 
-router.post("/:id/receive-multi", async (req, res, next) => {
+router.post("/:id/receive-multi", transferApprove, async (req, res, next) => {
   try {
     const transfer = await prisma.transfer.findUnique({ where: { id: req.params.id }, include: { lines: true } });
     if (!transfer) return res.status(404).json({ error: "Not found" });
@@ -488,7 +482,7 @@ router.post("/:id/receive-multi", async (req, res, next) => {
 });
 
 // POST /transfers/:id/cancel — PENDING|AUTHORIZED → CANCELLED
-router.post("/:id/cancel", async (req, res, next) => {
+router.post("/:id/cancel", transferEdit, async (req, res, next) => {
   try {
     const transfer = await prisma.transfer.findUnique({ where: { id: req.params.id } });
     if (!transfer) return res.status(404).json({ error: "Not found" });

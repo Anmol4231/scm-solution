@@ -7,6 +7,9 @@ import { prisma } from "../lib/prisma";
 import { config } from "../utils/config";
 import { authenticate } from "../middleware/auth";
 import { isCrossFacilityRole } from "../utils/roles";
+import { logAudit } from "../services/audit";
+import { getEffectiveMatrix } from "../services/permissions";
+import { sendEmail, buildForgotPasswordEmail } from "../utils/email";
 
 const router = Router();
 
@@ -14,6 +17,20 @@ const loginSchema = z.object({
   email: z.string().email(),
   password: z.string().min(6),
 });
+
+/** True when a configured expiry window has elapsed since the last password change. */
+function isPasswordExpired(user: { passwordExpiryDays: number | null; passwordChangedAt: Date | null }): boolean {
+  if (!user.passwordExpiryDays || user.passwordExpiryDays <= 0) return false; // Never
+  const base = user.passwordChangedAt ?? null;
+  if (!base) return true; // expiry configured but never recorded → treat as expired
+  const ageMs = Date.now() - base.getTime();
+  return ageMs >= user.passwordExpiryDays * 24 * 60 * 60 * 1000;
+}
+
+// After LOCKOUT_THRESHOLD consecutive failures the account locks for LOCKOUT_MINUTES.
+// Users see a countdown warning on each failed attempt before that threshold.
+const LOCKOUT_THRESHOLD = 3;   // lock after this many failures
+const LOCKOUT_MINUTES = 5;
 
 router.post("/login", async (req, res, next) => {
   try {
@@ -25,8 +42,61 @@ router.post("/login", async (req, res, next) => {
     if (!user || !user.isActive) {
       return res.status(401).json({ error: "Invalid credentials" });
     }
+
+    // Check active lockout
+    if (user.lockedUntil && user.lockedUntil > new Date()) {
+      const remaining = Math.ceil((user.lockedUntil.getTime() - Date.now()) / 60000);
+      return res.status(429).json({
+        error: `Account is locked. Try again in ${remaining} minute${remaining !== 1 ? "s" : ""}.`,
+        lockedUntil: user.lockedUntil,
+        locked: true,
+      });
+    }
+
     const valid = await bcrypt.compare(password, user.passwordHash);
-    if (!valid) return res.status(401).json({ error: "Invalid credentials" });
+    if (!valid) {
+      const newAttempts = (user.loginAttempts ?? 0) + 1;
+      const shouldLock = newAttempts >= LOCKOUT_THRESHOLD;
+      const lockedUntil = shouldLock ? new Date(Date.now() + LOCKOUT_MINUTES * 60 * 1000) : null;
+      await prisma.user.update({
+        where: { id: user.id },
+        data: { loginAttempts: newAttempts, ...(shouldLock ? { lockedUntil } : {}) },
+      });
+      if (shouldLock) {
+        await logAudit({
+          facilityId: user.facilityId,
+          userId: user.id,
+          action: "ACCOUNT_LOCKED",
+          entityType: "User",
+          entityId: user.id,
+          details: { email: user.email, reason: "Too many failed login attempts", lockedUntil },
+        });
+        return res.status(429).json({
+          error: `Too many failed attempts. Your account has been locked for ${LOCKOUT_MINUTES} minutes.`,
+          lockedUntil,
+          locked: true,
+        });
+      }
+      // Still have attempts left — show countdown warning
+      const attemptsLeft = LOCKOUT_THRESHOLD - newAttempts;
+      return res.status(401).json({
+        error: `Incorrect password. ${attemptsLeft} attempt${attemptsLeft !== 1 ? "s" : ""} left before your account is locked.`,
+        attemptsLeft,
+        warning: true,
+      });
+    }
+
+    // Successful login — reset lockout state
+    if (user.loginAttempts > 0 || user.lockedUntil) {
+      await prisma.user.update({ where: { id: user.id }, data: { loginAttempts: 0, lockedUntil: null } });
+    }
+
+    // Server-side password expiry: if the window has elapsed, force a change.
+    let mustChangePassword = user.mustChangePassword;
+    if (!mustChangePassword && isPasswordExpired(user)) {
+      mustChangePassword = true;
+      await prisma.user.update({ where: { id: user.id }, data: { mustChangePassword: true } });
+    }
 
     const signOptions: SignOptions = { expiresIn: config.jwtExpiresIn as SignOptions["expiresIn"] };
     const token = jwt.sign(
@@ -34,11 +104,14 @@ router.post("/login", async (req, res, next) => {
         userId: user.id,
         email: user.email,
         role: user.role,
+        roleId: user.roleId,
         facilityId: user.facilityId,
       },
       config.jwtSecret,
       signOptions
     );
+
+    const permissions = await getEffectiveMatrix(user);
 
     res.json({
       token,
@@ -48,8 +121,11 @@ router.post("/login", async (req, res, next) => {
         firstName: user.firstName,
         lastName: user.lastName,
         role: user.role,
+        roleId: user.roleId,
         facilityId: user.facilityId,
         facility: user.facility,
+        mustChangePassword,
+        permissions,
       },
     });
   } catch (e) {
@@ -64,6 +140,38 @@ router.get("/me", authenticate, async (req, res, next) => {
       include: { facility: true },
     });
     if (!user) return res.status(404).json({ error: "User not found" });
+    const permissions = await getEffectiveMatrix(user);
+    res.json({
+      id: user.id,
+      email: user.email,
+      firstName: user.firstName,
+      lastName: user.lastName,
+      role: user.role,
+      roleId: user.roleId,
+      facilityId: user.facilityId,
+      facility: user.facility,
+      mustChangePassword: user.mustChangePassword,
+      permissions,
+    });
+  } catch (e) {
+    next(e);
+  }
+});
+
+const profileSchema = z.object({
+  firstName: z.string().trim().min(1),
+  lastName: z.string().trim().min(1),
+  phone: z.string().trim().optional().or(z.literal("")),
+});
+
+router.patch("/profile", authenticate, async (req, res, next) => {
+  try {
+    const parsed = profileSchema.parse(req.body);
+    const user = await prisma.user.update({
+      where: { id: req.user!.userId },
+      data: { firstName: parsed.firstName, lastName: parsed.lastName, phone: parsed.phone || null },
+      include: { facility: true },
+    });
     res.json({
       id: user.id,
       email: user.email,
@@ -72,7 +180,43 @@ router.get("/me", authenticate, async (req, res, next) => {
       role: user.role,
       facilityId: user.facilityId,
       facility: user.facility,
+      mustChangePassword: user.mustChangePassword,
     });
+  } catch (e) {
+    next(e);
+  }
+});
+
+const changePasswordSchema = z.object({
+  currentPassword: z.string().min(1),
+  newPassword: z.string().min(6),
+});
+
+router.post("/change-password", authenticate, async (req, res, next) => {
+  try {
+    const { currentPassword, newPassword } = changePasswordSchema.parse(req.body);
+    const user = await prisma.user.findUnique({ where: { id: req.user!.userId } });
+    if (!user) return res.status(404).json({ error: "User not found" });
+
+    const valid = await bcrypt.compare(currentPassword, user.passwordHash);
+    if (!valid) return res.status(400).json({ error: "Current password is incorrect" });
+
+    const passwordHash = await bcrypt.hash(newPassword, 10);
+    await prisma.user.update({
+      where: { id: user.id },
+      data: { passwordHash, mustChangePassword: false, passwordChangedAt: new Date() },
+    });
+
+    await logAudit({
+      facilityId: user.facilityId,
+      userId: user.id,
+      action: "PASSWORD_CHANGE",
+      entityType: "User",
+      entityId: user.id,
+      details: { name: `${user.firstName} ${user.lastName}`, email: user.email, self: true },
+    });
+
+    res.json({ message: "Password changed successfully" });
   } catch (e) {
     next(e);
   }
@@ -89,8 +233,11 @@ router.post("/switch-facility", authenticate, async (req, res, next) => {
     const facility = await prisma.facility.findUnique({ where: { id: facilityId } });
     if (!facility) return res.status(404).json({ error: "Facility not found" });
 
+    // Re-issue a fresh token. req.user is the decoded JWT and still carries iat/exp,
+    // so we rebuild a clean payload — passing exp alongside expiresIn throws.
+    const { userId, email, role, roleId } = req.user!;
     const signOptions: SignOptions = { expiresIn: config.jwtExpiresIn as SignOptions["expiresIn"] };
-    const token = jwt.sign({ ...req.user, facilityId }, config.jwtSecret, signOptions);
+    const token = jwt.sign({ userId, email, role, roleId, facilityId }, config.jwtSecret, signOptions);
     res.json({ token, facility });
   } catch (e) {
     next(e);
@@ -114,21 +261,22 @@ router.post("/forgot-password", async (req, res, next) => {
       await prisma.passwordResetToken.create({
         data: { userId: user.id, token, expiresAt },
       });
-      res.json({
-        message: "If an account exists, a reset link has been generated.",
-        resetToken: token,
-        resetUrl: `/reset-password?token=${token}`,
-        expiresAt,
-        simulatedEmail: {
-          to: email,
-          subject: "SCM Solution — Password Reset",
-          body: `Use this link to reset your password: /reset-password?token=${token} (expires in 1 hour)`,
-        },
-      });
-      return;
+      // SECURITY: the reset link must NOT be returned in the API response.
+      // It is delivered out-of-band via email.
+      const resetUrl = `${config.appBaseUrl}/reset-password?token=${token}`;
+      const emailResult = await sendEmail(
+        buildForgotPasswordEmail(email, resetUrl, expiresAt)
+      );
+      // When email is not configured (or delivery failed), preserve dev/ops
+      // testability by logging the link to the server console.
+      if (!emailResult.sent) {
+        // eslint-disable-next-line no-console
+        console.info(`[password-reset] ${email} → ${resetUrl} (expires ${expiresAt.toISOString()})`);
+      }
     }
 
-    res.json({ message: "If an account exists, a reset link has been generated." });
+    // Always the same response regardless of whether the account exists.
+    res.json({ message: "If an account exists, a password reset link has been sent." });
   } catch (e) {
     next(e);
   }
@@ -148,7 +296,10 @@ router.post("/reset-password", async (req, res, next) => {
 
     const passwordHash = await bcrypt.hash(password, 10);
     await prisma.$transaction([
-      prisma.user.update({ where: { id: resetRecord.userId }, data: { passwordHash } }),
+      prisma.user.update({
+        where: { id: resetRecord.userId },
+        data: { passwordHash, mustChangePassword: false, passwordChangedAt: new Date() },
+      }),
       prisma.passwordResetToken.update({
         where: { id: resetRecord.id },
         data: { usedAt: new Date() },

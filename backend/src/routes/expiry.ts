@@ -2,7 +2,8 @@ import { Router } from "express";
 import { z } from "zod";
 import { StockTransactionType } from "@prisma/client";
 import { prisma } from "../lib/prisma";
-import { authenticate, getFacilityId, requireFacility, requireRoles } from "../middleware/auth";
+import { authenticate, getFacilityId, requireFacility } from "../middleware/auth";
+import { requirePermission } from "../middleware/permission";
 import { daysUntilExpiry } from "../utils/stock";
 import { config } from "../utils/config";
 import { logAudit } from "../services/audit";
@@ -10,7 +11,11 @@ import { logAudit } from "../services/audit";
 const router = Router();
 router.use(authenticate, requireFacility);
 
-router.get("/alerts", async (req, res, next) => {
+const expiryView   = requirePermission("expiry", "view");
+const expiryEdit   = requirePermission("expiry", "edit");
+const expiryApprove = requirePermission("expiry", "approve");
+
+router.get("/alerts", expiryView, async (req, res, next) => {
   try {
     const facilityId = getFacilityId(req, req.query.facilityId as string);
     const categoryId = req.query.categoryId as string | undefined;
@@ -120,7 +125,7 @@ router.get("/alerts", async (req, res, next) => {
   }
 });
 
-router.get("/redistribution", requireRoles("PROVINCIAL_MANAGER", "SUPER_ADMIN"), async (_req, res, next) => {
+router.get("/redistribution", expiryApprove, async (_req, res, next) => {
   try {
     const batches = await prisma.stockBatch.findMany({
       where: { quantity: { gt: 0 } },
@@ -152,12 +157,15 @@ const expiredSchema = z.object({
   expiryDate: z.string(),
   quantity: z.number().positive(),
   disposalMethod: z.string(),
+  disposalWitness: z.string().optional(),
+  facilityId: z.string().optional(),
 });
 
-router.post("/record-expired", async (req, res, next) => {
+router.post("/record-expired", expiryEdit, async (req, res, next) => {
   try {
     const data = expiredSchema.parse(req.body);
-    const facilityId = getFacilityId(req)!;
+    const facilityId = data.facilityId ?? getFacilityId(req);
+    if (!facilityId) return res.status(400).json({ error: "Facility is required" });
     const userId = req.user!.userId;
 
     const batch = await prisma.stockBatch.findUnique({
@@ -186,6 +194,7 @@ router.post("/record-expired", async (req, res, next) => {
         expiryDate: new Date(data.expiryDate),
         quantity: data.quantity,
         disposalMethod: data.disposalMethod,
+        disposalWitness: data.disposalWitness ?? null,
         processedById: userId,
       },
     });
@@ -197,13 +206,41 @@ router.post("/record-expired", async (req, res, next) => {
         batchId: batch?.id,
         type: StockTransactionType.EXPIRED,
         quantity: -data.quantity,
-        reason: data.disposalMethod,
+        reason: `Disposal: ${data.disposalMethod}`,
         performedById: userId,
       },
     });
 
-    await logAudit({ facilityId, userId, action: "EXPIRED_MEDICINE", entityType: "ExpiredMedicine", entityId: record.id });
+    await logAudit({
+      facilityId,
+      userId,
+      action: "DISPOSAL",
+      entityType: "ExpiredMedicine",
+      entityId: record.id,
+      details: { medicineId: data.medicineId, batchNumber: data.batchNumber, quantity: data.quantity, disposalMethod: data.disposalMethod },
+    });
     res.status(201).json(record);
+  } catch (e) {
+    next(e);
+  }
+});
+
+router.get("/disposal-history", expiryView, async (req, res, next) => {
+  try {
+    const facilityId = getFacilityId(req, req.query.facilityId as string);
+    const records = await prisma.expiredMedicineRecord.findMany({
+      where: facilityId ? { facilityId } : {},
+      orderBy: { createdAt: "desc" },
+      take: 100,
+    });
+    // Augment with medicine names
+    const medicineIds = [...new Set(records.map((r) => r.medicineId))];
+    const medicines = await prisma.medicine.findMany({
+      where: { id: { in: medicineIds } },
+      select: { id: true, medicineName: true },
+    });
+    const medMap = Object.fromEntries(medicines.map((m) => [m.id, m.medicineName]));
+    res.json(records.map((r) => ({ ...r, medicineName: medMap[r.medicineId] ?? "Unknown" })));
   } catch (e) {
     next(e);
   }

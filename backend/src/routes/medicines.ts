@@ -1,8 +1,9 @@
 import { Router } from "express";
 import { z } from "zod";
-import { StockTransactionType, UserRole } from "@prisma/client";
+import { StockTransactionType } from "@prisma/client";
 import { prisma } from "../lib/prisma";
-import { authenticate, getFacilityId, requireRoles } from "../middleware/auth";
+import { authenticate, getFacilityId } from "../middleware/auth";
+import { requirePermission } from "../middleware/permission";
 import { logAudit } from "../services/audit";
 import { logChangeHistory } from "../services/changeHistory";
 import {
@@ -18,18 +19,14 @@ import { config } from "../utils/config";
 const router = Router();
 router.use(authenticate);
 
-const medicineManagerRoles = requireRoles(
-  UserRole.NURSE_ADMIN,
-  UserRole.PROVINCIAL_MANAGER,
-  UserRole.SUPER_ADMIN
-);
+const medicineView   = requirePermission("medicines", "view");
+const medicineCreate = requirePermission("medicines", "create");
+const medicineEdit   = requirePermission("medicines", "edit");
+const medicineDelete = requirePermission("medicines", "delete");
 
-const namePattern = /^[A-Za-z0-9][A-Za-z0-9 -]*$/;
+const namePattern = /^(?=.*[A-Za-z])[A-Za-z0-9][A-Za-z0-9 \-/]*$/;
+const dosageFormOtherPattern = /^(?=.*[A-Za-z])[A-Za-z0-9][A-Za-z0-9 -]*$/;
 const normalizeText = (value?: string | null) => value?.trim() || undefined;
-const optionalWholeNumber = z.preprocess(
-  (value) => (value === "" || value === null || value === undefined ? undefined : Number(value)),
-  z.number().int().min(0).optional()
-);
 const normalizeStrengths = (strengths?: string[]) => {
   const seen = new Set<string>();
   return (strengths ?? [])
@@ -49,19 +46,32 @@ const thresholdSchema = z.preprocess(
 );
 
 const medicineSchema = z.object({
-  medicineName: z.string().trim().min(1).regex(namePattern, "Medicine Name contains invalid characters"),
+  medicineName: z.string().trim().min(1).regex(namePattern, "Medicine Name must be alphanumeric"),
   genericName: z
     .string()
     .trim()
-    .regex(namePattern, "Generic Name contains invalid characters")
+    .regex(namePattern, "Generic Name must be alphanumeric")
     .optional()
     .or(z.literal("")),
-  dosageForm: z.string().trim().optional().or(z.literal("")),
+  dosageForm: z.string().trim().min(1, "Dosage Form is required"),
+  dosageFormOther: z
+    .string()
+    .trim()
+    .regex(dosageFormOtherPattern, "Dosage form must be alphanumeric")
+    .optional()
+    .nullable()
+    .or(z.literal("")),
   strength: z.string().trim().optional().or(z.literal("")),
   strengths: z.array(z.string()).optional(),
   reorderThreshold: thresholdSchema,
-  leadTimeDays: optionalWholeNumber,
-  minimumOrderLevel: optionalWholeNumber,
+  leadTimeDays: z.preprocess(
+    (value) => (value === "" || value === null || value === undefined ? undefined : Number(value)),
+    z.number().int().min(1, "Lead Days must be greater than 0")
+  ),
+  minimumOrderLevel: z.preprocess(
+    (value) => (value === "" || value === null || value === undefined ? undefined : Number(value)),
+    z.number().int().min(1, "Minimum Order Level must be greater than 0")
+  ),
   categoryId: z.string().min(1),
 });
 
@@ -100,7 +110,7 @@ function medicineInclude() {
   };
 }
 
-router.get("/deleted", medicineManagerRoles, async (_req, res, next) => {
+router.get("/deleted", medicineDelete, async (_req, res, next) => {
   try {
     const medicines = await prisma.medicine.findMany({
       where: { OR: [{ isActive: false }, { deletedAt: { not: null } }] },
@@ -127,6 +137,7 @@ router.get("/suggestions", async (req, res, next) => {
         OR: [
           { medicineName: { contains: q, mode: "insensitive" } },
           { genericName: { contains: q, mode: "insensitive" } },
+          { dosageForm: { contains: q, mode: "insensitive" } },
           { strength: { contains: q, mode: "insensitive" } },
           { strengths: { some: { strength: { contains: q, mode: "insensitive" }, isActive: true } } },
           { category: { name: { contains: q, mode: "insensitive" } } },
@@ -180,6 +191,10 @@ router.get("/suggestions", async (req, res, next) => {
       } else {
         suggestions.push({ ...base, label: medicine.medicineName, strength: null, score: scoreSuggestion(medicine.medicineName, medicine) });
         for (const s of strengths) {
+          // Skip if the medicine name already contains this strength (avoids "Amoxicillin 250mg 250mg")
+          const strengthLower = s.strength.toLowerCase();
+          const nameLower = medicine.medicineName.toLowerCase();
+          if (nameLower.endsWith(strengthLower) || nameLower.includes(` ${strengthLower}`)) continue;
           const label = `${medicine.medicineName} ${s.strength}`;
           suggestions.push({ ...base, label, strength: s.strength, score: scoreSuggestion(label, medicine, s.strength) });
         }
@@ -198,7 +213,7 @@ router.get("/suggestions", async (req, res, next) => {
   }
 });
 
-router.get("/recent-changes", medicineManagerRoles, async (_req, res, next) => {
+router.get("/recent-changes", medicineView, async (_req, res, next) => {
   try {
     const logs = await prisma.auditLog.findMany({
       where: { entityType: { in: ["Medicine", "MedicineCategory"] } },
@@ -235,7 +250,7 @@ router.get("/recent-changes", medicineManagerRoles, async (_req, res, next) => {
   }
 });
 
-router.get("/", async (req, res, next) => {
+router.get("/", medicineView, async (req, res, next) => {
   try {
     const q = (req.query.q as string) || "";
     const categoryId = req.query.categoryId as string | undefined;
@@ -249,6 +264,7 @@ router.get("/", async (req, res, next) => {
           ? [
               { medicineName: { contains: q, mode: "insensitive" } },
               { genericName: { contains: q, mode: "insensitive" } },
+              { dosageForm: { contains: q, mode: "insensitive" } },
               { strength: { contains: q, mode: "insensitive" } },
               { strengths: { some: { strength: { contains: q, mode: "insensitive" }, isActive: true } } },
               { category: { name: { contains: q, mode: "insensitive" } } },
@@ -256,7 +272,7 @@ router.get("/", async (req, res, next) => {
           : undefined,
       },
       include: medicineInclude(),
-      orderBy: [{ category: { sortOrder: "asc" } }, { medicineName: "asc" }],
+      orderBy: [{ category: { name: "asc" } }, { medicineName: "asc" }],
     });
     res.json(medicines);
   } catch (e) {
@@ -264,13 +280,15 @@ router.get("/", async (req, res, next) => {
   }
 });
 
-router.post("/", medicineManagerRoles, async (req, res, next) => {
+router.post("/", medicineCreate, async (req, res, next) => {
   try {
     const parsed = medicineSchema.parse(req.body);
+    const resolvedDosageForm = normalizeText(parsed.dosageForm);
     const data = {
       medicineName: parsed.medicineName,
       genericName: normalizeText(parsed.genericName),
-      dosageForm: normalizeText(parsed.dosageForm),
+      dosageForm: resolvedDosageForm,
+      dosageFormOther: resolvedDosageForm === "Other" ? (normalizeText(parsed.dosageFormOther ?? undefined) ?? null) : null,
       reorderThreshold: parsed.reorderThreshold,
       leadTimeDays: parsed.leadTimeDays,
       minimumOrderLevel: parsed.minimumOrderLevel,
@@ -306,6 +324,7 @@ router.post("/", medicineManagerRoles, async (req, res, next) => {
         medicineName: medicine.medicineName,
         genericName: medicine.genericName,
         dosageForm: medicine.dosageForm,
+        dosageFormOther: medicine.dosageFormOther,
         reorderThreshold: medicine.reorderThreshold,
         leadTimeDays: medicine.leadTimeDays,
         minimumOrderLevel: medicine.minimumOrderLevel,
@@ -321,16 +340,20 @@ router.post("/", medicineManagerRoles, async (req, res, next) => {
   }
 });
 
-router.patch("/:id", medicineManagerRoles, async (req, res, next) => {
+router.patch("/:id", medicineEdit, async (req, res, next) => {
   try {
     const parsed = medicineSchema.partial().parse(req.body);
     const existing = await prisma.medicine.findFirst({ where: { id: req.params.id, deletedAt: null } });
     if (!existing) return res.status(404).json({ error: "Medicine not found" });
 
+    const resolvedDosageForm = parsed.dosageForm !== undefined ? normalizeText(parsed.dosageForm) : existing.dosageForm;
     const nextMedicine = {
       medicineName: parsed.medicineName ?? existing.medicineName,
       genericName: parsed.genericName !== undefined ? normalizeText(parsed.genericName) : existing.genericName,
-      dosageForm: parsed.dosageForm !== undefined ? normalizeText(parsed.dosageForm) : existing.dosageForm,
+      dosageForm: resolvedDosageForm,
+      dosageFormOther: parsed.dosageFormOther !== undefined
+        ? (resolvedDosageForm === "Other" ? (normalizeText(parsed.dosageFormOther ?? undefined) ?? null) : null)
+        : existing.dosageFormOther,
       categoryId: parsed.categoryId ?? existing.categoryId,
     };
     if (!nextMedicine.categoryId) return res.status(400).json({ error: "Please select a category" });
@@ -350,6 +373,7 @@ router.patch("/:id", medicineManagerRoles, async (req, res, next) => {
       medicineName: existing.medicineName,
       genericName: existing.genericName,
       dosageForm: existing.dosageForm,
+      dosageFormOther: existing.dosageFormOther,
       reorderThreshold: existing.reorderThreshold,
       leadTimeDays: existing.leadTimeDays,
       minimumOrderLevel: existing.minimumOrderLevel,
@@ -366,6 +390,7 @@ router.patch("/:id", medicineManagerRoles, async (req, res, next) => {
           medicineName: nextMedicine.medicineName,
           genericName: nextMedicine.genericName,
           dosageForm: nextMedicine.dosageForm,
+          dosageFormOther: nextMedicine.dosageFormOther,
           reorderThreshold: parsed.reorderThreshold ?? existing.reorderThreshold,
           leadTimeDays: parsed.leadTimeDays ?? existing.leadTimeDays,
           minimumOrderLevel: parsed.minimumOrderLevel ?? existing.minimumOrderLevel,
@@ -386,6 +411,7 @@ router.patch("/:id", medicineManagerRoles, async (req, res, next) => {
       medicineName: medicine.medicineName,
       genericName: medicine.genericName,
       dosageForm: medicine.dosageForm,
+      dosageFormOther: medicine.dosageFormOther,
       reorderThreshold: medicine.reorderThreshold,
       leadTimeDays: medicine.leadTimeDays,
       minimumOrderLevel: medicine.minimumOrderLevel,
@@ -414,7 +440,7 @@ router.patch("/:id", medicineManagerRoles, async (req, res, next) => {
   }
 });
 
-router.delete("/:id", medicineManagerRoles, async (req, res, next) => {
+router.delete("/:id", medicineDelete, async (req, res, next) => {
   try {
     const medicine = await prisma.medicine.findFirst({ where: { id: req.params.id, deletedAt: null } });
     if (!medicine) return res.status(404).json({ error: "Medicine not found" });
@@ -443,7 +469,7 @@ router.delete("/:id", medicineManagerRoles, async (req, res, next) => {
   }
 });
 
-router.post("/:id/restore", medicineManagerRoles, async (req, res, next) => {
+router.post("/:id/restore", medicineDelete, async (req, res, next) => {
   try {
     const medicine = await prisma.medicine.findUnique({ where: { id: req.params.id } });
     if (!medicine) return res.status(404).json({ error: "Medicine not found" });
@@ -474,7 +500,7 @@ router.post("/:id/restore", medicineManagerRoles, async (req, res, next) => {
   }
 });
 
-router.get("/:id/detail", async (req, res, next) => {
+router.get("/:id/detail", medicineView, async (req, res, next) => {
   try {
     const medicineId = req.params.id;
     const facilityId = getFacilityId(req, req.query.facilityId as string);
@@ -639,7 +665,7 @@ router.get("/:id/detail", async (req, res, next) => {
   }
 });
 
-router.patch("/:id/category", medicineManagerRoles, async (req, res, next) => {
+router.patch("/:id/category", medicineEdit, async (req, res, next) => {
   try {
     const { categoryId } = z.object({ categoryId: z.string() }).parse(req.body);
     const medicine = await prisma.medicine.findUnique({ where: { id: req.params.id } });
@@ -660,7 +686,7 @@ router.patch("/:id/category", medicineManagerRoles, async (req, res, next) => {
 });
 
 // Change History & Recovery Endpoints
-router.get("/:id/change-history", medicineManagerRoles, async (req, res, next) => {
+router.get("/:id/change-history", medicineView, async (req, res, next) => {
   try {
     const medicineId = req.params.id;
     const changes = await prisma.auditLog.findMany({
@@ -712,7 +738,7 @@ router.get("/:id/change-history", medicineManagerRoles, async (req, res, next) =
   }
 });
 
-router.get("/:id/previous-version/:changeId", medicineManagerRoles, async (req, res, next) => {
+router.get("/:id/previous-version/:changeId", medicineView, async (req, res, next) => {
   try {
     const { id: medicineId, changeId } = req.params;
 

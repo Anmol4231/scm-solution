@@ -2,11 +2,15 @@ import { Router } from "express";
 import { z } from "zod";
 import { prisma } from "../lib/prisma";
 import { authenticate, getFacilityId, requireFacility } from "../middleware/auth";
+import { requirePermission } from "../middleware/permission";
 import { generatePatientId } from "../utils/ids";
 import { logAudit } from "../services/audit";
 
 const router = Router();
 router.use(authenticate, requireFacility);
+
+const patientView   = requirePermission("patients", "view");
+const patientCreate = requirePermission("patients", "create");
 
 const createSchema = z.object({
   firstName: z.string().min(1),
@@ -18,13 +22,13 @@ const createSchema = z.object({
   facilityId: z.string().optional(),
 });
 
-router.get("/", async (req, res, next) => {
+router.get("/", patientView, async (req, res, next) => {
   try {
     const facilityId = getFacilityId(req, req.query.facilityId as string);
     const q = (req.query.q as string) || "";
     const patients = await prisma.patient.findMany({
       where: {
-        facilityId: facilityId!,
+        ...(facilityId ? { facilityId } : {}),
         OR: q
           ? [
               { patientId: { contains: q, mode: "insensitive" } },
@@ -43,7 +47,7 @@ router.get("/", async (req, res, next) => {
   }
 });
 
-router.post("/", async (req, res, next) => {
+router.post("/", patientCreate, async (req, res, next) => {
   try {
     const data = createSchema.parse(req.body);
     const facilityId = data.facilityId || getFacilityId(req)!;
@@ -68,7 +72,7 @@ router.post("/", async (req, res, next) => {
   }
 });
 
-router.get("/:id", async (req, res, next) => {
+router.get("/:id", patientView, async (req, res, next) => {
   try {
     const patient = await prisma.patient.findUnique({
       where: { id: req.params.id },
@@ -91,7 +95,7 @@ router.get("/:id", async (req, res, next) => {
   }
 });
 
-router.get("/:id/history", async (req, res, next) => {
+router.get("/:id/history", patientView, async (req, res, next) => {
   try {
     const [prescriptions, dispensing, returns] = await Promise.all([
       prisma.prescription.findMany({

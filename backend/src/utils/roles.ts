@@ -13,3 +13,14 @@ export function isCrossFacilityRole(role: UserRole): boolean {
 export function isAdminDashboardRole(role: UserRole): boolean {
   return isCrossFacilityRole(role);
 }
+
+/** Roles allowed to manage master data + users (display tier: "Admin"). */
+export const MASTER_DATA_ADMIN_ROLES: UserRole[] = [
+  UserRole.NURSE_ADMIN,
+  UserRole.PROVINCIAL_MANAGER,
+  UserRole.SUPER_ADMIN,
+];
+
+export function isMasterDataAdminRole(role: UserRole): boolean {
+  return MASTER_DATA_ADMIN_ROLES.includes(role);
+}

@@ -3,14 +3,19 @@
 import React, { createContext, useContext, useEffect, useState } from "react";
 import { api, getToken, setToken, clearAuth } from "./api";
 
+import type { PermissionMatrix } from "./permissions";
+
 export interface User {
   id: string;
   email: string;
   firstName: string;
   lastName: string;
   role: string;
+  roleId?: string | null;
   facilityId?: string | null;
   facility?: { id: string; name: string; code: string } | null;
+  mustChangePassword?: boolean;
+  permissions?: PermissionMatrix;
 }
 
 interface AuthContextType {
@@ -19,6 +24,7 @@ interface AuthContextType {
   login: (email: string, password: string) => Promise<void>;
   logout: () => void;
   switchFacility: (facilityId: string) => Promise<void>;
+  refreshUser: () => Promise<void>;
 }
 
 const AuthContext = createContext<AuthContextType | null>(null);
@@ -53,10 +59,23 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     localStorage.setItem("scm_user", JSON.stringify(res.user));
   };
 
-  const logout = () => {
+  const logout = async () => {
+    // Clear queued offline writes + cached reads so the next login starts clean.
+    try {
+      const { clearOfflineState } = await import("./offline/sync-engine");
+      await clearOfflineState();
+    } catch {
+      /* proceed with logout regardless */
+    }
     clearAuth();
     setUser(null);
     window.location.href = "/login";
+  };
+
+  const refreshUser = async () => {
+    const u = await api<User>("/auth/me");
+    setUser(u);
+    localStorage.setItem("scm_user", JSON.stringify(u));
   };
 
   const switchFacility = async (facilityId: string) => {
@@ -71,7 +90,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   };
 
   return (
-    <AuthContext.Provider value={{ user, loading, login, logout, switchFacility }}>
+    <AuthContext.Provider value={{ user, loading, login, logout, switchFacility, refreshUser }}>
       {children}
     </AuthContext.Provider>
   );

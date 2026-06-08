@@ -47,6 +47,12 @@ export async function getCached<T>(key: string): Promise<T | null> {
   }
 }
 
+/** Clear all offline state (cached reads + queued writes) — called on logout so the next user starts clean. */
+export async function clearOfflineState() {
+  if (!offlineDb) return;
+  await Promise.all([offlineDb.cache.clear(), offlineDb.syncQueue.clear()]);
+}
+
 export async function enqueueSync(item: Omit<SyncQueueRecord, "id" | "status" | "retries" | "createdAt">) {
   if (!offlineDb) throw new Error("Offline database unavailable");
   await offlineDb.syncQueue.add({

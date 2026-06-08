@@ -52,10 +52,10 @@ export async function getBatchSupplyTotals(
 
 export async function getMedicineBalance(
   medicineId: string,
-  facilityId: string
+  facilityId: string | null
 ): Promise<number> {
   const batches = await prisma.stockBatch.findMany({
-    where: { medicineId, facilityId, quantity: { gt: 0 } },
+    where: { medicineId, ...(facilityId ? { facilityId } : {}), quantity: { gt: 0 } },
   });
   return batches.reduce((sum, b) => sum + b.quantity, 0);
 }

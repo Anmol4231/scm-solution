@@ -12,8 +12,11 @@ import {
   VendorOrderStatus,
 } from "@prisma/client";
 import bcrypt from "bcryptjs";
+import { fullAccessMatrix, pharmacistMatrix } from "../src/utils/permissionMatrix";
 
 const prisma = new PrismaClient();
+
+const ADMIN_TIER: UserRole[] = [UserRole.NURSE_ADMIN, UserRole.PROVINCIAL_MANAGER, UserRole.SUPER_ADMIN];
 
 function addDays(days: number) {
   const d = new Date();
@@ -51,6 +54,17 @@ async function clearDemoData() {
 }
 
 async function main() {
+  // SAFETY: this seed is destructive (clearDemoData wipes transactional tables).
+  // It must never run against a production database. Use `prisma/backfill.ts`
+  // (npm run db:backfill) for non-destructive role/password backfill in production.
+  if (process.env.NODE_ENV === "production" && process.env.ALLOW_DESTRUCTIVE_SEED !== "true") {
+    console.error(
+      "Refusing to run the destructive demo seed with NODE_ENV=production. " +
+        "Run `npm run db:backfill` instead, or set ALLOW_DESTRUCTIVE_SEED=true to override."
+    );
+    process.exit(1);
+  }
+
   console.log("Resetting demo data...");
   await clearDemoData();
 
@@ -83,29 +97,63 @@ async function main() {
 
   const [hc1, hc2, hc3, hc4, hc5, hc6] = facilities;
   const passwordHash = await bcrypt.hash("password123", 10);
+  const now = new Date();
+
+  // --- Role Master: seed the two protected system roles ---
+  const adminRole = await prisma.role.upsert({
+    where: { code: "ADMIN" },
+    update: { permissions: fullAccessMatrix() as object, scopeAllFacilities: true, isActive: true, isSystem: true },
+    create: {
+      name: "Administrator",
+      code: "ADMIN",
+      description: "Full system access across all facilities.",
+      isSystem: true,
+      isActive: true,
+      scopeAllFacilities: true,
+      permissions: fullAccessMatrix() as object,
+    },
+  });
+  const pharmacistRole = await prisma.role.upsert({
+    where: { code: "PHARMACIST" },
+    update: { permissions: pharmacistMatrix() as object, isActive: true, isSystem: true },
+    create: {
+      name: "Pharmacist",
+      code: "PHARMACIST",
+      description: "Facility-level operational access (stock, dispensing, patients).",
+      isSystem: true,
+      isActive: true,
+      scopeAllFacilities: false,
+      permissions: pharmacistMatrix() as object,
+    },
+  });
+  const roleIdFor = (role: UserRole) => (ADMIN_TIER.includes(role) ? adminRole.id : pharmacistRole.id);
 
   const manager = await prisma.user.upsert({
     where: { email: "manager@scm.local" },
-    update: { passwordHash },
+    update: { passwordHash, roleId: adminRole.id, passwordChangedAt: now },
     create: {
       email: "manager@scm.local",
       passwordHash,
       firstName: "Provincial",
       lastName: "Manager",
       role: UserRole.PROVINCIAL_MANAGER,
+      roleId: adminRole.id,
+      passwordChangedAt: now,
       phone: "+263771000000",
     },
   });
 
   await prisma.user.upsert({
     where: { email: "superadmin@scm.local" },
-    update: { passwordHash, role: UserRole.SUPER_ADMIN },
+    update: { passwordHash, role: UserRole.SUPER_ADMIN, roleId: adminRole.id, passwordChangedAt: now },
     create: {
       email: "superadmin@scm.local",
       passwordHash,
       firstName: "Super",
       lastName: "Admin",
       role: UserRole.SUPER_ADMIN,
+      roleId: adminRole.id,
+      passwordChangedAt: now,
       phone: "+263771000001",
     },
   });
@@ -127,13 +175,15 @@ async function main() {
   for (const u of userDefs) {
     const user = await prisma.user.upsert({
       where: { email: u.email },
-      update: { passwordHash, facilityId: u.facility.id },
+      update: { passwordHash, facilityId: u.facility.id, roleId: roleIdFor(u.role), passwordChangedAt: now },
       create: {
         email: u.email,
         passwordHash,
         firstName: u.firstName,
         lastName: u.lastName,
         role: u.role,
+        roleId: roleIdFor(u.role),
+        passwordChangedAt: now,
         facilityId: u.facility.id,
         phone: u.facility.phone,
       },
@@ -150,25 +200,25 @@ async function main() {
   const pharmacist6 = users["pharmacist@hc006.local"];
 
   const categoryDefs = [
-    { name: "Antibiotics", description: "Antibacterial medicines", sortOrder: 1 },
-    { name: "Analgesics", description: "Pain relief medicines", sortOrder: 2 },
-    { name: "Antimalarials", description: "Malaria treatment and prevention", sortOrder: 3 },
-    { name: "Vaccines", description: "Immunization commodities", sortOrder: 4 },
-    { name: "Emergency Medicines", description: "Critical care and emergency stock", sortOrder: 5 },
-    { name: "Pediatric Medicines", description: "Child health formulations", sortOrder: 6 },
-    { name: "Chronic Disease Medicines", description: "NCD — diabetes, hypertension, etc.", sortOrder: 7 },
-    { name: "IV Fluids", description: "Intravenous fluids and solutions", sortOrder: 8 },
-    { name: "Surgical Supplies", description: "Surgical and procedural supplies", sortOrder: 9 },
-    { name: "Controlled Medicines", description: "Regulated and controlled substances", sortOrder: 10 },
-    { name: "GI & Rehydration", description: "ORS, diarrhoea treatment", sortOrder: 11 },
-    { name: "Respiratory", description: "Asthma, cough, respiratory", sortOrder: 12 },
+    { name: "Antibiotics", description: "Antibacterial medicines" },
+    { name: "Analgesics", description: "Pain relief medicines" },
+    { name: "Antimalarials", description: "Malaria treatment and prevention" },
+    { name: "Vaccines", description: "Immunization commodities" },
+    { name: "Emergency Medicines", description: "Critical care and emergency stock" },
+    { name: "Pediatric Medicines", description: "Child health formulations" },
+    { name: "Chronic Disease Medicines", description: "NCD — diabetes, hypertension, etc." },
+    { name: "IV Fluids", description: "Intravenous fluids and solutions" },
+    { name: "Surgical Supplies", description: "Surgical and procedural supplies" },
+    { name: "Controlled Medicines", description: "Regulated and controlled substances" },
+    { name: "GI & Rehydration", description: "ORS, diarrhoea treatment" },
+    { name: "Respiratory", description: "Asthma, cough, respiratory" },
   ];
 
   const categories: Record<string, { id: string }> = {};
   for (const c of categoryDefs) {
     const cat = await prisma.medicineCategory.upsert({
       where: { name: c.name },
-      update: { description: c.description, sortOrder: c.sortOrder },
+      update: { description: c.description },
       create: c,
     });
     categories[c.name] = cat;

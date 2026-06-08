@@ -3,6 +3,7 @@ import { z } from "zod";
 import { StockTransactionType } from "@prisma/client";
 import { prisma } from "../lib/prisma";
 import { authenticate, getFacilityId, requireFacility } from "../middleware/auth";
+import { requirePermission } from "../middleware/permission";
 import { getMedicineBalance, getBatchSupplyTotals, periodStart, daysUntilExpiry } from "../utils/stock";
 import { config } from "../utils/config";
 import { logAudit } from "../services/audit";
@@ -11,6 +12,11 @@ import { AlertType, AlertSeverity } from "@prisma/client";
 
 const router = Router();
 router.use(authenticate, requireFacility);
+
+const stockView         = requirePermission("stock", "view");
+const stockCreate       = requirePermission("stock", "create");
+const stockEdit         = requirePermission("stock", "edit");
+const receiveStockCreate = requirePermission("receiveStock", "create");
 
 const positiveWholeNumber = z.number().int("Quantity must be a whole number").positive("Quantity must be greater than zero");
 const nonNegativeWholeNumber = z.number().int("Count must be a whole number").min(0, "Count cannot be negative");
@@ -25,7 +31,7 @@ const receiptSchema = z.object({
   notes: z.string().optional(),
 });
 
-router.post("/receipt", async (req, res, next) => {
+router.post("/receipt", receiveStockCreate, async (req, res, next) => {
   try {
     const data = receiptSchema.parse(req.body);
     const facilityId = getFacilityId(req)!;
@@ -112,7 +118,7 @@ const consumptionSchema = z.object({
 // Thrown inside a $transaction to roll it back and answer 400 instead of 500.
 class InsufficientStockError extends Error {}
 
-router.post("/consumption", async (req, res, next) => {
+router.post("/consumption", stockCreate, async (req, res, next) => {
   try {
     const data = consumptionSchema.parse(req.body);
     const facilityId = getFacilityId(req)!;
@@ -180,7 +186,7 @@ const adjustmentSchema = z.object({
   reason: z.string(),
 });
 
-router.post("/adjustment", async (req, res, next) => {
+router.post("/adjustment", stockEdit, async (req, res, next) => {
   try {
     const data = adjustmentSchema.parse(req.body);
     const facilityId = getFacilityId(req)!;
@@ -229,7 +235,7 @@ router.post("/adjustment", async (req, res, next) => {
   }
 });
 
-router.get("/balance", async (req, res, next) => {
+router.get("/balance", stockView, async (req, res, next) => {
   try {
     const facilityId = getFacilityId(req, req.query.facilityId as string);
     const medicineId = req.query.medicineId as string | undefined;
@@ -257,7 +263,7 @@ router.get("/balance", async (req, res, next) => {
   }
 });
 
-router.get("/batches", async (req, res, next) => {
+router.get("/batches", stockView, async (req, res, next) => {
   try {
     const facilityId = getFacilityId(req, req.query.facilityId as string);
     const batches = await prisma.stockBatch.findMany({
@@ -271,7 +277,7 @@ router.get("/batches", async (req, res, next) => {
   }
 });
 
-router.get("/export", async (req, res, next) => {
+router.get("/export", stockView, async (req, res, next) => {
   try {
     const facilityId = getFacilityId(req, req.query.facilityId as string);
     const batches = await prisma.stockBatch.findMany({
@@ -325,7 +331,7 @@ router.get("/export", async (req, res, next) => {
   }
 });
 
-router.get("/transactions", async (req, res, next) => {
+router.get("/transactions", stockView, async (req, res, next) => {
   try {
     const facilityId = getFacilityId(req, req.query.facilityId as string);
     const type = req.query.type as string | undefined;
@@ -363,14 +369,34 @@ router.get("/transactions", async (req, res, next) => {
       }),
     ]);
 
-    res.json({ total, skip, take, transactions: txs });
+    const transferIds = [...new Set(txs.map((tx) => tx.transferId).filter(Boolean))] as string[];
+    const transfers = transferIds.length
+      ? await prisma.transfer.findMany({
+          where: { id: { in: transferIds } },
+          include: {
+            fromFacility: { select: { id: true, name: true, code: true } },
+            toFacility: { select: { id: true, name: true, code: true } },
+          },
+        })
+      : [];
+    const transferMap = Object.fromEntries(transfers.map((transfer) => [transfer.id, transfer]));
+    const transactions = txs.map((tx) => {
+      const transfer = tx.transferId ? transferMap[tx.transferId] : null;
+      return {
+        ...tx,
+        sourceFacility: transfer?.fromFacility ?? null,
+        destinationFacility: transfer?.toFacility ?? null,
+      };
+    });
+
+    res.json({ total, skip, take, transactions });
   } catch (e) {
     next(e);
   }
 });
 
 // GET /stock/movement — stock movement summary: opening + receipts − issues = closing per period
-router.get("/movement", async (req, res, next) => {
+router.get("/movement", stockView, async (req, res, next) => {
   try {
     const facilityId = getFacilityId(req, req.query.facilityId as string);
     const from = req.query.from as string | undefined;
@@ -502,10 +528,12 @@ router.get("/movement", async (req, res, next) => {
 });
 
 // GET /stock/in-hand — real-time inventory (all batches with qty > 0)
-router.get("/in-hand", async (req, res, next) => {
+router.get("/in-hand", stockView, async (req, res, next) => {
   try {
     const facilityId = getFacilityId(req, req.query.facilityId as string);
     const q = (req.query.q as string | undefined)?.trim();
+    const medicineId = req.query.medicineId as string | undefined;
+    const batchNumber = (req.query.batchNumber as string | undefined)?.trim();
     const categoryId = req.query.categoryId as string | undefined;
     const expiryStatus = req.query.expiryStatus as string | undefined; // "expired"|"expiring"|"ok"
     const sortBy = (req.query.sortBy as string | undefined) ?? "medicineName";
@@ -514,10 +542,12 @@ router.get("/in-hand", async (req, res, next) => {
     const batches = await prisma.stockBatch.findMany({
       where: {
         ...(facilityId ? { facilityId } : {}),
+        ...(batchNumber ? { batchNumber: { contains: batchNumber, mode: "insensitive" } } : {}),
         quantity: { gt: 0 },
         medicine: {
           isActive: true,
           deletedAt: null,
+          ...(medicineId ? { id: medicineId } : {}),
           ...(categoryId ? { categoryId } : {}),
           ...(q
             ? {
@@ -574,10 +604,12 @@ router.get("/in-hand", async (req, res, next) => {
 });
 
 // GET /stock/in-hand/export — CSV export, mirrors every filter from /stock/in-hand
-router.get("/in-hand/export", async (req, res, next) => {
+router.get("/in-hand/export", stockView, async (req, res, next) => {
   try {
     const facilityId = getFacilityId(req, req.query.facilityId as string);
     const q = (req.query.q as string | undefined)?.trim();
+    const medicineId = req.query.medicineId as string | undefined;
+    const batchNumber = (req.query.batchNumber as string | undefined)?.trim();
     const categoryId = req.query.categoryId as string | undefined;
     const expiryStatus = req.query.expiryStatus as string | undefined;
     const warningDays = config.expiryWarningDays;
@@ -585,10 +617,12 @@ router.get("/in-hand/export", async (req, res, next) => {
     const batches = await prisma.stockBatch.findMany({
       where: {
         ...(facilityId ? { facilityId } : {}),
+        ...(batchNumber ? { batchNumber: { contains: batchNumber, mode: "insensitive" } } : {}),
         quantity: { gt: 0 },
         medicine: {
           isActive: true,
           deletedAt: null,
+          ...(medicineId ? { id: medicineId } : {}),
           ...(categoryId ? { categoryId } : {}),
           ...(q
             ? { OR: [{ medicineName: { contains: q, mode: "insensitive" } }, { genericName: { contains: q, mode: "insensitive" } }] }

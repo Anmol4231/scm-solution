@@ -5,6 +5,7 @@ import fs from "fs";
 import { z } from "zod";
 import { prisma } from "../lib/prisma";
 import { authenticate, getFacilityId, requireFacility } from "../middleware/auth";
+import { requirePermission } from "../middleware/permission";
 import { generatePrescriptionId } from "../utils/ids";
 import { logAudit } from "../services/audit";
 
@@ -28,6 +29,10 @@ const upload = multer({
 
 const router = Router();
 router.use(authenticate, requireFacility);
+
+const rxView   = requirePermission("prescriptions", "view");
+const rxCreate = requirePermission("prescriptions", "create");
+const rxEdit   = requirePermission("prescriptions", "edit");
 
 const createSchema = z.object({
   patientId: z.string(),
@@ -54,7 +59,7 @@ const createSchema = z.object({
     .optional(),
 });
 
-router.get("/sample-template", (_req, res) => {
+router.get("/sample-template", rxView, (_req, res) => {
   res.json({
     template: {
       doctorName: "Dr. Sarah Ncube",
@@ -74,12 +79,12 @@ router.get("/sample-template", (_req, res) => {
   });
 });
 
-router.get("/", async (req, res, next) => {
+router.get("/", rxView, async (req, res, next) => {
   try {
-    const facilityId = getFacilityId(req, req.query.facilityId as string)!;
+    const facilityId = getFacilityId(req, req.query.facilityId as string);
     const patientId = req.query.patientId as string | undefined;
     const prescriptions = await prisma.prescription.findMany({
-      where: { facilityId, ...(patientId ? { patientId } : {}) },
+      where: { ...(facilityId ? { facilityId } : {}), ...(patientId ? { patientId } : {}) },
       include: {
         patient: true,
         medicines: { include: { medicine: true } },
@@ -93,7 +98,7 @@ router.get("/", async (req, res, next) => {
   }
 });
 
-router.post("/", upload.single("prescription"), async (req, res, next) => {
+router.post("/", rxCreate, upload.single("prescription"), async (req, res, next) => {
   try {
     const body = createSchema.parse({
       ...req.body,
@@ -138,7 +143,7 @@ router.post("/", upload.single("prescription"), async (req, res, next) => {
   }
 });
 
-router.get("/:id", async (req, res, next) => {
+router.get("/:id", rxView, async (req, res, next) => {
   try {
     const prescription = await prisma.prescription.findUnique({
       where: { id: req.params.id },
@@ -155,7 +160,7 @@ router.get("/:id", async (req, res, next) => {
   }
 });
 
-router.patch("/:id/status", async (req, res, next) => {
+router.patch("/:id/status", rxEdit, async (req, res, next) => {
   try {
     const { status } = z.object({ status: z.enum(["ACTIVE", "COMPLETED", "CANCELLED"]) }).parse(req.body);
     const updated = await prisma.prescription.update({
