@@ -1,4 +1,4 @@
-"use client";
+﻿"use client";
 
 import { useEffect, useState } from "react";
 import Link from "next/link";
@@ -114,14 +114,14 @@ export default function RequisitionsPage() {
                     </Link>
                   </td>
                   <td className="px-4 py-3">
-                    <span className={`rounded-full px-2 py-0.5 text-xs font-medium ${STATUS_COLORS[r.status] ?? "bg-slate-100 text-slate-600"}`}>
+                    <span className={`rounded-full px-2 py-0.5 text-sm font-medium ${STATUS_COLORS[r.status] ?? "bg-slate-100 text-slate-600"}`}>
                       {r.status.replace(/_/g, " ")}
                     </span>
                   </td>
                   {isAdmin && <td className="px-4 py-3 text-slate-700">{r.requestingFacility.name}</td>}
                   <td className="px-4 py-3 text-slate-700">{r.issuingFacility.name}</td>
                   <td className="px-4 py-3">
-                    <span className={`rounded-full px-2 py-0.5 text-xs font-medium ${PRIORITY_COLORS[r.priority] ?? ""}`}>
+                    <span className={`rounded-full px-2 py-0.5 text-sm font-medium ${PRIORITY_COLORS[r.priority] ?? ""}`}>
                       {r.priority}
                     </span>
                   </td>

@@ -1,4 +1,4 @@
-"use client";
+﻿"use client";
 
 import { useEffect, useState } from "react";
 import { useParams } from "next/navigation";
@@ -120,14 +120,14 @@ export default function RequisitionDetailPage() {
       {/* Header details */}
       <Card>
         <CardContent className="grid grid-cols-2 gap-4 pt-4 sm:grid-cols-3">
-          <div><p className="text-xs text-slate-500">Requesting Facility</p><p className="font-medium">{req.requestingFacility.name}</p></div>
-          <div><p className="text-xs text-slate-500">Issuing Store</p><p className="font-medium">{req.issuingFacility.name}</p></div>
-          <div><p className="text-xs text-slate-500">Priority</p><p className="font-medium">{req.priority}</p></div>
-          <div><p className="text-xs text-slate-500">Requested By</p><p className="font-medium">{req.requestedBy.firstName} {req.requestedBy.lastName}</p></div>
-          {req.approvedBy && <div><p className="text-xs text-slate-500">Approved By</p><p className="font-medium">{req.approvedBy.firstName} {req.approvedBy.lastName}</p></div>}
-          {req.approvedAt && <div><p className="text-xs text-slate-500">Approved At</p><p className="font-medium">{new Date(req.approvedAt).toLocaleDateString()}</p></div>}
-          {req.notes && <div className="col-span-full"><p className="text-xs text-slate-500">Notes</p><p>{req.notes}</p></div>}
-          {req.cancellationReason && <div className="col-span-full"><p className="text-xs text-slate-500">Cancellation Reason</p><p className="text-red-600">{req.cancellationReason}</p></div>}
+          <div><p className="text-sm text-slate-500">Requesting Facility</p><p className="font-medium">{req.requestingFacility.name}</p></div>
+          <div><p className="text-sm text-slate-500">Issuing Store</p><p className="font-medium">{req.issuingFacility.name}</p></div>
+          <div><p className="text-sm text-slate-500">Priority</p><p className="font-medium">{req.priority}</p></div>
+          <div><p className="text-sm text-slate-500">Requested By</p><p className="font-medium">{req.requestedBy.firstName} {req.requestedBy.lastName}</p></div>
+          {req.approvedBy && <div><p className="text-sm text-slate-500">Approved By</p><p className="font-medium">{req.approvedBy.firstName} {req.approvedBy.lastName}</p></div>}
+          {req.approvedAt && <div><p className="text-sm text-slate-500">Approved At</p><p className="font-medium">{new Date(req.approvedAt).toLocaleDateString()}</p></div>}
+          {req.notes && <div className="col-span-full"><p className="text-sm text-slate-500">Notes</p><p>{req.notes}</p></div>}
+          {req.cancellationReason && <div className="col-span-full"><p className="text-sm text-slate-500">Cancellation Reason</p><p className="text-red-600">{req.cancellationReason}</p></div>}
         </CardContent>
       </Card>
 
@@ -154,7 +154,7 @@ export default function RequisitionDetailPage() {
                   <tr key={line.id} className={line.shortfallFlag ? "bg-amber-50" : ""}>
                     <td className="px-4 py-3">
                       <p className="font-medium">{line.medicine.medicineName}</p>
-                      {line.medicine.genericName && <p className="text-xs text-slate-500">{line.medicine.genericName}</p>}
+                      {line.medicine.genericName && <p className="text-sm text-slate-500">{line.medicine.genericName}</p>}
                     </td>
                     <td className="px-4 py-3 text-right">{line.quantityRequested} {line.medicine.unitType}</td>
                     <td className="px-4 py-3 text-right">

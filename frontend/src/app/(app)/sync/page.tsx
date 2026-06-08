@@ -1,4 +1,4 @@
-"use client";
+﻿"use client";
 
 import { useCallback, useEffect, useState } from "react";
 import { Button } from "@/components/ui/button";
@@ -42,13 +42,10 @@ export default function SyncPage() {
       <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
         <div>
           <h1 className="text-2xl font-bold">Pending Sync</h1>
-          <p className="text-sm text-muted-foreground">
-            Actions saved while offline are queued here and sent to the server when online.
-          </p>
         </div>
         <div className="flex items-center gap-2">
           <span
-            className={`inline-flex items-center gap-1 rounded-full px-3 py-1 text-xs font-medium ${
+            className={`inline-flex items-center gap-1 rounded-full px-3 py-1 text-sm font-medium ${
               isOnline ? "bg-emerald-100 text-emerald-800" : "bg-red-100 text-red-800"
             }`}
           >
@@ -101,7 +98,7 @@ export default function SyncPage() {
                       >
                         {item.status}
                       </span>
-                      {item.error && <p className="text-xs text-red-500">{item.error}</p>}
+                      {item.error && <p className="text-sm text-red-500">{item.error}</p>}
                     </td>
                     <td className="p-2 text-muted-foreground">
                       {new Date(item.createdAt).toLocaleString()}

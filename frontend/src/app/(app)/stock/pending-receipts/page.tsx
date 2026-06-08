@@ -1,4 +1,4 @@
-"use client";
+﻿"use client";
 
 import { useEffect, useState } from "react";
 import Link from "next/link";
@@ -78,10 +78,10 @@ export default function PendingReceiptsPage() {
                 {vouchers.map((v) => (
                   <tr key={v.id} className="hover:bg-slate-50">
                     <td className="px-4 py-3 font-mono text-medflow-600">{v.voucherCode}</td>
-                    <td className="px-4 py-3 font-mono text-xs text-slate-500">{v.requisition.requisitionCode}</td>
+                    <td className="px-4 py-3 font-mono text-sm text-slate-500">{v.requisition.requisitionCode}</td>
                     <td className="px-4 py-3">{v.requisition.issuingFacility.name}</td>
                     <td className="px-4 py-3">
-                      <span className={`rounded-full px-2 py-0.5 text-xs font-medium ${v.requisition.priority === "EMERGENCY" ? "bg-red-100 text-red-700" : v.requisition.priority === "URGENT" ? "bg-amber-100 text-amber-700" : "bg-slate-100 text-slate-600"}`}>
+                      <span className={`rounded-full px-2 py-0.5 text-sm font-medium ${v.requisition.priority === "EMERGENCY" ? "bg-red-100 text-red-700" : v.requisition.priority === "URGENT" ? "bg-amber-100 text-amber-700" : "bg-slate-100 text-slate-600"}`}>
                         {v.requisition.priority}
                       </span>
                     </td>
@@ -121,7 +121,7 @@ export default function PendingReceiptsPage() {
                     <td className="px-4 py-3 font-mono text-medflow-600">{o.orderCode}</td>
                     <td className="px-4 py-3">{o.vendor.name}</td>
                     <td className="px-4 py-3">
-                      <span className="rounded-full px-2 py-0.5 text-xs font-medium bg-amber-100 text-amber-700">{o.status}</span>
+                      <span className="rounded-full px-2 py-0.5 text-sm font-medium bg-amber-100 text-amber-700">{o.status}</span>
                     </td>
                     <td className="px-4 py-3 text-slate-500">{o.expectedDeliveryDate ? new Date(o.expectedDeliveryDate).toLocaleDateString() : "—"}</td>
                     <td className="px-4 py-3">

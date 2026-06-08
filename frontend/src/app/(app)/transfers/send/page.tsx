@@ -1,4 +1,4 @@
-"use client";
+﻿"use client";
 
 import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
@@ -76,6 +76,9 @@ export default function SendTransferPage() {
     <div className="space-y-4 max-w-3xl">
       <Link href="/transfers" className="text-sm text-medflow-600 hover:underline">← Transfers</Link>
       <h1 className="text-2xl font-bold">New Transfer</h1>
+      <p className="text-sm text-slate-500">
+        Current Facility Context: {isAdmin ? (allFacilities.find((f) => f.id === fromFacilityId)?.name || "Select source facility") : (user?.facility?.name ?? "Assigned facility")}
+      </p>
 
       {error && <p className="rounded-lg bg-red-50 p-3 text-sm text-red-700">{error}</p>}
 
@@ -85,7 +88,7 @@ export default function SendTransferPage() {
           <CardContent className="space-y-4">
             {isAdmin && (
               <div>
-                <Label>From Facility *</Label>
+                <Label>Source Facility *</Label>
                 <select className="mt-1 h-10 w-full rounded-lg border px-3 text-sm" value={fromFacilityId} onChange={(e) => setFromFacilityId(e.target.value)} required>
                   <option value="">Select sending facility…</option>
                   {allFacilities.map((f) => <option key={f.id} value={f.id}>{f.name} ({f.code})</option>)}
@@ -94,12 +97,12 @@ export default function SendTransferPage() {
             )}
             {!isAdmin && user?.facility && (
               <div>
-                <Label>From Facility</Label>
+                <Label>Source Facility</Label>
                 <p className="mt-1 text-sm font-medium text-slate-700">{user.facility.name}</p>
               </div>
             )}
             <div>
-              <Label>To Facility *</Label>
+              <Label>Destination Facility *</Label>
               <select className="mt-1 h-10 w-full rounded-lg border px-3 text-sm" value={toFacilityId} onChange={(e) => setToFacilityId(e.target.value)} required>
                 <option value="">Select destination…</option>
                 {toFacilities.map((f) => <option key={f.id} value={f.id}>{f.name} ({f.code})</option>)}
@@ -144,7 +147,7 @@ export default function SendTransferPage() {
                         </option>
                       ))}
                     </select>
-                    {selectedBatch && <p className="mt-0.5 text-xs text-slate-400">Available: {selectedBatch.quantity}</p>}
+                    {selectedBatch && <p className="mt-0.5 text-sm text-slate-400">Available: {selectedBatch.quantity}</p>}
                   </div>
                   <div className="w-32">
                     <Label>Quantity *</Label>

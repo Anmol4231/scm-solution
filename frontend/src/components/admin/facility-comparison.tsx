@@ -1,4 +1,4 @@
-"use client";
+﻿"use client";
 
 import Link from "next/link";
 import {
@@ -63,7 +63,7 @@ export function FacilityComparison({ stats }: { stats: FacilityStat[] }) {
           >
             <CardHeader className="pb-2">
               <CardTitle className="text-sm font-semibold text-slate-800">{s.facility.name}</CardTitle>
-              <p className="text-xs text-slate-500">{s.facility.code}</p>
+              <p className="text-sm text-slate-500">{s.facility.code}</p>
             </CardHeader>
             <CardContent className="grid grid-cols-2 gap-2 text-sm">
               <div><span className="text-slate-500">Stock</span><p className="font-semibold">{Math.round(s.totalStock)}</p></div>
@@ -72,7 +72,7 @@ export function FacilityComparison({ stats }: { stats: FacilityStat[] }) {
               <div><span className="text-slate-500">Dispensing (30d)</span><p className="font-semibold">{s.dispensingCount}</p></div>
               <div><span className="text-slate-500">Low / Stockout</span><p><span className="text-amber-600">{s.lowCount}</span> / <span className="text-red-600">{s.stockoutCount}</span></p></div>
               <div><span className="text-slate-500">Expiring</span><p className="font-semibold text-sky-700">{s.expiringBatches}</p></div>
-              {s.nonReporting && <p className="col-span-2 text-xs font-medium text-red-600">Non-reporting facility</p>}
+              {s.nonReporting && <p className="col-span-2 text-sm font-medium text-red-600">Non-reporting facility</p>}
             </CardContent>
           </Card>
         ))}
@@ -93,7 +93,7 @@ export function ExpiryHeatmapTable({
       <CardContent className="overflow-x-auto">
         <table className="w-full text-sm">
           <thead>
-            <tr className="border-b bg-slate-50 text-left text-xs uppercase text-slate-500">
+            <tr className="border-b bg-slate-50 text-left text-sm uppercase text-slate-500">
               <th className="p-2">Facility</th>
               <th className="p-2">Medicine</th>
               <th className="p-2">Batch</th>

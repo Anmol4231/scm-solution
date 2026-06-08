@@ -1,6 +1,7 @@
-"use client";
+﻿"use client";
 
 import { useEffect, useState } from "react";
+import { useRouter } from "next/navigation";
 import Link from "next/link";
 import {
   BarChart,
@@ -16,7 +17,6 @@ import {
 import { api } from "@/lib/api";
 import { useAuth } from "@/lib/auth-context";
 import { isCrossFacilityRole } from "@/lib/roles";
-import { FacilitySwitcher } from "@/components/layout/facility-switcher";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import {
@@ -70,36 +70,30 @@ function formatCategoryChart(categories: { category: string; totalStock: number 
 
 export default function DashboardPage() {
   const { user } = useAuth();
+  const router = useRouter();
   const [data, setData] = useState<FacilityDashboard | null>(null);
 
+  // Admins use the Admin Dashboard exclusively — this page is for facility users only.
   useEffect(() => {
-    const q = user?.facilityId ? `?facilityId=${user.facilityId}` : "";
-    api<FacilityDashboard>(`/dashboard/facility${q}`).then(setData).catch(console.error);
-  }, [user?.facilityId]);
+    if (user && isCrossFacilityRole(user.role)) router.replace("/admin");
+  }, [user, router]);
 
-  if (isCrossFacilityRole(user?.role) && !user.facilityId) {
-    return (
-      <div>
-        <h1 className="mb-4 text-2xl font-bold">SCM Solution — Provincial Overview</h1>
-        <FacilitySwitcher />
-        <p className="text-muted-foreground">
-          Select a facility above or visit the{" "}
-          <Link href="/admin" className="text-medflow-600 underline">Admin Dashboard</Link>.
-        </p>
-      </div>
-    );
-  }
+  useEffect(() => {
+    if (!user || isCrossFacilityRole(user.role) || !user.facilityId) return;
+    api<FacilityDashboard>(`/dashboard/facility?facilityId=${user.facilityId}`).then(setData).catch(console.error);
+  }, [user]);
+
+  if (!user || isCrossFacilityRole(user.role)) return null;
 
   const w = data?.widgets;
 
   return (
     <div className="space-y-6">
-      <div className="flex items-center justify-between">
-        <div>
-          <h1 className="text-2xl font-bold">Facility Dashboard</h1>
-          <p className="text-sm text-muted-foreground">SCM Solution — real-time supply chain insights</p>
-        </div>
-        <FacilitySwitcher />
+      <div>
+        <h1 className="text-2xl font-bold tracking-tight">Dashboard</h1>
+        <p className="mt-0.5 text-sm text-muted-foreground">
+          {new Date().toLocaleDateString("en-US", { weekday: "long", year: "numeric", month: "long", day: "numeric" })}
+        </p>
       </div>
 
       <div className="grid grid-cols-2 gap-3 md:grid-cols-3 lg:grid-cols-5">
@@ -170,34 +164,15 @@ export default function DashboardPage() {
         </Card>
       )}
 
-      <div className="grid gap-4 md:grid-cols-2">
-        <Card>
-          <CardHeader><CardTitle>Quick Actions</CardTitle></CardHeader>
-          <CardContent className="grid grid-cols-2 gap-3">
-            <Link href="/dispense"><Button size="lg" className="h-16 w-full">Patient Dispense</Button></Link>
-            <Link href="/patients"><Button size="lg" variant="secondary" className="h-16 w-full">Patients</Button></Link>
-            <Link href="/medicines"><Button size="lg" variant="outline" className="h-16 w-full">Medicines</Button></Link>
-            <Link href="/expiry"><Button size="lg" variant="outline" className="h-16 w-full">Expiry</Button></Link>
-          </CardContent>
-        </Card>
-
-        <Card>
-          <CardHeader><CardTitle>Active Alerts</CardTitle></CardHeader>
-          <CardContent>
-            {data?.alerts?.length ? (
-              <ul className="space-y-2">
-                {data.alerts.slice(0, 5).map((a) => (
-                  <li key={a.id} className="rounded-lg border p-2 text-sm">
-                    <span className={a.severity === "CRITICAL" ? "font-semibold text-red-600" : "text-amber-600"}>{a.severity}</span> — {a.title}
-                  </li>
-                ))}
-              </ul>
-            ) : (
-              <p className="text-sm text-muted-foreground">No active alerts</p>
-            )}
-          </CardContent>
-        </Card>
-      </div>
+      <Card>
+        <CardHeader><CardTitle>Quick Actions</CardTitle></CardHeader>
+        <CardContent className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+          <Link href="/dispense"><Button size="lg" className="h-16 w-full">Patient Dispense</Button></Link>
+          <Link href="/patients"><Button size="lg" variant="secondary" className="h-16 w-full">Patients</Button></Link>
+          <Link href="/medicines"><Button size="lg" variant="outline" className="h-16 w-full">Medicines</Button></Link>
+          <Link href="/alerts"><Button size="lg" variant="outline" className="h-16 w-full">Alert Center</Button></Link>
+        </CardContent>
+      </Card>
 
       {data?.nearStockoutPrediction && data.nearStockoutPrediction.length > 0 && (
         <Card>
@@ -249,7 +224,7 @@ function StatCard({ icon: Icon, label, value, color }: { icon: LucideIcon; label
         <Icon className={`h-8 w-8 ${color || "text-medflow-600"}`} />
         <div>
           <p className="text-2xl font-bold">{value}</p>
-          <p className="text-xs text-muted-foreground">{label}</p>
+          <p className="text-sm text-muted-foreground">{label}</p>
         </div>
       </CardContent>
     </Card>

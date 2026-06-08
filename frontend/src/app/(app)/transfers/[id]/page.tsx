@@ -1,181 +1,170 @@
-"use client";
+﻿"use client";
 
 import { useEffect, useState } from "react";
-import { useParams } from "next/navigation";
+import { useRouter } from "next/navigation";
 import Link from "next/link";
 import { api } from "@/lib/api";
 import { useAuth } from "@/lib/auth-context";
 import { isCrossFacilityRole } from "@/lib/roles";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 
-interface TransferLine {
-  id: string;
-  medicine: { medicineName: string; genericName?: string };
-  batch: { batchNumber: string; expiryDate: string };
-  batchNumber: string;
-  expiryDate: string;
-  quantityTransferred: number;
-  quantityReceived: number | null;
-  shortfallFlag: boolean;
-}
+interface Facility { id: string; name: string; code: string }
+interface Batch { id: string; batchNumber: string; expiryDate: string; quantity: number; medicine: { id: string; medicineName: string } }
 
-interface Transfer {
-  id: string;
-  transferCode: string;
-  status: string;
-  priority: string;
-  authorizationNotes: string | null;
-  createdAt: string;
-  authorizedAt: string | null;
-  dispatchedAt: string | null;
-  receivedAt: string | null;
-  fromFacility: { id: string; name: string; code: string };
-  toFacility: { id: string; name: string; code: string };
-  createdBy: { firstName: string; lastName: string } | null;
-  authorizedBy: { firstName: string; lastName: string } | null;
-  receivedBy: { firstName: string; lastName: string } | null;
-  lines: TransferLine[];
-  // Legacy single-item fields
-  medicine?: { medicineName: string } | null;
-  quantity?: number | null;
-  batchNumber?: string | null;
-}
+interface Line { batchId: string; quantityTransferred: number }
 
-const STATUS_COLORS: Record<string, string> = {
-  PENDING: "bg-amber-100 text-amber-700",
-  AUTHORIZED: "bg-blue-100 text-blue-700",
-  IN_TRANSIT: "bg-cyan-100 text-cyan-700",
-  RECEIVED: "bg-emerald-100 text-emerald-700",
-  PARTIALLY_RECEIVED: "bg-orange-100 text-orange-700",
-  CANCELLED: "bg-red-100 text-red-600",
-};
-
-export default function TransferDetailPage() {
-  const { id } = useParams<{ id: string }>();
+export default function SendTransferPage() {
+  const router = useRouter();
   const { user } = useAuth();
   const isAdmin = isCrossFacilityRole(user?.role);
 
-  const [transfer, setTransfer] = useState<Transfer | null>(null);
-  const [busy, setBusy] = useState(false);
+  const [allFacilities, setAllFacilities] = useState<Facility[]>([]);
+  const [batches, setBatches] = useState<Batch[]>([]);
+  const [fromFacilityId, setFromFacilityId] = useState(user?.facilityId ?? "");
+  const [toFacilityId, setToFacilityId] = useState("");
+  const [priority, setPriority] = useState("ROUTINE");
+  const [authorizationNotes, setAuthorizationNotes] = useState("");
+  const [lines, setLines] = useState<Line[]>([{ batchId: "", quantityTransferred: 0 }]);
   const [error, setError] = useState("");
-  const [receiptQtys, setReceiptQtys] = useState<Record<string, number>>({});
+  const [busy, setBusy] = useState(false);
 
-  const load = async () => {
-    const t = await api<Transfer>(`/transfers/${id}`);
-    setTransfer(t);
-    const qtys: Record<string, number> = {};
-    for (const l of t.lines) qtys[l.id] = l.quantityTransferred;
-    setReceiptQtys(qtys);
+  useEffect(() => {
+    api<Facility[]>("/auth/facilities").then(setAllFacilities).catch(console.error);
+  }, []);
+
+  useEffect(() => {
+    const facId = fromFacilityId || user?.facilityId;
+    if (!facId) return;
+    api<Batch[]>(`/stock/batches?facilityId=${facId}`).then(setBatches).catch(console.error);
+  }, [fromFacilityId, user?.facilityId]);
+
+  const toFacilities = allFacilities.filter((f) => f.id !== (fromFacilityId || user?.facilityId));
+  const availableBatches = batches.filter((b) => b.quantity > 0);
+  const addLine = () => setLines((l) => [...l, { batchId: "", quantityTransferred: 0 }]);
+  const removeLine = (i: number) => setLines((l) => l.filter((_, idx) => idx !== i));
+  const updateLine = (i: number, field: keyof Line, value: string | number) =>
+    setLines((l) => l.map((ln, idx) => idx === i ? { ...ln, [field]: value } : ln));
+
+  const submit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setError("");
+    if (!toFacilityId) return setError("Destination facility required");
+    if (lines.some((l) => !l.batchId || l.quantityTransferred <= 0)) return setError("All lines need a batch and quantity > 0");
+
+    setBusy(true);
+    try {
+      const body: Record<string, unknown> = {
+        toFacilityId,
+        priority,
+        authorizationNotes: authorizationNotes || undefined,
+        lines: lines.map((l) => ({ batchId: l.batchId, quantityTransferred: l.quantityTransferred })),
+      };
+      if (isAdmin && fromFacilityId) body.fromFacilityId = fromFacilityId;
+      const created = await api<{ id: string; transferCode: string }>("/transfers/new", { method: "POST", body: JSON.stringify(body) });
+      router.push(`/transfers/${created.id}`);
+    } catch (e: any) {
+      setError(e?.message ?? "Failed to create transfer");
+    } finally {
+      setBusy(false);
+    }
   };
-
-  useEffect(() => { load(); }, [id]);
-
-  if (!transfer) return <p className="text-sm text-slate-500 p-4">Loading…</p>;
-
-  const isSender = isAdmin || user?.facilityId === transfer.fromFacility.id;
-  const isReceiver = isAdmin || user?.facilityId === transfer.toFacility.id;
-
-  const doAction = async (path: string, body: object = {}) => {
-    setBusy(true); setError("");
-    try { await api(`/transfers/${id}/${path}`, { method: "POST", body: JSON.stringify(body) }); await load(); }
-    catch (e: any) { setError(e?.message ?? "Action failed"); }
-    finally { setBusy(false); }
-  };
-
-  const isLegacy = transfer.lines.length === 0 && transfer.medicine;
 
   return (
-    <div className="space-y-4 max-w-4xl">
+    <div className="space-y-4 max-w-3xl">
       <Link href="/transfers" className="text-sm text-medflow-600 hover:underline">← Transfers</Link>
-
-      <div className="flex items-start justify-between">
-        <div>
-          <h1 className="text-2xl font-bold font-mono">{transfer.transferCode}</h1>
-          <p className="text-sm text-slate-500">{new Date(transfer.createdAt).toLocaleString()}</p>
-        </div>
-        <span className={`rounded-full px-3 py-1 text-sm font-medium ${STATUS_COLORS[transfer.status] ?? ""}`}>{transfer.status.replace(/_/g, " ")}</span>
-      </div>
+      <h1 className="text-2xl font-bold">New Transfer</h1>
+      <p className="text-sm text-slate-500">
+        Current Facility Context: {isAdmin ? (allFacilities.find((f) => f.id === fromFacilityId)?.name || "Select source facility") : (user?.facility?.name ?? "Assigned facility")}
+      </p>
 
       {error && <p className="rounded-lg bg-red-50 p-3 text-sm text-red-700">{error}</p>}
 
-      <Card>
-        <CardContent className="grid grid-cols-2 gap-4 pt-4 sm:grid-cols-3">
-          <div><p className="text-xs text-slate-500">From</p><p className="font-medium">{transfer.fromFacility.name}</p></div>
-          <div><p className="text-xs text-slate-500">To</p><p className="font-medium">{transfer.toFacility.name}</p></div>
-          <div><p className="text-xs text-slate-500">Priority</p><p className="font-medium">{transfer.priority}</p></div>
-          {transfer.createdBy && <div><p className="text-xs text-slate-500">Created By</p><p>{transfer.createdBy.firstName} {transfer.createdBy.lastName}</p></div>}
-          {transfer.authorizedBy && <div><p className="text-xs text-slate-500">Authorized By</p><p>{transfer.authorizedBy.firstName} {transfer.authorizedBy.lastName} {transfer.authorizedAt ? `(${new Date(transfer.authorizedAt).toLocaleDateString()})` : ""}</p></div>}
-          {transfer.receivedBy && <div><p className="text-xs text-slate-500">Received By</p><p>{transfer.receivedBy.firstName} {transfer.receivedBy.lastName}</p></div>}
-          {transfer.authorizationNotes && <div className="col-span-full"><p className="text-xs text-slate-500">Notes</p><p>{transfer.authorizationNotes}</p></div>}
-        </CardContent>
-      </Card>
-
-      {/* Lines */}
-      {!isLegacy && (
+      <form onSubmit={submit} className="space-y-4">
         <Card>
-          <CardHeader><CardTitle>Stock Lines</CardTitle></CardHeader>
-          <CardContent className="p-0">
-            <table className="w-full text-sm">
-              <thead className="border-b bg-slate-50">
-                <tr>
-                  <th className="px-4 py-3 text-left font-medium text-slate-600">Medicine</th>
-                  <th className="px-4 py-3 text-left font-medium text-slate-600">Batch</th>
-                  <th className="px-4 py-3 text-left font-medium text-slate-600">Expiry</th>
-                  <th className="px-4 py-3 text-right font-medium text-slate-600">Transferred</th>
-                  <th className="px-4 py-3 text-right font-medium text-slate-600">Received</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y">
-                {transfer.lines.map((line) => (
-                  <tr key={line.id} className={line.shortfallFlag ? "bg-amber-50" : ""}>
-                    <td className="px-4 py-3 font-medium">{line.medicine.medicineName}</td>
-                    <td className="px-4 py-3 font-mono text-xs">{line.batchNumber}</td>
-                    <td className="px-4 py-3 text-slate-500">{new Date(line.expiryDate).toLocaleDateString()}</td>
-                    <td className="px-4 py-3 text-right">{line.quantityTransferred}</td>
-                    <td className="px-4 py-3 text-right">
-                      {transfer.status === "IN_TRANSIT" && isReceiver ? (
-                        <Input type="number" min={0} max={line.quantityTransferred} className="w-24 text-right" value={receiptQtys[line.id] ?? line.quantityTransferred}
-                          onChange={(e) => setReceiptQtys((q) => ({ ...q, [line.id]: +e.target.value }))} />
-                      ) : (
-                        line.quantityReceived ?? "—"
-                      )}
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
+          <CardHeader><CardTitle>Header</CardTitle></CardHeader>
+          <CardContent className="space-y-4">
+            {isAdmin && (
+              <div>
+                <Label>Source Facility *</Label>
+                <select className="mt-1 h-10 w-full rounded-lg border px-3 text-sm" value={fromFacilityId} onChange={(e) => setFromFacilityId(e.target.value)} required>
+                  <option value="">Select sending facility…</option>
+                  {allFacilities.map((f) => <option key={f.id} value={f.id}>{f.name} ({f.code})</option>)}
+                </select>
+              </div>
+            )}
+            {!isAdmin && user?.facility && (
+              <div>
+                <Label>Source Facility</Label>
+                <p className="mt-1 text-sm font-medium text-slate-700">{user.facility.name}</p>
+              </div>
+            )}
+            <div>
+              <Label>Destination Facility *</Label>
+              <select className="mt-1 h-10 w-full rounded-lg border px-3 text-sm" value={toFacilityId} onChange={(e) => setToFacilityId(e.target.value)} required>
+                <option value="">Select destination…</option>
+                {toFacilities.map((f) => <option key={f.id} value={f.id}>{f.name} ({f.code})</option>)}
+              </select>
+            </div>
+            <div className="grid grid-cols-2 gap-4">
+              <div>
+                <Label>Priority</Label>
+                <select className="mt-1 h-10 w-full rounded-lg border px-3 text-sm" value={priority} onChange={(e) => setPriority(e.target.value)}>
+                  <option value="ROUTINE">Routine</option>
+                  <option value="URGENT">Urgent</option>
+                  <option value="EMERGENCY">Emergency</option>
+                </select>
+              </div>
+            </div>
+            <div>
+              <Label>Notes</Label>
+              <textarea className="mt-1 w-full rounded-lg border px-3 py-2 text-sm" rows={2} value={authorizationNotes} onChange={(e) => setAuthorizationNotes(e.target.value)} />
+            </div>
           </CardContent>
         </Card>
-      )}
 
-      {/* Legacy single-item display */}
-      {isLegacy && transfer.medicine && (
         <Card>
-          <CardContent className="pt-4">
-            <p className="text-sm"><strong>Medicine:</strong> {transfer.medicine.medicineName} · <strong>Qty:</strong> {transfer.quantity} · <strong>Batch:</strong> {transfer.batchNumber}</p>
+          <CardHeader>
+            <div className="flex items-center justify-between">
+              <CardTitle>Stock Lines</CardTitle>
+              <Button type="button" variant="outline" size="sm" onClick={addLine}>+ Add Line</Button>
+            </div>
+          </CardHeader>
+          <CardContent className="space-y-3">
+            {lines.map((line, i) => {
+              const selectedBatch = availableBatches.find((b) => b.id === line.batchId);
+              return (
+                <div key={i} className="flex gap-3 items-end">
+                  <div className="flex-1">
+                    <Label>Batch *</Label>
+                    <select className="mt-1 h-10 w-full rounded-lg border px-3 text-sm" value={line.batchId} onChange={(e) => updateLine(i, "batchId", e.target.value)} required>
+                      <option value="">Select batch…</option>
+                      {availableBatches.map((b) => (
+                        <option key={b.id} value={b.id}>
+                          {b.medicine.medicineName} — {b.batchNumber} (qty: {b.quantity}, exp: {new Date(b.expiryDate).toLocaleDateString()})
+                        </option>
+                      ))}
+                    </select>
+                    {selectedBatch && <p className="mt-0.5 text-sm text-slate-400">Available: {selectedBatch.quantity}</p>}
+                  </div>
+                  <div className="w-32">
+                    <Label>Quantity *</Label>
+                    <Input type="number" min={1} max={selectedBatch?.quantity} className="mt-1" value={line.quantityTransferred || ""} onChange={(e) => updateLine(i, "quantityTransferred", +e.target.value)} required />
+                  </div>
+                  {lines.length > 1 && (
+                    <Button type="button" variant="outline" size="sm" className="text-red-600 mb-0.5" onClick={() => removeLine(i)}>Remove</Button>
+                  )}
+                </div>
+              );
+            })}
           </CardContent>
         </Card>
-      )}
 
-      {/* Actions */}
-      <div className="flex flex-wrap gap-3">
-        {transfer.status === "PENDING" && isSender && (
-          <Button onClick={() => doAction("authorize")} disabled={busy}>Authorize Transfer</Button>
-        )}
-        {transfer.status === "AUTHORIZED" && isSender && (
-          <Button onClick={() => doAction("dispatch")} disabled={busy}>Dispatch (Deduct Stock)</Button>
-        )}
-        {transfer.status === "IN_TRANSIT" && isReceiver && !isLegacy && (
-          <Button onClick={() => doAction("receive-multi", { lines: transfer.lines.map((l) => ({ lineId: l.id, quantityReceived: receiptQtys[l.id] ?? l.quantityTransferred })) })} disabled={busy}>
-            Confirm Receipt
-          </Button>
-        )}
-        {["PENDING", "AUTHORIZED"].includes(transfer.status) && isSender && (
-          <Button variant="outline" className="text-red-600" onClick={() => doAction("cancel")} disabled={busy}>Cancel</Button>
-        )}
-      </div>
+        <p className="text-sm text-slate-500">The transfer will be created as PENDING and requires authorization before stock is moved.</p>
+        <Button type="submit" disabled={busy}>Create Transfer</Button>
+      </form>
     </div>
   );
 }

@@ -1,4 +1,4 @@
-"use client";
+﻿"use client";
 
 import { useEffect, useState } from "react";
 import Link from "next/link";
@@ -161,7 +161,7 @@ export default function ReturnsPage() {
                   <option>Other</option>
                 </select>
               </div>
-              <p className="text-xs text-slate-500">Stock will be immediately decremented from your facility and credited to the AMS.</p>
+              <p className="text-sm text-slate-500">Stock will be immediately decremented from your facility and credited to the AMS.</p>
               <Button type="submit" disabled={busy}>Process Return to AMS</Button>
             </form>
           </CardContent>
@@ -202,7 +202,7 @@ export default function ReturnsPage() {
                   <option>Other</option>
                 </select>
               </div>
-              <p className="text-xs text-slate-500">Stock will be decremented from your facility and credited to the receiving facility atomically.</p>
+              <p className="text-sm text-slate-500">Stock will be decremented from your facility and credited to the receiving facility atomically.</p>
               <Button type="submit" disabled={busy}>Process Inter-Facility Return</Button>
             </form>
           </CardContent>

@@ -1,4 +1,4 @@
-"use client";
+﻿"use client";
 
 import { useState } from "react";
 import Link from "next/link";
@@ -89,16 +89,16 @@ export default function StockMovementPage() {
       {/* Filters */}
       <div className="flex flex-wrap items-end gap-3 rounded-lg border bg-slate-50 p-4">
         <div>
-          <label className="mb-1 block text-xs font-medium text-slate-600">From</label>
+          <label className="mb-1 block text-sm font-medium text-slate-600">From</label>
           <input type="date" value={from} onChange={(e) => setFrom(e.target.value)} className="h-9 rounded-lg border px-2 text-sm" />
         </div>
         <div>
-          <label className="mb-1 block text-xs font-medium text-slate-600">To</label>
+          <label className="mb-1 block text-sm font-medium text-slate-600">To</label>
           <input type="date" value={to} onChange={(e) => setTo(e.target.value)} className="h-9 rounded-lg border px-2 text-sm" />
         </div>
         {isAdmin && (
           <div onFocus={loadFacilities}>
-            <label className="mb-1 block text-xs font-medium text-slate-600">Facility</label>
+            <label className="mb-1 block text-sm font-medium text-slate-600">Facility</label>
             <select value={facilityId} onChange={(e) => setFacilityId(e.target.value)} className="h-9 rounded-lg border px-2 text-sm">
               <option value="">All Facilities</option>
               {facilities.map((f) => <option key={f.id} value={f.id}>{f.name} ({f.code})</option>)}
@@ -121,7 +121,7 @@ export default function StockMovementPage() {
             {" · "}{report.rows.length} medicine{report.rows.length !== 1 ? "s" : ""}
           </p>
           <div className="overflow-x-auto rounded-lg border bg-white">
-            <table className="w-full text-xs">
+            <table className="w-full text-sm">
               <thead className="border-b bg-slate-50 text-slate-600">
                 <tr>
                   <th className="px-3 py-2 text-left font-medium">Medicine</th>
@@ -156,7 +156,7 @@ export default function StockMovementPage() {
                   </tr>
                 ))}
               </tbody>
-              <tfoot className="border-t bg-slate-50 text-xs font-semibold text-slate-700">
+              <tfoot className="border-t bg-slate-50 text-sm font-semibold text-slate-700">
                 <tr>
                   <td className="px-3 py-2" colSpan={2}>Totals</td>
                   <td className="px-3 py-2 text-right">{total("openingBalance")}</td>

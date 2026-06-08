@@ -1,20 +1,25 @@
-"use client";
+﻿"use client";
 
-import { useEffect, useMemo, useState } from "react";
-import Link from "next/link";
-import { ArrowLeft, Eye, Filter, Pencil, Plus, Search } from "lucide-react";
+import { useEffect, useState, Suspense } from "react";
+import { useRouter, useSearchParams } from "next/navigation";
+import { Pencil, Plus, ScrollText, Search, Trash2 } from "lucide-react";
 import { api } from "@/lib/api";
 import { useAuth } from "@/lib/auth-context";
 import { isMasterDataAdminRole } from "@/lib/roles";
+import { useRequirePermission } from "@/hooks/useRequirePermission";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { sanitizeMedicineName, sanitizeDosageForm, toDigitsOnly } from "@/lib/validation";
+
+// ─── Types ────────────────────────────────────────────────────────────────────
 
 interface Category {
   id: string;
   name: string;
   description?: string | null;
+  sortOrder?: number | null;
   _count?: { medicines: number };
 }
 
@@ -28,6 +33,7 @@ interface Medicine {
   medicineName: string;
   genericName?: string | null;
   dosageForm?: string | null;
+  dosageFormOther?: string | null;
   strength?: string | null;
   strengths?: Strength[];
   reorderThreshold: number;
@@ -35,543 +41,581 @@ interface Medicine {
   minimumOrderLevel?: number | null;
   categoryId?: string | null;
   category?: Category | null;
-  isActive?: boolean;
 }
 
-interface Suggestion {
-  id: string;
-  label: string;
-  medicineName: string;
-  genericName?: string | null;
-  strength?: string | null;
-  categoryName?: string | null;
+// ─── Form defaults ────────────────────────────────────────────────────────────
+
+interface MedForm {
+  medicineName: string; genericName: string; dosageForm: string; dosageFormOther: string;
+  strengthsText: string; reorderThreshold: string;
+  leadTimeDays: string; minimumOrderLevel: string; categoryId: string;
 }
 
-const emptyForm = {
-  medicineName: "",
-  genericName: "",
-  dosageForm: "",
-  strengthsText: "",
-  reorderThreshold: 50,
-  leadTimeDays: "",
-  minimumOrderLevel: "",
-  categoryId: "",
+const EMPTY_MED: MedForm = {
+  medicineName: "", genericName: "", dosageForm: "", dosageFormOther: "",
+  strengthsText: "", reorderThreshold: "50", leadTimeDays: "", minimumOrderLevel: "", categoryId: "",
 };
 
-const namePattern = /^[A-Za-z0-9][A-Za-z0-9 -]*$/;
+// ─── Dosage form + strength options ──────────────────────────────────────────
 
-function parseStrengths(value: string) {
-  return Array.from(new Set(value.split(/[\n,]+/).map((s) => s.trim()).filter(Boolean)));
-}
-
-function strengthLabel(m: Medicine) {
-  const strengths = m.strengths?.map((s) => s.strength).filter(Boolean);
-  if (strengths?.length) return strengths.join(", ");
-  return m.strength || "Not recorded";
-}
-
-const adminNav = [
-  { href: "/medicines", label: "Medicine Master" },
-  { href: "/medicines/categories", label: "Categories" },
-  { href: "/medicines/recent-changes", label: "Recent Changes" },
+const DOSAGE_FORMS = [
+  "Tablet", "Capsule", "Syrup", "Suspension", "Injection",
+  "Cream", "Ointment", "Drops", "Inhaler", "Sachet", "Powder", "Other",
 ];
 
-function MedicineCard({ medicine: m }: { medicine: Medicine }) {
+const STRENGTH_OPTIONS: Record<string, string[]> = {
+  Tablet:     ["5 mg","10 mg","25 mg","50 mg","100 mg","250 mg","500 mg","1000 mg"],
+  Capsule:    ["5 mg","10 mg","25 mg","50 mg","100 mg","250 mg","500 mg","1000 mg"],
+  Syrup:      ["125mg/5ml","250mg/5ml","500mg/5ml"],
+  Suspension: ["125mg/5ml","250mg/5ml","500mg/5ml"],
+  Injection:  ["1ml","2ml","5ml","10ml","100mg/ml","250mg/ml"],
+  Cream:      ["0.5%","1%","2%","5%"],
+  Ointment:   ["0.5%","1%","2%","5%"],
+  Drops:      ["0.5%","1%","2%","5%"],
+  Inhaler:    ["100mcg","200mcg","400mcg"],
+  Sachet:     ["500 mg","1000 mg","1 g","5 g"],
+  Powder:     ["500 mg","1 g","5 g"],
+  Other:      [],
+};
+
+function strengthOptionsFor(form: string): string[] {
+  return STRENGTH_OPTIONS[form] ?? [];
+}
+
+function parseStrengths(v: string) {
+  return Array.from(new Set(v.split(/[\n,]+/).map((s) => s.trim()).filter(Boolean)));
+}
+
+function strengthLabel(m: Medicine): string {
+  const s = m.strengths?.map((x) => x.strength).filter(Boolean);
+  if (s?.length) return s.join(", ");
+  return m.strength ?? "";
+}
+
+// ─── Custom-strength persistence ──────────────────────────────────────────────
+
+const STRENGTHS_KEY = "medflow_custom_strengths";
+
+function loadCustomStrengths(): string[] {
+  if (typeof window === "undefined") return [];
+  try { return JSON.parse(localStorage.getItem(STRENGTHS_KEY) ?? "[]") as string[]; }
+  catch { return []; }
+}
+
+function persistCustomStrengths(newStrengths: string[]) {
+  if (typeof window === "undefined") return;
+  try {
+    const existing = loadCustomStrengths();
+    const merged = Array.from(new Set([...existing, ...newStrengths])).sort();
+    localStorage.setItem(STRENGTHS_KEY, JSON.stringify(merged));
+  } catch { /* ignore */ }
+}
+
+// ─── Spinner ─────────────────────────────────────────────────────────────────
+
+function Spinner() {
   return (
-    <Link href={`/medicines/${m.id}`}>
-      <Card className="cursor-pointer transition hover:border-medflow-300 hover:shadow-sm">
-        <CardContent className="p-4">
-          <div className="flex items-start justify-between gap-2">
-            <div>
-              <p className="font-semibold">{m.medicineName}</p>
-              <p className="text-sm text-muted-foreground">
-                {[m.genericName, m.dosageForm, strengthLabel(m)].filter(Boolean).join(" | ")}
-              </p>
-            </div>
-            {m.category && (
-              <span className="shrink-0 rounded-full bg-medflow-50 px-2 py-0.5 text-xs font-medium text-medflow-700">
-                {m.category.name}
-              </span>
-            )}
-          </div>
-          <span className="mt-2 inline-block text-xs text-medflow-600">View details</span>
-        </CardContent>
-      </Card>
-    </Link>
+    <div className="h-4 w-4 animate-spin rounded-full border-2 border-medflow-400 border-t-transparent" />
   );
 }
 
-export default function MedicinesPage() {
+// ─── IntInput ─────────────────────────────────────────────────────────────────
+
+function IntInput({
+  label, value, onChange, placeholder,
+}: { label: string; value: string; onChange: (v: string) => void; placeholder?: string }) {
+  return (
+    <div>
+      <Label>{label}</Label>
+      <Input
+        type="text" inputMode="numeric" pattern="[0-9]*"
+        value={value} placeholder={placeholder ?? "0"}
+        onChange={(e) => onChange(toDigitsOnly(e.target.value))}
+      />
+    </div>
+  );
+}
+
+// ─── StrengthSelector ────────────────────────────────────────────────────────
+
+function StrengthSelector({
+  dosageForm, value, onChange, suggestions = [],
+}: { dosageForm: string; value: string; onChange: (v: string) => void; suggestions?: string[] }) {
+  const options = strengthOptionsFor(dosageForm);
+  const selected = parseStrengths(value);
+
+  const toggle = (opt: string) => {
+    const next = selected.includes(opt)
+      ? selected.filter((s) => s !== opt)
+      : [...selected, opt];
+    onChange(next.join("\n"));
+  };
+
+  const customVal = selected.find((s) => !options.includes(s)) ?? "";
+
+  const handleCustom = (raw: string) => {
+    const existing = selected.filter((s) => options.includes(s));
+    const trimmed = raw.trim();
+    onChange([...existing, ...(trimmed ? [trimmed] : [])].join("\n"));
+  };
+
+  const datalistOptions = suggestions.filter((s) => !options.includes(s));
+
+  return (
+    <div>
+      <Label>
+        Strength *{options.length > 0 ? " (select or type custom)" : " (type value)"}
+      </Label>
+      {options.length > 0 && (
+        <div className="mt-1 flex flex-wrap gap-2">
+          {options.map((opt) => (
+            <button
+              key={opt}
+              type="button"
+              onClick={() => toggle(opt)}
+              className={`rounded-full border px-3 py-1 text-sm font-medium transition ${
+                selected.includes(opt)
+                  ? "border-medflow-400 bg-medflow-50 text-medflow-700"
+                  : "border-slate-200 text-slate-600 hover:bg-slate-50"
+              }`}
+            >
+              {opt}
+            </button>
+          ))}
+        </div>
+      )}
+      <datalist id="strength-datalist">
+        {datalistOptions.map((s) => <option key={s} value={s} />)}
+      </datalist>
+      <input
+        list="strength-datalist"
+        className="mt-2 h-11 w-full rounded-lg border px-3 text-sm focus:outline-none focus:ring-2 focus:ring-medflow-400"
+        placeholder="Strength"
+        value={customVal}
+        onChange={(e) => handleCustom(e.target.value)}
+      />
+      {selected.length > 0 && (
+        <p className="mt-1 text-sm text-muted-foreground">
+          Selected: {selected.join(", ")}
+        </p>
+      )}
+      {!dosageForm && (
+        <p className="mt-1 text-sm text-amber-600">Select a dosage form first to see strength options.</p>
+      )}
+    </div>
+  );
+}
+
+// ─── MedicineCard ─────────────────────────────────────────────────────────────
+
+function MedicineCard({
+  medicine: m, isAdmin, showCategory, onEdit, onDelete,
+}: {
+  medicine: Medicine; isAdmin: boolean; showCategory: boolean;
+  onEdit?: (m: Medicine) => void;
+  onDelete?: (m: Medicine) => void;
+}) {
+  const router = useRouter();
+  const displayForm = m.dosageForm === "Other" && m.dosageFormOther ? m.dosageFormOther : m.dosageForm;
+  const sub = [m.genericName, displayForm, strengthLabel(m)].filter(Boolean).join(" · ");
+
+  return (
+    <div
+      role="button"
+      tabIndex={0}
+      className="flex cursor-pointer items-start justify-between gap-3 rounded-lg border bg-white px-4 py-3.5 shadow-sm transition hover:border-medflow-300 hover:shadow focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-medflow-400"
+      onClick={() => router.push(`/medicines/${m.id}`)}
+      onKeyDown={(e) => e.key === "Enter" && router.push(`/medicines/${m.id}`)}
+    >
+      <div className="min-w-0 flex-1">
+        <p className="truncate font-medium text-slate-900">{m.medicineName}</p>
+        {sub && <p className="mt-0.5 truncate text-sm text-muted-foreground">{sub}</p>}
+        {showCategory && m.category && (
+          <p className="mt-1 text-sm font-medium text-medflow-600">{m.category.name}</p>
+        )}
+      </div>
+      {isAdmin && (
+        <div className="mt-0.5 flex shrink-0 gap-0.5">
+          <button
+            type="button"
+            aria-label="Edit"
+            className="rounded p-1 text-slate-300 transition hover:text-slate-600"
+            onClick={(e) => { e.stopPropagation(); onEdit?.(m); }}
+          >
+            <Pencil className="h-3.5 w-3.5" />
+          </button>
+          <button
+            type="button"
+            aria-label="Delete"
+            className="rounded p-1 text-slate-300 transition hover:text-red-500"
+            onClick={(e) => { e.stopPropagation(); onDelete?.(m); }}
+          >
+            <Trash2 className="h-3.5 w-3.5" />
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ─── Main page ────────────────────────────────────────────────────────────────
+
+function MedicinesInner() {
   const { user } = useAuth();
   const isAdmin = isMasterDataAdminRole(user?.role);
+  const router = useRouter();
+  const hasAccess = useRequirePermission("medicines");
+  const searchParams = useSearchParams();
+
+  // ── Data ──
   const [medicines, setMedicines] = useState<Medicine[]>([]);
   const [categories, setCategories] = useState<Category[]>([]);
-  const [q, setQ] = useState("");
+  const [categoryFilter, setCategoryFilter] = useState(() => searchParams.get("category") ?? "");
+
+  // ── Loading / error ──
+  const [catLoading, setCatLoading] = useState(true);
+  const [medLoading, setMedLoading] = useState(true);
+  const [medError, setMedError] = useState("");
+
+  // ── Search (filters the medicine list across name/generic/category/form/strength) ──
+  const [searchQ, setSearchQ] = useState("");
   const [debouncedQ, setDebouncedQ] = useState("");
-  const [categoryFilter, setCategoryFilter] = useState("");
-  const [suggestions, setSuggestions] = useState<Suggestion[]>([]);
-  const [showSuggestions, setShowSuggestions] = useState(false);
-  const [showForm, setShowForm] = useState(false);
-  const [editingMedicineId, setEditingMedicineId] = useState<string | null>(null);
-  const [form, setForm] = useState(emptyForm);
+
+  // ── Medicine form ──
+  const [showMedForm, setShowMedForm] = useState(false);
+  const [editingMedId, setEditingMedId] = useState<string | null>(null);
+  const [medForm, setMedForm] = useState<MedForm>(EMPTY_MED);
+
+  // ── Feedback ──
   const [error, setError] = useState("");
   const [success, setSuccess] = useState("");
 
-  const loadCategories = () => api<Category[]>("/categories").then(setCategories);
+  // ── Custom strength suggestions ──
+  const [customStrengths, setCustomStrengths] = useState<string[]>([]);
 
-  const load = (search = debouncedQ, cat = categoryFilter) => {
+  useEffect(() => { setCustomStrengths(loadCustomStrengths()); }, []);
+
+  // ── Data loading ─────────────────────────────────────────────────────────────
+
+  const loadCategories = () => {
+    setCatLoading(true);
+    api<Category[]>("/categories")
+      .then((c) => { setCategories(c); setCatLoading(false); })
+      .catch(() => setCatLoading(false));
+  };
+
+  const loadMedicines = (cat: string, q: string) => {
+    setMedLoading(true);
+    setMedError("");
     const params = new URLSearchParams();
-    if (search) params.set("q", search);
     if (cat) params.set("categoryId", cat);
-    const query = params.toString() ? `?${params}` : "";
-    api<Medicine[]>(`/medicines${query}`).then(setMedicines).catch(console.error);
-  };
-
-  useEffect(() => {
-    loadCategories();
-    load("", "");
-  }, []);
-
-  useEffect(() => {
-    const handle = window.setTimeout(() => setDebouncedQ(q.trim()), 250);
-    return () => window.clearTimeout(handle);
-  }, [q]);
-
-  useEffect(() => {
-    load(debouncedQ, categoryFilter);
-    if (debouncedQ.length < 2) {
-      setSuggestions([]);
-      return;
-    }
-    api<Suggestion[]>(`/medicines/suggestions?q=${encodeURIComponent(debouncedQ)}&limit=8`)
-      .then(setSuggestions)
-      .catch(() => setSuggestions([]));
-  }, [debouncedQ, categoryFilter]);
-
-  const filteredCategory = useMemo(
-    () => categories.find((c) => c.id === categoryFilter),
-    [categories, categoryFilter]
-  );
-
-  const grouped = categories
-    .map((cat) => ({
-      category: cat,
-      items: medicines.filter((m) => m.categoryId === cat.id),
-    }))
-    .filter((g) => g.items.length > 0);
-
-  const uncategorized = medicines.filter((m) => !m.categoryId);
-
-  const resetMedicineForm = () => {
-    setForm(emptyForm);
-    setEditingMedicineId(null);
-    setShowForm(false);
-  };
-
-  const startAddMedicine = () => {
-    setError("");
-    setSuccess("");
-    setEditingMedicineId(null);
-    setForm(emptyForm);
-    setShowForm(true);
-  };
-
-  const startEditMedicine = (medicine: Medicine) => {
-    setError("");
-    setSuccess("");
-    setEditingMedicineId(medicine.id);
-    setShowForm(true);
-    setForm({
-      medicineName: medicine.medicineName,
-      genericName: medicine.genericName ?? "",
-      dosageForm: medicine.dosageForm ?? "",
-      strengthsText: medicine.strengths?.length ? medicine.strengths.map((s) => s.strength).join("\n") : medicine.strength ?? "",
-      reorderThreshold: medicine.reorderThreshold,
-      leadTimeDays: medicine.leadTimeDays?.toString() ?? "",
-      minimumOrderLevel: medicine.minimumOrderLevel?.toString() ?? "",
-      categoryId: medicine.categoryId ?? "",
-    });
-  };
-
-  const submit = async (e: React.FormEvent) => {
-    e.preventDefault();
-    setError("");
-    setSuccess("");
-    if (!isAdmin) return setError("Only administrators can manage medicine master data.");
-    if (!form.categoryId) return setError("Please select a category");
-    if (!namePattern.test(form.medicineName)) return setError("Medicine Name contains invalid characters");
-    if (form.genericName && !namePattern.test(form.genericName)) return setError("Generic Name contains invalid characters");
-    if (!Number.isInteger(Number(form.reorderThreshold))) return setError("Stock Threshold must be a whole number");
-
-    const payload = {
-      medicineName: form.medicineName,
-      genericName: form.genericName || undefined,
-      dosageForm: form.dosageForm || undefined,
-      strengths: parseStrengths(form.strengthsText),
-      reorderThreshold: Number(form.reorderThreshold),
-      leadTimeDays: form.leadTimeDays ? Number(form.leadTimeDays) : undefined,
-      minimumOrderLevel: form.minimumOrderLevel ? Number(form.minimumOrderLevel) : undefined,
-      categoryId: form.categoryId,
-    };
-
-    try {
-      await api(editingMedicineId ? `/medicines/${editingMedicineId}` : "/medicines", {
-        method: editingMedicineId ? "PATCH" : "POST",
-        body: JSON.stringify(payload),
+    if (q) params.set("q", q);
+    const qs = params.toString() ? `?${params.toString()}` : "";
+    api<Medicine[]>(`/medicines${qs}`)
+      .then((m) => { setMedicines(m); setMedLoading(false); })
+      .catch((err) => {
+        setMedError(err instanceof Error ? err.message : "Failed to load medicines");
+        setMedLoading(false);
       });
-      setSuccess(editingMedicineId ? "Medicine updated" : `Added ${form.medicineName}`);
-      resetMedicineForm();
-      loadCategories();
-      load();
+  };
+
+  useEffect(() => { loadCategories(); }, []);
+
+  // Debounce the search box.
+  useEffect(() => {
+    const t = setTimeout(() => setDebouncedQ(searchQ.trim()), 300);
+    return () => clearTimeout(t);
+  }, [searchQ]);
+
+  // Reload the medicine list when the category filter OR the search query changes.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  useEffect(() => { loadMedicines(categoryFilter, debouncedQ); }, [categoryFilter, debouncedQ]);
+
+  // ── Medicine form helpers ────────────────────────────────────────────────────
+
+  const resetMedForm = () => { setMedForm(EMPTY_MED); setEditingMedId(null); setShowMedForm(false); };
+
+  const startAddMedicine = (presetCatId = "") => {
+    setError(""); setSuccess("");
+    setEditingMedId(null);
+    setMedForm({ ...EMPTY_MED, categoryId: presetCatId || categoryFilter });
+    setShowMedForm(true);
+    window.scrollTo({ top: 0, behavior: "smooth" });
+  };
+
+  const startEditMedicine = (m: Medicine) => {
+    setError(""); setSuccess("");
+    setEditingMedId(m.id);
+    setMedForm({
+      medicineName: m.medicineName, genericName: m.genericName ?? "",
+      dosageForm: m.dosageForm ?? "",
+      dosageFormOther: m.dosageFormOther ?? "",
+      strengthsText: m.strengths?.length ? m.strengths.map((s) => s.strength).join("\n") : (m.strength ?? ""),
+      reorderThreshold: String(m.reorderThreshold),
+      leadTimeDays: m.leadTimeDays != null ? String(m.leadTimeDays) : "",
+      minimumOrderLevel: m.minimumOrderLevel != null ? String(m.minimumOrderLevel) : "",
+      categoryId: m.categoryId ?? "",
+    });
+    setShowMedForm(true);
+    window.scrollTo({ top: 0, behavior: "smooth" });
+  };
+
+  const submitMedicine = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setError(""); setSuccess("");
+    if (!isAdmin) return;
+    if (!medForm.categoryId) return setError("Please select a category.");
+    if (!medForm.medicineName.trim()) return setError("Medicine Name is required.");
+    if (!/[A-Za-z]/.test(medForm.medicineName)) return setError("Medicine Name must contain at least one alphabetic character (e.g. Amoxicillin 500mg).");
+    if (medForm.genericName.trim() && !/[A-Za-z]/.test(medForm.genericName)) {
+      return setError("Generic Name must be alphanumeric.");
+    }
+    if (!medForm.dosageForm) return setError("Dosage Form is required.");
+    if (medForm.dosageForm === "Other") {
+      if (!medForm.dosageFormOther.trim()) return setError("Please specify the dosage form.");
+      if (!/[A-Za-z]/.test(medForm.dosageFormOther)) return setError("Dosage form must be alphanumeric.");
+    }
+    if (!parseStrengths(medForm.strengthsText).length) return setError("Strength is required.");
+    if (!medForm.leadTimeDays) return setError("Lead Days is required.");
+    const leadDays = parseInt(medForm.leadTimeDays, 10);
+    if (isNaN(leadDays) || leadDays < 1) return setError("Lead Days must be greater than 0.");
+    if (!medForm.minimumOrderLevel) return setError("Minimum Order Level is required.");
+    const minOrder = parseInt(medForm.minimumOrderLevel, 10);
+    if (isNaN(minOrder) || minOrder < 1) return setError("Minimum Order Level must be greater than 0.");
+    const payload = {
+      medicineName: medForm.medicineName.trim(),
+      genericName: medForm.genericName.trim() || undefined,
+      dosageForm: medForm.dosageForm,
+      dosageFormOther: medForm.dosageForm === "Other" ? (medForm.dosageFormOther.trim() || null) : null,
+      strengths: parseStrengths(medForm.strengthsText),
+      reorderThreshold: medForm.reorderThreshold ? parseInt(medForm.reorderThreshold, 10) : 50,
+      leadTimeDays: leadDays,
+      minimumOrderLevel: minOrder,
+      categoryId: medForm.categoryId,
+    };
+    try {
+      await api(editingMedId ? `/medicines/${editingMedId}` : "/medicines", {
+        method: editingMedId ? "PATCH" : "POST", body: JSON.stringify(payload),
+      });
+      setSuccess(editingMedId ? "Medicine updated" : `${medForm.medicineName} added`);
+      const staticOpts = strengthOptionsFor(medForm.dosageForm);
+      const customs = parseStrengths(medForm.strengthsText).filter((s) => !staticOpts.includes(s));
+      if (customs.length) { persistCustomStrengths(customs); setCustomStrengths(loadCustomStrengths()); }
+      resetMedForm(); loadCategories(); loadMedicines(categoryFilter, debouncedQ);
+    } catch (err) { setError(err instanceof Error ? err.message : "Failed to save medicine"); }
+  };
+
+  const deleteMedicine = async (m: Medicine) => {
+    if (!window.confirm(`Delete "${m.medicineName}"? This can be restored from Audit Trail & Restore.`)) return;
+    setError(""); setSuccess("");
+    try {
+      await api(`/medicines/${m.id}`, { method: "DELETE" });
+      setSuccess(`"${m.medicineName}" deleted`);
+      loadMedicines(categoryFilter, debouncedQ);
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to save medicine");
+      setError(err instanceof Error ? err.message : "Failed to delete medicine");
     }
   };
 
-  const chooseSuggestion = (suggestion: Suggestion) => {
-    setQ(suggestion.medicineName);
-    setDebouncedQ(suggestion.medicineName);
-    setShowSuggestions(false);
-  };
+  const activeCategoryName = categories.find((c) => c.id === categoryFilter)?.name;
 
-  if (!isAdmin) {
-    return (
-      <div className="space-y-4">
+  if (!hasAccess) return null;
+
+  // ─────────────────────────────────────────────────────────────────────────────
+
+  return (
+    <div className="space-y-8">
+
+      {/* ── Header ── */}
+      <div className="flex flex-wrap items-center justify-between gap-3">
         <div>
-          <h1 className="text-2xl font-bold">Medicines</h1>
-          <p className="text-sm text-muted-foreground">Browse medicines by category and open details for stock information.</p>
+          <h1 className="text-2xl font-bold">Medicine Master</h1>
         </div>
-
-        {error && <p className="rounded-lg bg-red-50 p-3 text-sm text-red-700">{error}</p>}
-
-        <Card>
-          <CardContent className="grid gap-3 p-4 md:grid-cols-[1fr_260px]">
-            <form
-              className="flex gap-2"
-              onSubmit={(e) => {
-                e.preventDefault();
-                load(q.trim(), categoryFilter);
-              }}
-            >
-              <div className="relative flex-1">
-                <Label className="sr-only">Search medicines</Label>
-                <Search className="pointer-events-none absolute left-3 top-3 h-4 w-4 text-slate-400" />
-                <Input
-                  placeholder="Search medicines..."
-                  value={q}
-                  onChange={(e) => setQ(e.target.value)}
-                  className="pl-9"
-                />
-              </div>
-              <Button type="submit" variant="outline">Search</Button>
-            </form>
-            <select
-              className="h-11 w-full rounded-lg border bg-white px-3 text-sm"
-              value={categoryFilter}
-              onChange={(e) => setCategoryFilter(e.target.value)}
-            >
-              <option value="">All categories</option>
-              {categories.map((c) => (
-                <option key={c.id} value={c.id}>
-                  {c.name} ({c._count?.medicines ?? 0})
-                </option>
-              ))}
-            </select>
-          </CardContent>
-        </Card>
-
-        {categoryFilter && (
-          <Button type="button" variant="ghost" className="gap-2 px-0" onClick={() => setCategoryFilter("")}>
-            <ArrowLeft className="h-4 w-4" /> Back to categories
-          </Button>
-        )}
-
-        {!categoryFilter && (
-          <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
-            {categories.map((c) => (
-              <Card
-                key={c.id}
-                className="cursor-pointer transition hover:border-medflow-300 hover:shadow-sm"
-                onClick={() => setCategoryFilter(c.id)}
-              >
-                <CardContent className="p-4">
-                  <p className="font-semibold">{c.name}</p>
-                  <p className="text-sm text-muted-foreground">{c._count?.medicines ?? 0} medicines</p>
-                  {c.description && <p className="mt-2 line-clamp-2 text-xs text-slate-500">{c.description}</p>}
-                </CardContent>
-              </Card>
-            ))}
-          </div>
-        )}
-
-        <div className="space-y-4">
-          {categoryFilter ? (
-            <div>
-              <div className="mb-2 flex items-center justify-between gap-2">
-                <h2 className="text-lg font-semibold text-medflow-700">
-                  {filteredCategory?.name ?? "Selected category"}
-                </h2>
-                <span className="text-sm text-muted-foreground">{medicines.length} medicines</span>
-              </div>
-              <div className="space-y-2">
-                {medicines.map((m) => <MedicineCard key={m.id} medicine={m} />)}
-                {medicines.length === 0 && (
-                  <Card>
-                    <CardContent className="p-6 text-center text-sm text-muted-foreground">No medicines found in this category.</CardContent>
-                  </Card>
-                )}
-              </div>
-            </div>
-          ) : (
+        <div className="flex flex-wrap items-center gap-2">
+          {isAdmin && (
             <>
-              {grouped.map(({ category, items }) => (
-                <div key={category.id}>
-                  <h2 className="mb-2 text-lg font-semibold text-medflow-700">{category.name}</h2>
-                  <div className="space-y-2">
-                    {items.map((m) => <MedicineCard key={m.id} medicine={m} />)}
-                  </div>
-                </div>
-              ))}
-              {uncategorized.length > 0 && (
-                <div>
-                  <h2 className="mb-2 text-lg font-semibold text-muted-foreground">Uncategorized</h2>
-                  <div className="space-y-2">
-                    {uncategorized.map((m) => <MedicineCard key={m.id} medicine={m} />)}
-                  </div>
-                </div>
-              )}
+              <Button variant="outline" size="sm" onClick={() => router.push("/settings/audit")}>
+                <ScrollText className="mr-1.5 h-3.5 w-3.5" /> Audit Trail &amp; Restore
+              </Button>
+              <Button onClick={() => startAddMedicine()}>
+                <Plus className="mr-2 h-4 w-4" /> Add Medicine
+              </Button>
             </>
           )}
         </div>
-      </div>
-    );
-  }
-
-  return (
-    <div className="space-y-4">
-      <div className="flex flex-wrap items-center justify-between gap-3">
-        <div>
-          <h1 className="text-2xl font-bold">Medicines</h1>
-          <p className="text-sm text-muted-foreground">Medicine reference records and stock-use metadata.</p>
-        </div>
-        {isAdmin && (
-          <Button size="lg" onClick={startAddMedicine}>
-            <Plus className="mr-2 h-4 w-4" /> Add Medicine
-          </Button>
-        )}
-      </div>
-
-      <div className="flex gap-2 overflow-x-auto border-b">
-        {adminNav.map((item) => (
-          <Link
-            key={item.href}
-            href={item.href}
-            className="whitespace-nowrap border-b-2 border-transparent px-2 py-2 text-sm font-medium text-slate-600 first:border-medflow-600 first:text-medflow-700"
-          >
-            {item.label}
-          </Link>
-        ))}
       </div>
 
       {error && <p className="rounded-lg bg-red-50 p-3 text-sm text-red-700">{error}</p>}
       {success && <p className="rounded-lg bg-green-50 p-3 text-green-700">{success}</p>}
 
-      <Card>
-        <CardContent className="grid gap-3 p-4 md:grid-cols-[1fr_260px]">
-          <div className="relative">
-            <Label className="sr-only">Search medicines</Label>
-            <Search className="pointer-events-none absolute left-3 top-3 h-4 w-4 text-slate-400" />
-            <Input
-              placeholder="Search name, generic, strength, category..."
-              value={q}
-              onChange={(e) => {
-                setQ(e.target.value);
-                setShowSuggestions(true);
-              }}
-              onFocus={() => setShowSuggestions(true)}
-              className="pl-9"
-            />
-            {showSuggestions && suggestions.length > 0 && (
-              <div className="absolute z-20 mt-1 w-full overflow-hidden rounded-lg border bg-white shadow-lg">
-                {suggestions.map((s) => (
-                  <button
-                    key={`${s.id}-${s.label}`}
-                    type="button"
-                    className="block w-full px-3 py-2 text-left text-sm hover:bg-medflow-50"
-                    onMouseDown={() => chooseSuggestion(s)}
-                  >
-                    <span className="font-medium">{s.label}</span>
-                    <span className="ml-2 text-xs text-slate-500">{s.genericName || s.categoryName || ""}</span>
-                  </button>
-                ))}
-              </div>
-            )}
-          </div>
-          <div className="relative">
-            <Filter className="pointer-events-none absolute left-3 top-3 h-4 w-4 text-slate-400" />
-            <select
-              className="h-11 w-full rounded-lg border bg-white pl-9 pr-3 text-sm"
-              value={categoryFilter}
-              onChange={(e) => setCategoryFilter(e.target.value)}
-            >
-              <option value="">All categories</option>
-              {categories.map((c) => (
-                <option key={c.id} value={c.id}>
-                  {c.name} ({c._count?.medicines ?? 0})
-                </option>
-              ))}
-            </select>
-          </div>
-        </CardContent>
-      </Card>
-
-      {showForm && isAdmin && (
+      {/* ── Medicine Form ── */}
+      {showMedForm && isAdmin && (
         <Card>
-          <CardHeader><CardTitle>{editingMedicineId ? "Edit Medicine" : "Add Medicine"}</CardTitle></CardHeader>
+          <CardHeader><CardTitle>{editingMedId ? "Edit Medicine" : "Add Medicine"}</CardTitle></CardHeader>
           <CardContent>
-            <form onSubmit={submit} className="grid gap-3 md:grid-cols-2">
+            <form onSubmit={submitMedicine} className="grid gap-3 md:grid-cols-2">
+              {/* 1. Category */}
               <div className="md:col-span-2">
                 <Label>Category *</Label>
-                <select
-                  className="h-11 w-full rounded-lg border px-3"
-                  value={form.categoryId}
-                  onChange={(e) => setForm({ ...form, categoryId: e.target.value })}
-                  required
-                >
+                <select className="h-11 w-full rounded-lg border px-3 text-sm" value={medForm.categoryId}
+                  onChange={(e) => setMedForm({ ...medForm, categoryId: e.target.value })} required>
                   <option value="">Select category</option>
                   {categories.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
                 </select>
               </div>
+              {/* 2. Medicine Name */}
               <div>
                 <Label>Medicine Name *</Label>
-                <Input value={form.medicineName} onChange={(e) => setForm({ ...form, medicineName: e.target.value })} required />
+                <Input value={medForm.medicineName} placeholder="Medicine name"
+                  onChange={(e) => setMedForm({ ...medForm, medicineName: sanitizeMedicineName(e.target.value) })} required />
               </div>
+              {/* Generic Name */}
               <div>
                 <Label>Generic Name</Label>
-                <Input value={form.genericName} onChange={(e) => setForm({ ...form, genericName: e.target.value })} />
+                <Input value={medForm.genericName}
+                  onChange={(e) => setMedForm({ ...medForm, genericName: sanitizeMedicineName(e.target.value) })} />
               </div>
+              {/* 3. Dosage Form */}
               <div>
-                <Label>Dosage Form</Label>
+                <Label>Dosage Form *</Label>
                 <select
-                  className="h-11 w-full rounded-lg border px-3"
-                  value={form.dosageForm}
-                  onChange={(e) => setForm({ ...form, dosageForm: e.target.value })}
+                  className="h-11 w-full rounded-lg border px-3 text-sm"
+                  value={medForm.dosageForm}
+                  onChange={(e) => {
+                    // Changing dosage form clears both the "other" specifier and selected strengths.
+                    setMedForm({ ...medForm, dosageForm: e.target.value, dosageFormOther: "", strengthsText: "" });
+                  }}
+                  required
                 >
-                  <option value="">Select</option>
-                  <option>Tablet</option>
-                  <option>Capsule</option>
-                  <option>Syrup</option>
-                  <option>Injection</option>
-                  <option>Sachet</option>
-                  <option>Inhaler</option>
-                  <option>IV Fluid</option>
-                  <option>Vial</option>
+                  <option value="">Select dosage form</option>
+                  {DOSAGE_FORMS.map((f) => <option key={f}>{f}</option>)}
                 </select>
               </div>
-              <div>
-                <Label>Stock Threshold</Label>
-                <Input
-                  type="number"
-                  min={0}
-                  step={1}
-                  value={form.reorderThreshold}
-                  onChange={(e) => setForm({ ...form, reorderThreshold: Number(e.target.value) })}
-                />
-              </div>
-              <div>
-                <Label>Lead Time</Label>
-                <Input
-                  type="number"
-                  min={0}
-                  step={1}
-                  value={form.leadTimeDays}
-                  onChange={(e) => setForm({ ...form, leadTimeDays: e.target.value })}
-                />
-              </div>
-              <div>
-                <Label>Minimum Order Level</Label>
-                <Input
-                  type="number"
-                  min={0}
-                  step={1}
-                  value={form.minimumOrderLevel}
-                  onChange={(e) => setForm({ ...form, minimumOrderLevel: e.target.value })}
-                />
-              </div>
+              {/* Specify Dosage Form — visible only when "Other" is selected */}
+              {medForm.dosageForm === "Other" && (
+                <div>
+                  <Label>Specify Dosage Form *</Label>
+                  <Input
+                    placeholder="Dosage form"
+                    value={medForm.dosageFormOther}
+                    onChange={(e) => setMedForm({ ...medForm, dosageFormOther: sanitizeDosageForm(e.target.value) })}
+                    required
+                  />
+                </div>
+              )}
+              {/* 4. Strength — updates based on Dosage Form */}
               <div className="md:col-span-2">
-                <Label>Strengths</Label>
-                <textarea
-                  className="min-h-24 w-full rounded-lg border px-3 py-2 text-sm"
-                  value={form.strengthsText}
-                  onChange={(e) => setForm({ ...form, strengthsText: e.target.value })}
-                  placeholder={"250mg\n500mg\n650mg"}
+                <StrengthSelector
+                  dosageForm={medForm.dosageForm}
+                  value={medForm.strengthsText}
+                  onChange={(v) => setMedForm({ ...medForm, strengthsText: v })}
+                  suggestions={customStrengths}
                 />
               </div>
+              {/* 5. Thresholds */}
+              <IntInput label="Stock Threshold" value={medForm.reorderThreshold} placeholder="50"
+                onChange={(v) => setMedForm({ ...medForm, reorderThreshold: v })} />
+              <IntInput label="Lead Days *" value={medForm.leadTimeDays} placeholder="Days"
+                onChange={(v) => setMedForm({ ...medForm, leadTimeDays: v })} />
+              <IntInput label="Minimum Order Level *" value={medForm.minimumOrderLevel} placeholder="Quantity"
+                onChange={(v) => setMedForm({ ...medForm, minimumOrderLevel: v })} />
               <div className="flex gap-2 md:col-span-2">
-                <Button type="submit" size="lg">{editingMedicineId ? "Update Medicine" : "Save Medicine"}</Button>
-                <Button type="button" size="lg" variant="outline" onClick={resetMedicineForm}>Cancel</Button>
+                <Button type="submit">{editingMedId ? "Update Medicine" : "Save Medicine"}</Button>
+                <Button type="button" variant="outline" onClick={resetMedForm}>Cancel</Button>
               </div>
             </form>
           </CardContent>
         </Card>
       )}
 
-      <Card>
-        <CardHeader className="flex flex-row items-center justify-between">
-          <CardTitle className="text-base">
-            Medicine Master {filteredCategory ? `- ${filteredCategory.name}` : ""}
-          </CardTitle>
-          <span className="text-sm text-muted-foreground">{medicines.length} shown</span>
-        </CardHeader>
-        <CardContent className="overflow-x-auto p-0">
-          <table className="w-full min-w-[860px] text-sm">
-            <thead>
-              <tr className="border-b bg-slate-50 text-left">
-                <th className="p-3">Medicine Name</th>
-                <th className="p-3">Generic Name</th>
-                <th className="p-3">Strength</th>
-                <th className="p-3">Dosage Form</th>
-                <th className="p-3">Category</th>
-                <th className="p-3">Stock Threshold</th>
-                <th className="p-3">Status</th>
-                <th className="p-3">Actions</th>
-              </tr>
-            </thead>
-            <tbody>
-              {medicines.map((m) => (
-                <tr key={m.id} className="border-b hover:bg-slate-50/70">
-                  <td className="p-3 font-medium text-slate-900">{m.medicineName}</td>
-                  <td className="p-3 text-slate-600">{m.genericName || "-"}</td>
-                  <td className="p-3 text-slate-600">{strengthLabel(m)}</td>
-                  <td className="p-3 text-slate-600">{m.dosageForm || "-"}</td>
-                  <td className="p-3 text-slate-600">{m.category?.name || "Uncategorized"}</td>
-                  <td className="p-3">{m.reorderThreshold}</td>
-                  <td className="p-3">
-                    <span className="rounded-full bg-emerald-50 px-2 py-0.5 text-xs font-medium text-emerald-700">Active</span>
-                  </td>
-                  <td className="p-3">
-                    <div className="flex flex-wrap gap-2">
-                      <Button asChild type="button" size="sm" variant="outline">
-                        <Link href={`/medicines/${m.id}`}><Eye className="mr-1 h-3.5 w-3.5" /> View</Link>
-                      </Button>
-                      {isAdmin && (
-                        <Button type="button" size="sm" variant="outline" onClick={() => startEditMedicine(m)}>
-                          <Pencil className="mr-1 h-3.5 w-3.5" /> Edit
-                        </Button>
-                      )}
-                    </div>
-                  </td>
-                </tr>
-              ))}
-              {medicines.length === 0 && (
-                <tr>
-                  <td className="p-6 text-center text-muted-foreground" colSpan={8}>No medicines found.</td>
-                </tr>
-              )}
-            </tbody>
-          </table>
-        </CardContent>
-      </Card>
+      {/* ── Search ── */}
+      <div className="relative">
+        <Search className="pointer-events-none absolute left-3 top-3 h-4 w-4 text-slate-400" />
+        <Input
+          className="pl-9"
+          placeholder=""
+          value={searchQ}
+          onChange={(e) => setSearchQ(e.target.value)}
+        />
+      </div>
+
+      {/* ── Category filter dropdown + medicines list ── */}
+      <div>
+        <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
+          <div className="flex items-center gap-2">
+            <h2 className="text-lg font-semibold text-slate-800">
+              {debouncedQ ? `Results for "${debouncedQ}"` : activeCategoryName ?? "All Medicines"}
+            </h2>
+            {!medLoading && (
+              <span className="text-sm text-muted-foreground">· {medicines.length}</span>
+            )}
+          </div>
+          <div className="flex items-center gap-2">
+            {!debouncedQ && !catLoading && categories.length > 0 && (
+              <select
+                className="h-9 rounded-lg border border-slate-200 bg-white px-3 text-sm text-slate-700 focus:outline-none focus:ring-2 focus:ring-medflow-400"
+                value={categoryFilter}
+                onChange={(e) => setCategoryFilter(e.target.value)}
+              >
+                <option value="">All Categories ({categories.reduce((s, c) => s + (c._count?.medicines ?? 0), 0)})</option>
+                {categories.map((c) => (
+                  <option key={c.id} value={c.id}>
+                    {c.name} ({c._count?.medicines ?? 0})
+                  </option>
+                ))}
+              </select>
+            )}
+            {isAdmin && categoryFilter && (
+              <Button size="sm" variant="ghost" onClick={() => startAddMedicine(categoryFilter)}>
+                <Plus className="mr-1 h-3.5 w-3.5" /> Add here
+              </Button>
+            )}
+          </div>
+        </div>
+
+        {medLoading ? (
+          <div className="flex items-center gap-2 py-8 text-sm text-muted-foreground">
+            <Spinner /> Loading medicines…
+          </div>
+        ) : medError ? (
+          <div className="rounded-lg border border-red-200 bg-red-50 p-4 text-sm text-red-700">
+            {medError}
+          </div>
+        ) : medicines.length === 0 ? (
+          <div className="rounded-lg border border-dashed py-10 text-center">
+            <p className="text-sm text-muted-foreground">
+              No medicines found{categoryFilter ? " in this category" : ""}.
+            </p>
+            {isAdmin && (
+              <Button size="sm" className="mt-3" onClick={() => startAddMedicine(categoryFilter)}>
+                <Plus className="mr-2 h-4 w-4" /> Add Medicine
+              </Button>
+            )}
+          </div>
+        ) : (
+          <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
+            {medicines.map((m) => (
+              <MedicineCard
+                key={m.id}
+                medicine={m}
+                isAdmin={isAdmin}
+                showCategory={!categoryFilter || !!debouncedQ}
+                onEdit={startEditMedicine}
+                onDelete={deleteMedicine}
+              />
+            ))}
+          </div>
+        )}
+      </div>
+
     </div>
+  );
+}
+
+export default function MedicinesPage() {
+  return (
+    <Suspense>
+      <MedicinesInner />
+    </Suspense>
   );
 }

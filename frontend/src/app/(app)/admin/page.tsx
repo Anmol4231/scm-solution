@@ -1,25 +1,48 @@
-"use client";
+﻿"use client";
 
 import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
+import Link from "next/link";
+import { Bell } from "lucide-react";
+import { Button } from "@/components/ui/button";
 import { api } from "@/lib/api";
 import { useAuth } from "@/lib/auth-context";
-import { isAdminDashboardRole, adminRoleLabel } from "@/lib/roles";
+import { isAdminDashboardRole } from "@/lib/roles";
 import { LocationFilter } from "@/components/admin/location-filter";
 import { AdminSummaryCards, type AdminSummary } from "@/components/admin/summary-cards";
 import { FacilityComparison, ExpiryHeatmapTable, type FacilityStat } from "@/components/admin/facility-comparison";
 import { AdminTrendCharts } from "@/components/admin/trend-charts";
-import { AlertCenter } from "@/components/admin/alert-center";
-import { FacilityMapView } from "@/components/admin/facility-map";
 import { TransferRecommendationsPanel } from "@/components/admin/transfer-recommendations";
 import {
   PendingSyncWidget,
   GlobalActivityFeed,
 } from "@/components/admin/admin-widgets";
-import { FacilitySwitcher } from "@/components/layout/facility-switcher";
-import Link from "next/link";
-import { Button } from "@/components/ui/button";
-import { ArrowLeftRight } from "lucide-react";
+import { Input } from "@/components/ui/input";
+
+type DurationRange = "today" | "7" | "30" | "90" | "custom";
+
+const DURATIONS: { key: DurationRange; label: string }[] = [
+  { key: "today", label: "Today" },
+  { key: "7", label: "Last 7 Days" },
+  { key: "30", label: "Last 30 Days" },
+  { key: "90", label: "Last 90 Days" },
+  { key: "custom", label: "Custom Range" },
+];
+
+function durationToDates(range: DurationRange, from: string, to: string): { from?: number; to?: number } {
+  if (range === "custom") {
+    return {
+      from: from ? new Date(from).getTime() : undefined,
+      to: to ? new Date(`${to}T23:59:59`).getTime() : undefined,
+    };
+  }
+  if (range === "today") {
+    const d = new Date();
+    d.setHours(0, 0, 0, 0);
+    return { from: d.getTime() };
+  }
+  return { from: Date.now() - Number(range) * 86400000 };
+}
 
 interface AdminDashboardData {
   summary: AdminSummary;
@@ -58,6 +81,10 @@ export default function AdminDashboardPage() {
   const [locationId, setLocationId] = useState("");
   const [data, setData] = useState<AdminDashboardData | null>(null);
   const [loading, setLoading] = useState(true);
+  // Duration filter — persists while the user stays on the page.
+  const [duration, setDuration] = useState<DurationRange>("30");
+  const [customFrom, setCustomFrom] = useState("");
+  const [customTo, setCustomTo] = useState("");
 
   useEffect(() => {
     if (user && !isAdminDashboardRole(user.role)) {
@@ -79,34 +106,71 @@ export default function AdminDashboardPage() {
     return null;
   }
 
+  // Duration applies client-side to time-stamped widgets (Recent Activity).
+  const { from, to } = durationToDates(duration, customFrom, customTo);
+  const recentActivity = (data?.recentActivity ?? []).filter((a) => {
+    const t = new Date(a.createdAt).getTime();
+    if (from && t < from) return false;
+    if (to && t > to) return false;
+    return true;
+  });
+
   return (
     <div className="space-y-6">
-      <div className="flex flex-col gap-4 border-b border-slate-200 pb-4 sm:flex-row sm:items-end sm:justify-between">
-        <div>
-          <p className="text-xs font-semibold uppercase tracking-wider text-medflow-600">
-            Healthcare Command Center
-          </p>
-          <h1 className="text-2xl font-bold">Admin Dashboard</h1>
-          <p className="text-sm text-slate-500">
-            {adminRoleLabel(user.role)} — monitor all facilities from one place
-          </p>
-        </div>
-        <div className="flex flex-wrap gap-2">
-          <Button asChild variant="outline" size="sm">
-            <Link href="/admin/transfers">
-              <ArrowLeftRight className="mr-2 h-4 w-4" />
-              Redistribution
-            </Link>
-          </Button>
-          <Button asChild variant="outline" size="sm">
-            <a href="#alert-center">Alert Center</a>
-          </Button>
-        </div>
+      <div>
+        <h1 className="text-2xl font-bold tracking-tight">Dashboard</h1>
+        <p className="mt-0.5 text-sm text-muted-foreground">
+          {new Date().toLocaleDateString("en-US", { weekday: "long", year: "numeric", month: "long", day: "numeric" })}
+        </p>
       </div>
 
-      <div className="grid gap-4 lg:grid-cols-[minmax(0,280px)_1fr]">
+      <div className="flex flex-wrap items-center justify-between gap-3 border-b border-slate-200 pb-4">
+        <div className="flex flex-col gap-2">
+          <div className="flex flex-wrap gap-1.5">
+            {DURATIONS.map((d) => (
+              <button
+                key={d.key}
+                type="button"
+                onClick={() => setDuration(d.key)}
+                className={`rounded-full border px-4 py-1.5 text-sm font-medium transition ${
+                  duration === d.key
+                    ? "border-medflow-300 bg-medflow-50 text-medflow-700"
+                    : "border-slate-200 text-slate-600 hover:bg-slate-50"
+                }`}
+              >
+                {d.label}
+              </button>
+            ))}
+          </div>
+          {duration === "custom" && (
+            <div className="flex flex-wrap items-center gap-2 text-sm text-slate-500">
+              <label className="flex items-center gap-1">
+                From
+                <Input type="date" className="h-9 w-auto" value={customFrom} onChange={(e) => setCustomFrom(e.target.value)} />
+              </label>
+              <label className="flex items-center gap-1">
+                To
+                <Input type="date" className="h-9 w-auto" value={customTo} onChange={(e) => setCustomTo(e.target.value)} />
+              </label>
+            </div>
+          )}
+        </div>
+        <Button asChild variant="outline">
+          <Link href="/alerts">
+            <Bell className="mr-2 h-4 w-4 text-amber-500" />
+            <span className="text-sm font-semibold">Alert Center</span>
+            {data?.summary && (data.summary.lowStockItems + data.summary.nearExpiryItems) > 0 && (
+              <span className="ml-1.5 rounded-full bg-amber-100 px-1.5 py-0.5 text-sm font-semibold text-amber-700">
+                {data.summary.lowStockItems + data.summary.nearExpiryItems}
+              </span>
+            )}
+          </Link>
+        </Button>
+      </div>
+
+      {/* Single Location selector */}
+      <div className="max-w-md">
         <LocationFilter value={locationId} onChange={setLocationId} />
-        <FacilitySwitcher />
       </div>
 
       {loading && !data && (
@@ -116,16 +180,14 @@ export default function AdminDashboardPage() {
       {data && (
         <>
           <AdminSummaryCards summary={data.summary} />
-          <div className="grid gap-4 md:grid-cols-2">
-            <PendingSyncWidget nonReportingCount={data.nonReportingFacilities?.length ?? 0} />
-            <GlobalActivityFeed activity={data.recentActivity ?? []} />
-          </div>
-          <FacilityMapView />
-          <TransferRecommendationsPanel facilityFilter={locationId} />
           <FacilityComparison stats={data.facilityStats} />
+          <div className="grid gap-4 md:grid-cols-2">
+            <GlobalActivityFeed activity={recentActivity} />
+            <PendingSyncWidget nonReportingCount={data.nonReportingFacilities?.length ?? 0} />
+          </div>
+          <TransferRecommendationsPanel facilityFilter={locationId} />
           {data.trends && <AdminTrendCharts trends={data.trends} />}
           <ExpiryHeatmapTable rows={data.expiryHeatmap} />
-          <AlertCenter facilityFilter={locationId} />
         </>
       )}
     </div>

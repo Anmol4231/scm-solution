@@ -1,18 +1,22 @@
-"use client";
+﻿"use client";
 
+import { useEffect } from "react";
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 import {
   ShoppingCart,
-  Truck,
+  PackageCheck,
+  ClipboardList,
   ArrowLeftRight,
   Scale,
   RotateCcw,
   AlertTriangle,
   History,
   BarChart3,
-  ClipboardList,
   type LucideIcon,
 } from "lucide-react";
+import { useAuth } from "@/lib/auth-context";
+import { can, type ModuleKey } from "@/lib/permissions";
 
 interface HubItem {
   href: string;
@@ -20,6 +24,7 @@ interface HubItem {
   description: string;
   icon: LucideIcon;
   color: string;
+  module: ModuleKey;
 }
 
 const HUB_ITEMS: HubItem[] = [
@@ -29,27 +34,31 @@ const HUB_ITEMS: HubItem[] = [
     description: "Real-time inventory across all batches",
     icon: BarChart3,
     color: "text-medflow-600 bg-medflow-50",
-  },
-  {
-    href: "/requisitions",
-    label: "Requisitions",
-    description: "Request stock from AMS or supply stores",
-    icon: ClipboardList,
-    color: "text-indigo-600 bg-indigo-50",
+    module: "stock",
   },
   {
     href: "/stock/orders",
-    label: "Vendor Orders",
-    description: "Place and manage external vendor orders",
+    label: "Orders",
+    description: "Create, approve, and manage stock orders",
     icon: ShoppingCart,
     color: "text-blue-600 bg-blue-50",
+    module: "orders",
   },
   {
-    href: "/stock/pending-receipts",
-    label: "Pending Receipts",
-    description: "Vouchers and orders waiting to be received",
-    icon: Truck,
+    href: "/stock/receipt",
+    label: "Receive Stock",
+    description: "Confirm receipt of ordered stock into inventory",
+    icon: PackageCheck,
     color: "text-emerald-600 bg-emerald-50",
+    module: "receiveStock",
+  },
+  {
+    href: "/stock/orders/received",
+    label: "Received Orders",
+    description: "History of fulfilled and partially received orders",
+    icon: ClipboardList,
+    color: "text-teal-600 bg-teal-50",
+    module: "receiveStock",
   },
   {
     href: "/transfers",
@@ -57,6 +66,7 @@ const HUB_ITEMS: HubItem[] = [
     description: "Transfer stock between facilities",
     icon: ArrowLeftRight,
     color: "text-violet-600 bg-violet-50",
+    module: "transfers",
   },
   {
     href: "/returns",
@@ -64,6 +74,7 @@ const HUB_ITEMS: HubItem[] = [
     description: "Process patient and facility returns",
     icon: RotateCcw,
     color: "text-rose-600 bg-rose-50",
+    module: "returns",
   },
   {
     href: "/expiry",
@@ -71,6 +82,7 @@ const HUB_ITEMS: HubItem[] = [
     description: "Track and dispose of expiring stock",
     icon: AlertTriangle,
     color: "text-orange-600 bg-orange-50",
+    module: "expiry",
   },
   {
     href: "/stock/adjustment",
@@ -78,13 +90,7 @@ const HUB_ITEMS: HubItem[] = [
     description: "Physical count and stock corrections",
     icon: Scale,
     color: "text-amber-600 bg-amber-50",
-  },
-  {
-    href: "/stock/movement",
-    label: "Stock Movement",
-    description: "Opening + receipts − issues = closing balance",
-    icon: BarChart3,
-    color: "text-teal-600 bg-teal-50",
+    module: "stock",
   },
   {
     href: "/stock/transactions",
@@ -92,10 +98,26 @@ const HUB_ITEMS: HubItem[] = [
     description: "Full audit log of stock movements",
     icon: History,
     color: "text-slate-600 bg-slate-100",
+    module: "stock",
   },
 ];
 
+const STOCK_MODULES: ModuleKey[] = ["stock", "orders", "receiveStock", "transfers", "returns", "expiry"];
+
 export default function StockManagementPage() {
+  const { user, loading } = useAuth();
+  const router = useRouter();
+
+  const hasAnyAccess = !loading && !!user && STOCK_MODULES.some((m) => can(user.permissions, m, "view"));
+
+  useEffect(() => {
+    if (!loading && user && !hasAnyAccess) router.replace("/dashboard");
+  }, [loading, user, hasAnyAccess, router]);
+
+  if (!hasAnyAccess) return null;
+
+  const visibleItems = HUB_ITEMS.filter((item) => can(user!.permissions, item.module, "view"));
+
   return (
     <div className="space-y-5">
       <div>
@@ -106,7 +128,7 @@ export default function StockManagementPage() {
       </div>
 
       <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
-        {HUB_ITEMS.map((item) => {
+        {visibleItems.map((item) => {
           const Icon = item.icon;
           return (
             <Link key={item.href} href={item.href}>
@@ -115,10 +137,8 @@ export default function StockManagementPage() {
                   <Icon className="h-5 w-5" />
                 </span>
                 <div>
-                  <p className="font-semibold text-slate-800 group-hover:text-medflow-700">
-                    {item.label}
-                  </p>
-                  <p className="mt-0.5 text-xs text-slate-500">{item.description}</p>
+                  <p className="font-semibold text-slate-800 group-hover:text-medflow-700">{item.label}</p>
+                  <p className="mt-0.5 text-sm text-slate-500">{item.description}</p>
                 </div>
               </div>
             </Link>

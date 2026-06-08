@@ -1,534 +1,285 @@
-'use client';
+﻿"use client";
 
-import { useState, useEffect } from 'react';
-import {
-  Tabs,
-  TabsContent,
-  TabsList,
-  TabsTrigger,
-} from '@/components/ui/tabs';
-import {
-  Card,
-  CardContent,
-  CardDescription,
-  CardHeader,
-  CardTitle,
-} from '@/components/ui/card';
-import { Button } from '@/components/ui/button';
-import {
-  AlertDialog,
-  AlertDialogAction,
-  AlertDialogCancel,
-  AlertDialogContent,
-  AlertDialogDescription,
-  AlertDialogHeader,
-  AlertDialogTitle,
-} from '@/components/ui/alert-dialog';
-import {
-  Table,
-  TableBody,
-  TableCell,
-  TableHead,
-  TableHeader,
-  TableRow,
-} from '@/components/ui/table';
-import { Badge } from '@/components/ui/badge';
-import { api } from '@/lib/api';
-import { formatDate } from '@/lib/utils';
-import { Loader2, AlertTriangle, RotateCcw, Trash2 } from 'lucide-react';
-
-interface Change {
-  id: string;
-  timestamp: string;
-  entityType: string;
-  entityId: string;
-  recordName: string;
-  action: string;
-  actionLabel: string;
-  changedBy: string;
-  changedByEmail?: string;
-  facility: string;
-  previousValues?: Record<string, unknown>;
-  currentValues?: Record<string, unknown>;
-  changeDetails?: string;
-  canRestore: boolean;
-}
+import { useEffect, useState } from "react";
+import { useRouter } from "next/navigation";
+import { RotateCcw, AlertTriangle, ChevronDown, ChevronUp } from "lucide-react";
+import { api } from "@/lib/api";
+import { useAuth } from "@/lib/auth-context";
+import { isMasterDataAdminRole } from "@/lib/roles";
+import { Button } from "@/components/ui/button";
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 
 interface DeletedMedicine {
   id: string;
   medicineName: string;
-  genericName?: string;
-  dosageForm?: string;
-  category?: string;
-  deletedAt: string;
-  deletedBy: string;
-  deletedByEmail?: string;
+  genericName?: string | null;
+  dosageForm?: string | null;
+  strength?: string | null;
+  deletedAt?: string | null;
+  deletedBy?: string | null;
+  category?: string | null;
 }
 
 interface DeletedCategory {
   id: string;
   name: string;
-  description?: string;
-  deletedAt: string;
-  deletedBy: string;
-  deletedByEmail?: string;
-  linkedMedicines: number;
+  description?: string | null;
+  deletedAt?: string | null;
+  deletedBy?: string | null;
+  linkedMedicines?: number;
 }
 
+type TabKey = "medicines" | "categories";
+
 export default function RecoveryPage() {
-  const [changes, setChanges] = useState<Change[]>([]);
+  const { user, loading } = useAuth();
+  const router = useRouter();
+  const isAdmin = isMasterDataAdminRole(user?.role);
+
+  const [activeTab, setActiveTab] = useState<TabKey>("medicines");
   const [deletedMedicines, setDeletedMedicines] = useState<DeletedMedicine[]>([]);
   const [deletedCategories, setDeletedCategories] = useState<DeletedCategory[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [restoreDialog, setRestoreDialog] = useState<{
-    open: boolean;
-    type?: 'medicine' | 'category';
-    id?: string;
-    name?: string;
-  }>({ open: false });
-  const [detailsDialog, setDetailsDialog] = useState<{
-    open: boolean;
-    change?: Change;
-  }>({ open: false });
+  const [dataLoading, setDataLoading] = useState(true);
+  const [error, setError] = useState("");
+  const [success, setSuccess] = useState("");
+  const [expanded, setExpanded] = useState<string | null>(null);
 
   useEffect(() => {
-    loadData();
-  }, []);
+    if (!loading && !isAdmin) router.replace("/medicines");
+  }, [isAdmin, loading, router]);
 
   const loadData = async () => {
+    setDataLoading(true);
+    setError("");
     try {
-      setLoading(true);
-      const [changesRes, deletedMedicinesRes, deletedCategoriesRes] = await Promise.all([
-        api.get('/admin/recent-changes?limit=100'),
-        api.get('/admin/deleted-medicines'),
-        api.get('/admin/deleted-categories'),
+      const [dm, dc] = await Promise.all([
+        api<DeletedMedicine[]>("/medicines/deleted"),
+        api<DeletedCategory[]>("/categories/deleted"),
       ]);
-
-      setChanges(changesRes.data.changes || changesRes.data);
-      setDeletedMedicines(deletedMedicinesRes.data);
-      setDeletedCategories(deletedCategoriesRes.data);
-    } catch (error) {
-      console.error('Failed to load recovery data:', error);
+      setDeletedMedicines(dm);
+      setDeletedCategories(dc);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to load recovery data");
     } finally {
-      setLoading(false);
+      setDataLoading(false);
     }
   };
 
-  const handleRestore = async (type: 'medicine' | 'category', id: string) => {
+  useEffect(() => {
+    if (isAdmin) loadData();
+  }, [isAdmin]);
+
+  const restore = async (type: "medicine" | "category", id: string, name: string) => {
+    if (!window.confirm(`Restore "${name}"? It will become active again.`)) return;
+    setError("");
+    setSuccess("");
     try {
-      const endpoint =
-        type === 'medicine'
-          ? `/admin/restore-medicine/${id}`
-          : `/admin/restore-category/${id}`;
-
-      await api.post(endpoint);
-
-      // Reload data
-      await loadData();
-      setRestoreDialog({ open: false });
-    } catch (error: unknown) {
-      const message =
-        error instanceof Error ? error.message : 'Failed to restore record';
-      alert(`Error: ${message}`);
+      const endpoint = type === "medicine" ? `/medicines/${id}/restore` : `/categories/${id}/restore`;
+      await api(endpoint, { method: "POST" });
+      setSuccess(`"${name}" restored successfully`);
+      setExpanded(null);
+      loadData();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to restore record");
     }
   };
 
-  const getActionBadgeColor = (action: string) => {
-    switch (action) {
-      case 'CREATE':
-        return 'bg-green-100 text-green-800';
-      case 'UPDATE':
-        return 'bg-blue-100 text-blue-800';
-      case 'SOFT_DELETE':
-        return 'bg-red-100 text-red-800';
-      case 'RESTORE':
-        return 'bg-purple-100 text-purple-800';
-      default:
-        return 'bg-gray-100 text-gray-800';
-    }
-  };
+  if (!isAdmin) return null;
 
-  const getChangeSummary = (change: Change) => {
-    if (!change.previousValues || !change.currentValues) return 'No details available';
-
-    const diffs = [];
-    for (const key in change.currentValues) {
-      if (change.previousValues[key] !== change.currentValues[key]) {
-        diffs.push(
-          `${key}: "${change.previousValues[key]}" → "${change.currentValues[key]}"`
-        );
-      }
-    }
-
-    return diffs.length > 0 ? diffs.join(', ') : 'No changes';
-  };
-
-  if (loading) {
-    return (
-      <div className="flex items-center justify-center h-screen">
-        <Loader2 className="h-8 w-8 animate-spin" />
-      </div>
-    );
-  }
+  const tabs: { key: TabKey; label: string; count?: number }[] = [
+    { key: "medicines", label: "Deleted Medicines", count: deletedMedicines.length },
+    { key: "categories", label: "Deleted Categories", count: deletedCategories.length },
+  ];
 
   return (
-    <div className="space-y-6 p-6">
-      <div className="space-y-2">
-        <h1 className="text-3xl font-bold tracking-tight">Recovery & Audit</h1>
-        <p className="text-gray-500">
-          View change history and recover deleted records
-        </p>
+    <div className="space-y-5">
+      <div>
+        <h1 className="text-2xl font-bold">Recovery</h1>
       </div>
 
-      <Tabs defaultValue="changes" className="w-full">
-        <TabsList>
-          <TabsTrigger value="changes">Recent Changes</TabsTrigger>
-          <TabsTrigger value="deleted-medicines">Deleted Medicines</TabsTrigger>
-          <TabsTrigger value="deleted-categories">Deleted Categories</TabsTrigger>
-        </TabsList>
+      {error && <p className="rounded-lg bg-red-50 p-3 text-sm text-red-700">{error}</p>}
+      {success && <p className="rounded-lg bg-green-50 p-3 text-green-700">{success}</p>}
 
-        <TabsContent value="changes" className="space-y-4">
-          <Card>
-            <CardHeader>
-              <CardTitle>Change History</CardTitle>
-              <CardDescription>
-                All create, update, and delete actions on medicines and categories
-              </CardDescription>
-            </CardHeader>
-            <CardContent>
-              {changes.length === 0 ? (
-                <div className="text-center py-8 text-gray-500">
-                  No changes recorded yet
-                </div>
-              ) : (
-                <div className="overflow-x-auto">
-                  <Table>
-                    <TableHeader>
-                      <TableRow>
-                        <TableHead>Date & Time</TableHead>
-                        <TableHead>Record</TableHead>
-                        <TableHead>Type</TableHead>
-                        <TableHead>Action</TableHead>
-                        <TableHead>User</TableHead>
-                        <TableHead>Details</TableHead>
-                      </TableRow>
-                    </TableHeader>
-                    <TableBody>
-                      {changes.map((change) => (
-                        <TableRow key={change.id}>
-                          <TableCell className="text-sm">
-                            {formatDate(new Date(change.timestamp))}
-                          </TableCell>
-                          <TableCell className="font-medium">
-                            {change.recordName}
-                          </TableCell>
-                          <TableCell>
-                            <Badge variant="outline">
-                              {change.entityType === 'MedicineCategory'
-                                ? 'Category'
-                                : 'Medicine'}
-                            </Badge>
-                          </TableCell>
-                          <TableCell>
-                            <Badge className={getActionBadgeColor(change.action)}>
-                              {change.actionLabel}
-                            </Badge>
-                          </TableCell>
-                          <TableCell className="text-sm">
-                            {change.changedBy}
-                            {change.changedByEmail && (
-                              <div className="text-xs text-gray-500">
-                                {change.changedByEmail}
-                              </div>
-                            )}
-                          </TableCell>
-                          <TableCell>
-                            <Button
-                              variant="ghost"
-                              size="sm"
-                              onClick={() =>
-                                setDetailsDialog({
-                                  open: true,
-                                  change,
-                                })
-                              }
-                            >
-                              View
-                            </Button>
-                          </TableCell>
-                        </TableRow>
-                      ))}
-                    </TableBody>
-                  </Table>
-                </div>
-              )}
-            </CardContent>
-          </Card>
-        </TabsContent>
-
-        <TabsContent value="deleted-medicines" className="space-y-4">
-          <Card>
-            <CardHeader>
-              <CardTitle className="flex items-center gap-2">
-                <AlertTriangle className="h-5 w-5 text-yellow-600" />
-                Deleted Medicines
-              </CardTitle>
-              <CardDescription>
-                Soft-deleted medicines can be restored
-              </CardDescription>
-            </CardHeader>
-            <CardContent>
-              {deletedMedicines.length === 0 ? (
-                <div className="text-center py-8 text-gray-500">
-                  No deleted medicines
-                </div>
-              ) : (
-                <div className="overflow-x-auto">
-                  <Table>
-                    <TableHeader>
-                      <TableRow>
-                        <TableHead>Medicine Name</TableHead>
-                        <TableHead>Generic Name</TableHead>
-                        <TableHead>Category</TableHead>
-                        <TableHead>Deleted At</TableHead>
-                        <TableHead>Deleted By</TableHead>
-                        <TableHead>Action</TableHead>
-                      </TableRow>
-                    </TableHeader>
-                    <TableBody>
-                      {deletedMedicines.map((medicine) => (
-                        <TableRow key={medicine.id}>
-                          <TableCell className="font-medium">
-                            {medicine.medicineName}
-                          </TableCell>
-                          <TableCell>{medicine.genericName || '-'}</TableCell>
-                          <TableCell>{medicine.category || '-'}</TableCell>
-                          <TableCell className="text-sm">
-                            {formatDate(new Date(medicine.deletedAt))}
-                          </TableCell>
-                          <TableCell className="text-sm">
-                            {medicine.deletedBy}
-                            {medicine.deletedByEmail && (
-                              <div className="text-xs text-gray-500">
-                                {medicine.deletedByEmail}
-                              </div>
-                            )}
-                          </TableCell>
-                          <TableCell>
-                            <Button
-                              variant="outline"
-                              size="sm"
-                              onClick={() =>
-                                setRestoreDialog({
-                                  open: true,
-                                  type: 'medicine',
-                                  id: medicine.id,
-                                  name: medicine.medicineName,
-                                })
-                              }
-                            >
-                              <RotateCcw className="h-4 w-4 mr-1" />
-                              Restore
-                            </Button>
-                          </TableCell>
-                        </TableRow>
-                      ))}
-                    </TableBody>
-                  </Table>
-                </div>
-              )}
-            </CardContent>
-          </Card>
-        </TabsContent>
-
-        <TabsContent value="deleted-categories" className="space-y-4">
-          <Card>
-            <CardHeader>
-              <CardTitle className="flex items-center gap-2">
-                <AlertTriangle className="h-5 w-5 text-yellow-600" />
-                Deleted Categories
-              </CardTitle>
-              <CardDescription>
-                Soft-deleted categories can be restored
-              </CardDescription>
-            </CardHeader>
-            <CardContent>
-              {deletedCategories.length === 0 ? (
-                <div className="text-center py-8 text-gray-500">
-                  No deleted categories
-                </div>
-              ) : (
-                <div className="overflow-x-auto">
-                  <Table>
-                    <TableHeader>
-                      <TableRow>
-                        <TableHead>Category Name</TableHead>
-                        <TableHead>Description</TableHead>
-                        <TableHead>Linked Medicines</TableHead>
-                        <TableHead>Deleted At</TableHead>
-                        <TableHead>Deleted By</TableHead>
-                        <TableHead>Action</TableHead>
-                      </TableRow>
-                    </TableHeader>
-                    <TableBody>
-                      {deletedCategories.map((category) => (
-                        <TableRow key={category.id}>
-                          <TableCell className="font-medium">
-                            {category.name}
-                          </TableCell>
-                          <TableCell className="text-sm">
-                            {category.description || '-'}
-                          </TableCell>
-                          <TableCell>
-                            <Badge variant="secondary">
-                              {category.linkedMedicines}
-                            </Badge>
-                          </TableCell>
-                          <TableCell className="text-sm">
-                            {formatDate(new Date(category.deletedAt))}
-                          </TableCell>
-                          <TableCell className="text-sm">
-                            {category.deletedBy}
-                            {category.deletedByEmail && (
-                              <div className="text-xs text-gray-500">
-                                {category.deletedByEmail}
-                              </div>
-                            )}
-                          </TableCell>
-                          <TableCell>
-                            <Button
-                              variant="outline"
-                              size="sm"
-                              onClick={() =>
-                                setRestoreDialog({
-                                  open: true,
-                                  type: 'category',
-                                  id: category.id,
-                                  name: category.name,
-                                })
-                              }
-                            >
-                              <RotateCcw className="h-4 w-4 mr-1" />
-                              Restore
-                            </Button>
-                          </TableCell>
-                        </TableRow>
-                      ))}
-                    </TableBody>
-                  </Table>
-                </div>
-              )}
-            </CardContent>
-          </Card>
-        </TabsContent>
-      </Tabs>
-
-      {/* Restore Confirmation Dialog */}
-      <AlertDialog
-        open={restoreDialog.open}
-        onOpenChange={(open) =>
-          setRestoreDialog({ ...restoreDialog, open })
-        }
-      >
-        <AlertDialogContent>
-          <AlertDialogHeader>
-            <AlertDialogTitle>Restore {restoreDialog.type === 'medicine' ? 'Medicine' : 'Category'}?</AlertDialogTitle>
-            <AlertDialogDescription>
-              Are you sure you want to restore "{restoreDialog.name}"? This will
-              make it active again in the system.
-            </AlertDialogDescription>
-          </AlertDialogHeader>
-          <AlertDialogCancel>Cancel</AlertDialogCancel>
-          <AlertDialogAction
-            onClick={() => {
-              if (restoreDialog.id && restoreDialog.type) {
-                handleRestore(restoreDialog.type, restoreDialog.id);
-              }
-            }}
+      <div className="flex gap-1 overflow-x-auto border-b">
+        {tabs.map((t) => (
+          <button
+            key={t.key}
+            type="button"
+            className={`flex items-center gap-1.5 whitespace-nowrap border-b-2 px-3 py-2 text-sm font-medium transition-colors ${
+              activeTab === t.key
+                ? "border-medflow-600 text-medflow-700"
+                : "border-transparent text-slate-600 hover:text-slate-900"
+            }`}
+            onClick={() => { setActiveTab(t.key); setExpanded(null); }}
           >
-            <RotateCcw className="h-4 w-4 mr-2" />
-            Yes, Restore
-          </AlertDialogAction>
-        </AlertDialogContent>
-      </AlertDialog>
+            {t.label}
+            {t.count !== undefined && t.count > 0 && (
+              <span className="rounded-full bg-slate-100 px-1.5 py-0.5 text-sm font-normal text-slate-600">{t.count}</span>
+            )}
+          </button>
+        ))}
+      </div>
 
-      {/* Change Details Dialog */}
-      <AlertDialog
-        open={detailsDialog.open}
-        onOpenChange={(open) =>
-          setDetailsDialog({ ...detailsDialog, open })
-        }
-      >
-        <AlertDialogContent className="max-w-2xl">
-          <AlertDialogHeader>
-            <AlertDialogTitle>Change Details</AlertDialogTitle>
-          </AlertDialogHeader>
-          {detailsDialog.change && (
-            <div className="space-y-4">
-              <div className="grid grid-cols-2 gap-4">
-                <div>
-                  <p className="text-sm font-medium text-gray-500">Record</p>
-                  <p className="text-sm font-semibold">
-                    {detailsDialog.change.recordName}
-                  </p>
-                </div>
-                <div>
-                  <p className="text-sm font-medium text-gray-500">Action</p>
-                  <Badge className={getActionBadgeColor(detailsDialog.change.action)}>
-                    {detailsDialog.change.actionLabel}
-                  </Badge>
-                </div>
-                <div>
-                  <p className="text-sm font-medium text-gray-500">Changed By</p>
-                  <p className="text-sm font-semibold">
-                    {detailsDialog.change.changedBy}
-                  </p>
-                </div>
-                <div>
-                  <p className="text-sm font-medium text-gray-500">Date & Time</p>
-                  <p className="text-sm font-semibold">
-                    {formatDate(new Date(detailsDialog.change.timestamp))}
-                  </p>
-                </div>
-              </div>
+      {dataLoading ? (
+        <Card><CardContent className="p-6 text-center text-sm text-muted-foreground">Loading…</CardContent></Card>
 
-              {detailsDialog.change.previousValues &&
-                detailsDialog.change.currentValues && (
-                  <div className="border-t pt-4">
-                    <p className="text-sm font-semibold mb-2">Changes:</p>
-                    <div className="space-y-2 text-sm">
-                      {Object.keys(detailsDialog.change.currentValues).map((key) => {
-                        const prev = detailsDialog.change!.previousValues![key];
-                        const curr = detailsDialog.change!.currentValues![key];
-                        if (prev !== curr) {
-                          return (
-                            <div
-                              key={key}
-                              className="bg-gray-50 p-2 rounded"
-                            >
-                              <span className="font-medium capitalize">
-                                {key}:
-                              </span>{' '}
-                              <span className="text-red-600">
-                                "{prev}"
-                              </span>{' '}
-                              →{' '}
-                              <span className="text-green-600">
-                                "{curr}"
-                              </span>
-                            </div>
-                          );
-                        }
-                        return null;
-                      })}
-                    </div>
-                  </div>
+      ) : activeTab === "medicines" ? (
+        <Card>
+          <CardHeader>
+            <CardTitle className="flex items-center gap-2 text-base">
+              <AlertTriangle className="h-4 w-4 text-amber-500" /> Deleted Medicines
+            </CardTitle>
+          </CardHeader>
+          <CardContent className="overflow-x-auto p-0">
+            <table className="w-full min-w-[720px] text-sm">
+              <thead>
+                <tr className="border-b bg-slate-50 text-left">
+                  <th className="p-3">Medicine Name</th>
+                  <th className="p-3">Dosage Form</th>
+                  <th className="p-3">Strength</th>
+                  <th className="p-3">Category</th>
+                  <th className="p-3">Deleted By</th>
+                  <th className="p-3">Deleted Date</th>
+                  <th className="p-3">Actions</th>
+                </tr>
+              </thead>
+              <tbody>
+                {deletedMedicines.map((m) => (
+                  <>
+                    <tr key={m.id} className="border-b hover:bg-slate-50/70">
+                      <td className="p-3 font-medium">{m.medicineName}</td>
+                      <td className="p-3 text-slate-600">{m.dosageForm || "—"}</td>
+                      <td className="p-3 text-slate-600">{m.strength || "—"}</td>
+                      <td className="p-3 text-slate-600">{m.category || "—"}</td>
+                      <td className="p-3 text-slate-600">{m.deletedBy || "Unknown"}</td>
+                      <td className="p-3 text-slate-600">{m.deletedAt ? new Date(m.deletedAt).toLocaleString() : "—"}</td>
+                      <td className="p-3">
+                        <div className="flex flex-wrap gap-1">
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            onClick={() => setExpanded(expanded === m.id ? null : m.id)}
+                          >
+                            {expanded === m.id ? <ChevronUp className="mr-1 h-3.5 w-3.5" /> : <ChevronDown className="mr-1 h-3.5 w-3.5" />}
+                            Details
+                          </Button>
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            onClick={() => restore("medicine", m.id, m.medicineName)}
+                          >
+                            <RotateCcw className="mr-1 h-3.5 w-3.5" /> Restore
+                          </Button>
+                        </div>
+                      </td>
+                    </tr>
+                    {expanded === m.id && (
+                      <tr key={`${m.id}-detail`} className="border-b bg-slate-50/60">
+                        <td colSpan={7} className="px-4 py-3">
+                          <div className="grid gap-2 text-sm sm:grid-cols-2">
+                            <div><span className="font-medium text-slate-500">Medicine Name:</span> {m.medicineName}</div>
+                            <div><span className="font-medium text-slate-500">Dosage Form:</span> {m.dosageForm || "—"}</div>
+                            <div><span className="font-medium text-slate-500">Strength:</span> {m.strength || "—"}</div>
+                            <div><span className="font-medium text-slate-500">Category:</span> {m.category || "—"}</div>
+                            <div><span className="font-medium text-slate-500">Deleted By:</span> {m.deletedBy || "Unknown"}</div>
+                            <div><span className="font-medium text-slate-500">Deleted Date:</span> {m.deletedAt ? new Date(m.deletedAt).toLocaleString() : "—"}</div>
+                          </div>
+                          <Button
+                            size="sm"
+                            className="mt-3"
+                            onClick={() => restore("medicine", m.id, m.medicineName)}
+                          >
+                            <RotateCcw className="mr-1 h-3.5 w-3.5" /> Restore this medicine
+                          </Button>
+                        </td>
+                      </tr>
+                    )}
+                  </>
+                ))}
+                {deletedMedicines.length === 0 && (
+                  <tr><td className="p-6 text-center text-muted-foreground" colSpan={7}>No deleted medicines.</td></tr>
                 )}
-            </div>
-          )}
-          <AlertDialogCancel>Close</AlertDialogCancel>
-        </AlertDialogContent>
-      </AlertDialog>
+              </tbody>
+            </table>
+          </CardContent>
+        </Card>
+
+      ) : (
+        <Card>
+          <CardHeader>
+            <CardTitle className="flex items-center gap-2 text-base">
+              <AlertTriangle className="h-4 w-4 text-amber-500" /> Deleted Categories
+            </CardTitle>
+          </CardHeader>
+          <CardContent className="overflow-x-auto p-0">
+            <table className="w-full min-w-[560px] text-sm">
+              <thead>
+                <tr className="border-b bg-slate-50 text-left">
+                  <th className="p-3">Category Name</th>
+                  <th className="p-3">Medicine Count</th>
+                  <th className="p-3">Deleted By</th>
+                  <th className="p-3">Deleted Date</th>
+                  <th className="p-3">Actions</th>
+                </tr>
+              </thead>
+              <tbody>
+                {deletedCategories.map((c) => (
+                  <>
+                    <tr key={c.id} className="border-b hover:bg-slate-50/70">
+                      <td className="p-3 font-medium">{c.name}</td>
+                      <td className="p-3 text-slate-600">{c.linkedMedicines ?? 0} active</td>
+                      <td className="p-3 text-slate-600">{c.deletedBy || "Unknown"}</td>
+                      <td className="p-3 text-slate-600">{c.deletedAt ? new Date(c.deletedAt).toLocaleString() : "—"}</td>
+                      <td className="p-3">
+                        <div className="flex flex-wrap gap-1">
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            onClick={() => setExpanded(expanded === c.id ? null : c.id)}
+                          >
+                            {expanded === c.id ? <ChevronUp className="mr-1 h-3.5 w-3.5" /> : <ChevronDown className="mr-1 h-3.5 w-3.5" />}
+                            Details
+                          </Button>
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            onClick={() => restore("category", c.id, c.name)}
+                          >
+                            <RotateCcw className="mr-1 h-3.5 w-3.5" /> Restore
+                          </Button>
+                        </div>
+                      </td>
+                    </tr>
+                    {expanded === c.id && (
+                      <tr key={`${c.id}-detail`} className="border-b bg-slate-50/60">
+                        <td colSpan={5} className="px-4 py-3">
+                          <div className="grid gap-2 text-sm sm:grid-cols-2">
+                            <div><span className="font-medium text-slate-500">Category Name:</span> {c.name}</div>
+                            <div><span className="font-medium text-slate-500">Active medicines:</span> {c.linkedMedicines ?? 0}</div>
+                            {c.description && <div className="sm:col-span-2"><span className="font-medium text-slate-500">Description:</span> {c.description}</div>}
+                            <div><span className="font-medium text-slate-500">Deleted By:</span> {c.deletedBy || "Unknown"}</div>
+                            <div><span className="font-medium text-slate-500">Deleted Date:</span> {c.deletedAt ? new Date(c.deletedAt).toLocaleString() : "—"}</div>
+                          </div>
+                          <Button
+                            size="sm"
+                            className="mt-3"
+                            onClick={() => restore("category", c.id, c.name)}
+                          >
+                            <RotateCcw className="mr-1 h-3.5 w-3.5" /> Restore this category
+                          </Button>
+                        </td>
+                      </tr>
+                    )}
+                  </>
+                ))}
+                {deletedCategories.length === 0 && (
+                  <tr><td className="p-6 text-center text-muted-foreground" colSpan={5}>No deleted categories.</td></tr>
+                )}
+              </tbody>
+            </table>
+          </CardContent>
+        </Card>
+      )}
     </div>
   );
 }

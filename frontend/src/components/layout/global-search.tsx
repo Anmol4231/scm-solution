@@ -1,16 +1,19 @@
-"use client";
+﻿"use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { Search, X } from "lucide-react";
 import { api } from "@/lib/api";
+import { simpleRoleLabel } from "@/lib/roles";
 import { Input } from "@/components/ui/input";
 
 interface SearchResults {
   patients: { id: string; patientId: string; firstName: string; lastName: string }[];
   medicines: { id: string; medicineName: string }[];
+  categories: { id: string; name: string; _count?: { medicines: number } }[];
   staff: { id: string; workerId: string; firstName: string; lastName: string }[];
   facilities: { id: string; name: string; code: string }[];
+  users: { id: string; firstName: string; lastName: string; email: string; role: string }[];
   prescriptions: { id: string; prescriptionId: string }[];
   transfers: { id: string; transferCode: string }[];
   returns: { id: string; returnReason: string }[];
@@ -68,8 +71,10 @@ export function GlobalSearch() {
     results &&
     (results.patients.length ||
       results.medicines.length ||
+      results.categories?.length ||
       results.staff.length ||
       results.facilities.length ||
+      results.users?.length ||
       results.prescriptions.length ||
       results.transfers.length ||
       results.returns.length);
@@ -80,7 +85,7 @@ export function GlobalSearch() {
         <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
         <Input
           className="h-10 border-slate-200 bg-slate-50/80 pl-9 pr-8 text-sm transition focus:bg-white"
-          placeholder="Search patients, medicines, staff… (Ctrl+K)"
+          placeholder=""
           value={q}
           onFocus={() => setOpen(true)}
           onChange={(e) => setQ(e.target.value)}
@@ -108,38 +113,56 @@ export function GlobalSearch() {
               className="search-result-item"
               onClick={() => go(`/patients/${p.id}`)}
             >
-              <span className="text-xs text-slate-400">Patient</span>
+              <span className="text-sm text-slate-400">Patient</span>
               {p.firstName} {p.lastName} ({p.patientId})
             </button>
           ))}
           {results?.medicines.map((m) => (
             <button key={m.id} type="button" className="search-result-item" onClick={() => go(`/medicines/${m.id}`)}>
-              <span className="text-xs text-slate-400">Medicine</span>
+              <span className="text-sm text-slate-400">Medicine</span>
               {m.medicineName}
+            </button>
+          ))}
+          {results?.categories?.map((c) => (
+            <button key={c.id} type="button" className="search-result-item" onClick={() => go(`/medicines?category=${c.id}`)}>
+              <span className="text-sm text-slate-400">Category</span>
+              {c.name}{typeof c._count?.medicines === "number" ? ` · ${c._count.medicines} medicines` : ""}
             </button>
           ))}
           {results?.staff.map((s) => (
             <button key={s.id} type="button" className="search-result-item" onClick={() => go(`/healthcare-workers/${s.id}`)}>
-              <span className="text-xs text-slate-400">Staff</span>
+              <span className="text-sm text-slate-400">Staff</span>
               {s.firstName} {s.lastName}
             </button>
           ))}
           {results?.facilities.map((f) => (
             <button key={f.id} type="button" className="search-result-item" onClick={() => go(`/admin/facilities/${f.id}`)}>
-              <span className="text-xs text-slate-400">Facility</span>
+              <span className="text-sm text-slate-400">Location</span>
               {f.name} ({f.code})
+            </button>
+          ))}
+          {results?.users?.map((u) => (
+            <button key={u.id} type="button" className="search-result-item" onClick={() => go(`/settings/users`)}>
+              <span className="text-sm text-slate-400">User · {simpleRoleLabel(u.role)}</span>
+              {u.firstName} {u.lastName} ({u.email})
             </button>
           ))}
           {results?.prescriptions.map((p) => (
             <button key={p.id} type="button" className="search-result-item" onClick={() => go(`/prescriptions/${p.id}`)}>
-              <span className="text-xs text-slate-400">Prescription</span>
+              <span className="text-sm text-slate-400">Prescription</span>
               {p.prescriptionId}
             </button>
           ))}
           {results?.transfers.map((t) => (
             <button key={t.id} type="button" className="search-result-item" onClick={() => go(`/transfers`)}>
-              <span className="text-xs text-slate-400">Transfer</span>
+              <span className="text-sm text-slate-400">Transfer</span>
               {t.transferCode}
+            </button>
+          ))}
+          {results?.returns?.map((r) => (
+            <button key={r.id} type="button" className="search-result-item" onClick={() => go(`/returns`)}>
+              <span className="text-sm text-slate-400">Return</span>
+              {r.returnReason}
             </button>
           ))}
         </div>

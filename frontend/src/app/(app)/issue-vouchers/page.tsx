@@ -1,4 +1,4 @@
-"use client";
+﻿"use client";
 
 import { useEffect, useState } from "react";
 import Link from "next/link";
@@ -83,9 +83,9 @@ export default function IssueVouchersPage() {
                   <td className="px-4 py-3">
                     <Link href={`/issue-vouchers/${v.id}`} className="font-mono text-medflow-600 hover:underline">{v.voucherCode}</Link>
                   </td>
-                  <td className="px-4 py-3 font-mono text-xs text-slate-500">{v.requisition.requisitionCode}</td>
+                  <td className="px-4 py-3 font-mono text-sm text-slate-500">{v.requisition.requisitionCode}</td>
                   <td className="px-4 py-3">
-                    <span className={`rounded-full px-2 py-0.5 text-xs font-medium ${STATUS_COLORS[v.status] ?? ""}`}>{v.status}</span>
+                    <span className={`rounded-full px-2 py-0.5 text-sm font-medium ${STATUS_COLORS[v.status] ?? ""}`}>{v.status}</span>
                   </td>
                   {isAdmin && <td className="px-4 py-3 text-slate-700">{v.requisition.requestingFacility.name}</td>}
                   <td className="px-4 py-3 text-slate-700">{v.requisition.issuingFacility.name}</td>

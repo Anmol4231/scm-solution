@@ -1,4 +1,4 @@
-"use client";
+﻿"use client";
 
 import {
   Building2,
@@ -46,7 +46,7 @@ function StatCard({
           <Icon className="h-5 w-5" />
         </div>
         <div>
-          <p className="text-xs font-medium uppercase tracking-wide text-slate-500">{label}</p>
+          <p className="text-sm font-medium uppercase tracking-wide text-slate-500">{label}</p>
           <p className="text-2xl font-bold text-slate-900">{value}</p>
         </div>
       </CardContent>
@@ -65,7 +65,7 @@ export function AdminSummaryCards({ summary }: { summary: AdminSummary }) {
     { label: "Near Expiry", value: summary.nearExpiryItems, icon: Clock, accent: "bg-orange-50 text-orange-700" },
     { label: "Pending Transfers", value: summary.pendingTransfers, icon: ArrowLeftRight, accent: "bg-cyan-50 text-cyan-700" },
     { label: "Pending Returns", value: summary.pendingReturns, icon: RotateCcw, accent: "bg-slate-100 text-slate-700" },
-    { label: "Dispensing Today", value: summary.dispensingToday, icon: Syringe, accent: "bg-medflow-50 text-medflow-700" },
+    { label: "Dispensed Today", value: summary.dispensingToday, icon: Syringe, accent: "bg-medflow-50 text-medflow-700" },
   ];
 
   return (

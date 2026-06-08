@@ -1,10 +1,11 @@
-"use client";
+﻿"use client";
 
 import { useEffect, useState } from "react";
 import Link from "next/link";
 import { api } from "@/lib/api";
 import { useAuth } from "@/lib/auth-context";
 import { isCrossFacilityRole } from "@/lib/roles";
+import { useRequirePermission } from "@/hooks/useRequirePermission";
 import { Button } from "@/components/ui/button";
 
 interface Transfer {
@@ -33,6 +34,7 @@ const STATUS_COLORS: Record<string, string> = {
 export default function TransfersPage() {
   const { user } = useAuth();
   const isAdmin = isCrossFacilityRole(user?.role);
+  const hasAccess = useRequirePermission("transfers");
   const [transfers, setTransfers] = useState<Transfer[]>([]);
   const [status, setStatus] = useState("");
   const [loading, setLoading] = useState(true);
@@ -58,6 +60,8 @@ export default function TransfersPage() {
     if (t.medicine) return t.medicine.medicineName;
     return "—";
   };
+
+  if (!hasAccess) return null;
 
   return (
     <div className="space-y-4">
@@ -102,8 +106,8 @@ export default function TransfersPage() {
               <tr>
                 <th className="px-4 py-3 text-left font-medium text-slate-600">Code</th>
                 <th className="px-4 py-3 text-left font-medium text-slate-600">Status</th>
-                <th className="px-4 py-3 text-left font-medium text-slate-600">From</th>
-                <th className="px-4 py-3 text-left font-medium text-slate-600">To</th>
+                <th className="px-4 py-3 text-left font-medium text-slate-600">Source Facility</th>
+                <th className="px-4 py-3 text-left font-medium text-slate-600">Destination Facility</th>
                 <th className="px-4 py-3 text-left font-medium text-slate-600">Contents</th>
                 <th className="px-4 py-3 text-left font-medium text-slate-600">Priority</th>
                 <th className="px-4 py-3 text-left font-medium text-slate-600">Date</th>
@@ -119,13 +123,13 @@ export default function TransfersPage() {
                       <Link href={`/transfers/${t.id}`} className="font-mono text-medflow-600 hover:underline">{t.transferCode}</Link>
                     </td>
                     <td className="px-4 py-3">
-                      <span className={`rounded-full px-2 py-0.5 text-xs font-medium ${STATUS_COLORS[t.status] ?? ""}`}>{t.status.replace(/_/g, " ")}</span>
+                      <span className={`rounded-full px-2 py-0.5 text-sm font-medium ${STATUS_COLORS[t.status] ?? ""}`}>{t.status.replace(/_/g, " ")}</span>
                     </td>
                     <td className="px-4 py-3 text-slate-700">{t.fromFacility.name}</td>
                     <td className="px-4 py-3 text-slate-700">{t.toFacility.name}</td>
                     <td className="px-4 py-3 text-slate-600">{linesSummary(t)}</td>
                     <td className="px-4 py-3">
-                      <span className={`rounded-full px-2 py-0.5 text-xs font-medium ${t.priority === "EMERGENCY" ? "bg-red-100 text-red-700" : t.priority === "URGENT" ? "bg-amber-100 text-amber-700" : "bg-slate-100 text-slate-600"}`}>
+                      <span className={`rounded-full px-2 py-0.5 text-sm font-medium ${t.priority === "EMERGENCY" ? "bg-red-100 text-red-700" : t.priority === "URGENT" ? "bg-amber-100 text-amber-700" : "bg-slate-100 text-slate-600"}`}>
                         {t.priority}
                       </span>
                     </td>

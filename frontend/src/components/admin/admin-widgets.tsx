@@ -1,4 +1,4 @@
-"use client";
+﻿"use client";
 
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Activity, AlertCircle } from "lucide-react";
@@ -12,7 +12,7 @@ export function PendingSyncWidget({ nonReportingCount }: { nonReportingCount: nu
       </CardHeader>
       <CardContent>
         <p className="text-3xl font-bold text-slate-900">{nonReportingCount}</p>
-        <p className="mt-1 text-xs text-slate-500">Facilities with overdue consumption reporting</p>
+        <p className="mt-1 text-sm text-slate-500">Facilities with overdue consumption reporting</p>
       </CardContent>
     </Card>
   );
@@ -38,7 +38,7 @@ export function GlobalActivityFeed({
             <p className="font-medium text-slate-800">
               {a.type.replace(/_/g, " ")} — {a.medicine?.medicineName ?? "—"}
             </p>
-            <p className="text-xs text-slate-500">
+            <p className="text-sm text-slate-500">
               Qty {a.quantity} · {new Date(a.createdAt).toLocaleString()}
             </p>
           </div>

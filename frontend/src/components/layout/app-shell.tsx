@@ -17,13 +17,12 @@ import {
   LogOut,
   Menu,
   X,
-  ClipboardList,
-  FileText,
 } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
 import { useState } from "react";
 import { useAuth } from "@/lib/auth-context";
 import { isAdminDashboardRole, isMasterDataAdminRole, simpleRoleLabel } from "@/lib/roles";
+import { can, type ModuleKey, type PermissionMatrix } from "@/lib/permissions";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { GlobalSearch } from "@/components/layout/global-search";
@@ -35,59 +34,71 @@ type NavItem = {
   icon: LucideIcon;
   /** Route not built yet — rendered disabled with a "Soon" badge. */
   soon?: boolean;
-  /** Only visible to master-data admins. */
+  /** Only visible to master-data admins (enum guard, runs before permission check). */
   adminOnly?: boolean;
+  /** Permission module required — item is hidden when user lacks view access. */
+  module?: ModuleKey;
+  /** Show if user has view access to ANY of these modules. */
+  moduleAny?: ModuleKey[];
 };
 
 type NavSection = { title?: string; items: NavItem[] };
 
-function buildNav(isMasterAdmin: boolean, isCrossFacilityAdmin: boolean): NavSection[] {
-  return [
+function buildNav(
+  isMasterAdmin: boolean,
+  isCrossFacilityAdmin: boolean,
+  permissions: PermissionMatrix | undefined
+): NavSection[] {
+  const hasView = (module: ModuleKey) => can(permissions, module, "view");
+
+  return ([
     {
       title: "Dashboard",
-      // Admins use the Admin Dashboard exclusively; facility users use the facility dashboard.
       items: isCrossFacilityAdmin
         ? [
-            { href: "/admin", label: "Dashboard", icon: LayoutDashboard },
-            { href: "/alerts", label: "Alert Center", icon: Bell },
+            { href: "/admin", label: "Dashboard", icon: LayoutDashboard, module: "dashboard" as ModuleKey },
+            { href: "/alerts", label: "Alert Center", icon: Bell, module: "alerts" as ModuleKey },
           ]
-        : [{ href: "/dashboard", label: "Dashboard", icon: LayoutDashboard }],
+        : [{ href: "/dashboard", label: "Dashboard", icon: LayoutDashboard, module: "dashboard" as ModuleKey }],
     },
     {
       title: "Masters",
       items: [
-        { href: "/masters/roles", label: "Role Master", icon: ShieldCheck, adminOnly: true },
-        { href: "/masters/facilities", label: "Facility Master", icon: Building2, adminOnly: true },
-        { href: "/users", label: "Users & Access", icon: UserPlus, adminOnly: true },
-        { href: "/medicines/categories", label: "Stock Categories", icon: Tags },
-        { href: "/medicines", label: "Medicines", icon: Pill },
+        { href: "/masters/roles", label: "Role Master", icon: ShieldCheck, adminOnly: true, module: "roles" as ModuleKey },
+        { href: "/masters/facilities", label: "Facility Master", icon: Building2, adminOnly: true, module: "facilities" as ModuleKey },
+        { href: "/users", label: "Users & Access", icon: UserPlus, adminOnly: true, module: "users" as ModuleKey },
+        { href: "/medicines/categories", label: "Stock Categories", icon: Tags, module: "stockCategories" as ModuleKey },
+        { href: "/medicines", label: "Medicines", icon: Pill, module: "medicines" as ModuleKey },
       ],
     },
     {
       title: "Inventory",
       items: [
-        { href: "/stock", label: "Stock Management", icon: Package },
-        { href: "/requisitions", label: "Requisitions", icon: ClipboardList },
-        { href: "/issue-vouchers", label: "Issue Vouchers", icon: FileText },
+        { href: "/stock", label: "Stock Management", icon: Package, moduleAny: ["stock", "orders", "receiveStock", "transfers", "returns", "expiry"] as ModuleKey[] },
       ],
     },
     {
       title: "Patients",
       items: [
-        { href: "/dispense", label: "Dispensing", icon: Syringe },
+        { href: "/dispense", label: "Dispensing", icon: Syringe, module: "dispensing" as ModuleKey },
       ],
     },
     {
       title: "Administration",
       items: [
-        { href: "/settings/audit", label: "Audit Trail & Restore", icon: ScrollText, adminOnly: true },
+        { href: "/settings/audit", label: "Audit Trail & Restore", icon: ScrollText, adminOnly: true, module: "audit" as ModuleKey },
         { href: "/settings", label: "User Settings", icon: Settings },
       ],
     },
-  ]
+  ] as NavSection[])
     .map((section) => ({
       ...section,
-      items: section.items.filter((item) => !item.adminOnly || isMasterAdmin),
+      items: section.items.filter(
+        (item) =>
+          (!item.adminOnly || isMasterAdmin) &&
+          (!item.module || hasView(item.module)) &&
+          (!item.moduleAny || item.moduleAny.some((m) => hasView(m)))
+      ),
     }))
     .filter((section) => section.items.length > 0);
 }
@@ -118,7 +129,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   const { isOnline, pendingCount } = useOffline();
   const isMasterAdmin = isMasterDataAdminRole(user?.role);
   const isCrossFacilityAdmin = isAdminDashboardRole(user?.role);
-  const sections = buildNav(isMasterAdmin, isCrossFacilityAdmin);
+  const sections = buildNav(isMasterAdmin, isCrossFacilityAdmin, user?.permissions);
 
   const allHrefs = sections.flatMap((s) => s.items.filter((i) => !i.soon).map((i) => i.href));
   const activeHref = resolveActiveHref(pathname, allHrefs);
@@ -129,7 +140,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
       {(!isOnline || pendingCount > 0) && (
         <div
           className={cn(
-            "border-b px-4 py-1.5 text-center text-xs font-medium",
+            "border-b px-4 py-1.5 text-center text-sm font-medium",
             isOnline ? "border-amber-200 bg-amber-50 text-amber-800" : "border-red-200 bg-red-50 text-red-800"
           )}
         >
@@ -165,7 +176,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
           </div>
           <div className="text-right text-sm">
             <p className="font-medium">{user?.firstName} {user?.lastName}</p>
-            <p className="text-muted-foreground text-xs">
+            <p className="text-muted-foreground text-sm">
               {user?.facility?.name || simpleRoleLabel(user?.role)}
             </p>
           </div>

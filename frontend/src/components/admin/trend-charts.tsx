@@ -1,4 +1,4 @@
-"use client";
+﻿"use client";
 
 import { useState } from "react";
 import {
@@ -37,7 +37,7 @@ export function AdminTrendCharts({ trends }: { trends: Trends }) {
       <Card className="border-slate-200 shadow-sm">
         <CardHeader className="flex flex-row items-center justify-between pb-2">
           <CardTitle className="text-base">Stock Movement</CardTitle>
-          <div className="flex gap-1 rounded-lg bg-slate-100 p-1 text-xs">
+          <div className="flex gap-1 rounded-lg bg-slate-100 p-1 text-sm">
             {(["daily", "weekly", "monthly"] as const).map((p) => (
               <button
                 key={p}

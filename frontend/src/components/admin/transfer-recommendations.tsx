@@ -1,4 +1,4 @@
-"use client";
+﻿"use client";
 
 import { useEffect, useState } from "react";
 import { api } from "@/lib/api";
@@ -31,7 +31,7 @@ export function TransferRecommendationsPanel({ facilityFilter }: { facilityFilte
           <Lightbulb className="h-5 w-5 text-amber-500" />
           <CardTitle className="text-base font-semibold">Cross-Facility Intelligence</CardTitle>
         </div>
-        <p className="text-xs text-slate-500">Automated stock redistribution recommendations</p>
+        <p className="text-sm text-slate-500">Automated stock redistribution recommendations</p>
       </CardHeader>
       <CardContent className="max-h-80 space-y-2 overflow-y-auto">
         {items.length === 0 && (
@@ -45,7 +45,7 @@ export function TransferRecommendationsPanel({ facilityFilter }: { facilityFilte
             }`}
           >
             <p className="font-semibold text-slate-900">{r.medicineName}</p>
-            <div className="mt-1 flex flex-wrap items-center gap-1 text-xs text-slate-600">
+            <div className="mt-1 flex flex-wrap items-center gap-1 text-sm text-slate-600">
               <span>{r.fromFacility.name} ({Math.round(r.fromFacility.balance)})</span>
               <ArrowRight className="h-3 w-3" />
               <span className="font-medium text-medflow-700">
@@ -54,7 +54,7 @@ export function TransferRecommendationsPanel({ facilityFilter }: { facilityFilte
               <ArrowRight className="h-3 w-3" />
               <span>{r.toFacility.name} ({Math.round(r.toFacility.balance)})</span>
             </div>
-            <p className="mt-2 text-xs text-slate-500">{r.reason}</p>
+            <p className="mt-2 text-sm text-slate-500">{r.reason}</p>
           </div>
         ))}
       </CardContent>
