@@ -1,8 +1,8 @@
-﻿"use client";
+"use client";
 
 import { useEffect, useMemo, useState, Suspense } from "react";
 import { useSearchParams } from "next/navigation";
-import { Check, FileText, Search, UserPlus, Pill, ClipboardList, Syringe } from "lucide-react";
+import { Check, FileText, Search, UserPlus, ClipboardList, Syringe, Upload, Loader2, Plus, Trash2 } from "lucide-react";
 import { api } from "@/lib/api";
 import { useRequirePermission } from "@/hooks/useRequirePermission";
 import { Button } from "@/components/ui/button";
@@ -13,7 +13,7 @@ import { sanitizePersonName, sanitizePhone, validators } from "@/lib/validation"
 import { OperationsTabs } from "@/components/layout/operations-tabs";
 
 interface Patient { id: string; patientId: string; firstName: string; lastName: string; gender?: string; age?: number; phoneNumber?: string | null }
-interface RxOption { id: string; prescriptionId: string; status: string; doctorName?: string | null; medicines?: { medicineId: string }[] }
+interface RxOption { id: string; prescriptionId: string; status: string; doctorName?: string | null; diagnosisNotes?: string | null; medicines?: { medicineId: string }[] }
 interface Medicine { id: string; medicineName: string }
 interface PlanBatch { id: string; batchNumber: string; expiryDate: string; quantity: number }
 interface PlanLine {
@@ -21,14 +21,18 @@ interface PlanLine {
   requestedQuantity: number | null; onHand: number; recommendedBatchId: string | null; batches: PlanBatch[];
   requiresPrescription: boolean;
 }
+interface DispLine {
+  medicineId: string; medicineName: string; dosage: string; form: string; duration: string;
+  batchId: string; quantity: string; onHand: number; batches: PlanBatch[];
+  enabled: boolean; requiresPrescription: boolean;
+}
 
-type Step = 1 | 2 | 3 | 4;
+type Step = 1 | 2 | 3;
 
 const STEPS = [
-  { n: 1, label: "Patient", icon: Search },
-  { n: 2, label: "Prescription", icon: ClipboardList },
-  { n: 3, label: "Medicines", icon: Pill },
-  { n: 4, label: "Confirm", icon: Syringe },
+  { n: 1, label: "Patient",                  icon: Search },
+  { n: 2, label: "Prescription & Medicines", icon: ClipboardList },
+  { n: 3, label: "Confirm",                  icon: Syringe },
 ] as const;
 
 function Stepper({ step }: { step: Step }) {
@@ -54,7 +58,21 @@ function Stepper({ step }: { step: Step }) {
   );
 }
 
-interface DispLine { medicineId: string; medicineName: string; dosage: string; form: string; duration: string; batchId: string; quantity: string; onHand: number; batches: PlanBatch[]; enabled: boolean; requiresPrescription: boolean; }
+function planLineToDispLine(pl: PlanLine): DispLine {
+  return {
+    medicineId: pl.medicineId,
+    medicineName: pl.medicineName,
+    dosage: pl.dosage,
+    form: pl.form,
+    duration: pl.duration,
+    batchId: pl.recommendedBatchId ?? "",
+    quantity: String(pl.requestedQuantity ?? (pl.onHand > 0 ? 1 : 0)),
+    onHand: pl.onHand,
+    batches: pl.batches,
+    enabled: !!pl.recommendedBatchId,
+    requiresPrescription: pl.requiresPrescription,
+  };
+}
 
 function DispenseWorkflow() {
   const hasAccess = useRequirePermission("dispensing");
@@ -65,30 +83,37 @@ function DispenseWorkflow() {
   const [success, setSuccess] = useState("");
   const [busy, setBusy] = useState(false);
 
-  // Step 1 — patient
+  /* ── Step 1 — patient ── */
   const [pq, setPq] = useState("");
   const [results, setResults] = useState<Patient[]>([]);
   const [patient, setPatient] = useState<Patient | null>(null);
   const [registerMode, setRegisterMode] = useState(false);
   const [reg, setReg] = useState({ firstName: "", lastName: "", gender: "Female", age: "", phoneNumber: "" });
 
-  // Step 2 — prescription
+  /* ── Step 2 — prescription ── */
   const [rxList, setRxList] = useState<RxOption[]>([]);
   const [rxMode, setRxMode] = useState<"existing" | "new">("existing");
   const [selectedRxId, setSelectedRxId] = useState("");
   const [medicines, setMedicines] = useState<Medicine[]>([]);
-  const [newRx, setNewRx] = useState({ doctorName: "", department: "", diagnosisNotes: "" });
-  const [newRxLines, setNewRxLines] = useState<{ medicineId: string; dosage: string; quantity: string }[]>([{ medicineId: "", dosage: "", quantity: "" }]);
+  const [newRx, setNewRx] = useState({ doctorName: "", diagnosisNotes: "" });
+  const [newRxLines, setNewRxLines] = useState<{ medicineId: string; dosage: string; quantity: string }[]>([
+    { medicineId: "", dosage: "", quantity: "" },
+  ]);
   const [file, setFile] = useState<File | null>(null);
+  const [ocrLoading, setOcrLoading] = useState(false);
 
-  // Step 3 — dispense lines
+  /* prescription summary carried to confirm screen */
+  const [rxSummary, setRxSummary] = useState({ doctorName: "", diagnosisNotes: "" });
+
+  /* whether the dispensing plan has been loaded within step 2 */
+  const [planLoaded, setPlanLoaded] = useState(false);
+
+  /* ── Step 2/3 — dispense lines ── */
   const [lines, setLines] = useState<DispLine[]>([]);
-  const [purpose, setPurpose] = useState("");
-  const [department, setDepartment] = useState("");
 
   useEffect(() => { api<Medicine[]>("/medicines").then(setMedicines).catch(() => {}); }, []);
 
-  // Patient search (debounced)
+  /* patient search (debounced) */
   useEffect(() => {
     if (registerMode) return;
     const t = setTimeout(() => {
@@ -98,10 +123,10 @@ function DispenseWorkflow() {
     return () => clearTimeout(t);
   }, [pq, registerMode]);
 
-  // Preselect patient from ?patientId
+  /* preselect patient from ?patientId */
   useEffect(() => {
     const pid = searchParams.get("patientId");
-    if (pid) api<Patient>(`/patients/${pid}`).then((p) => selectPatient(p)).catch(() => {});
+    if (pid) api<Patient>(`/patients/${pid}`).then(selectPatient).catch(() => {});
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -111,16 +136,20 @@ function DispenseWorkflow() {
         const active = list.filter((r) => r.status === "ACTIVE");
         setRxList(active);
         setRxMode(active.length ? "existing" : "new");
+        if (active.length === 1) setSelectedRxId(active[0].id);
       })
       .catch(() => setRxList([]));
   };
 
-  const selectPatient = (p: Patient) => {
+  function selectPatient(p: Patient) {
     setError("");
     setPatient(p);
+    setPlanLoaded(false);
+    setLines([]);
+    setSelectedRxId("");
     loadPrescriptions(p.id);
     setStep(2);
-  };
+  }
 
   const registerPatient = async () => {
     setError("");
@@ -130,10 +159,7 @@ function DispenseWorkflow() {
     const ph = validators.phone(reg.phoneNumber); if (ph) return setError(ph);
     setBusy(true);
     try {
-      const created = await api<Patient>("/patients", {
-        method: "POST",
-        body: JSON.stringify({ ...reg, age: Number(reg.age) }),
-      });
+      const created = await api<Patient>("/patients", { method: "POST", body: JSON.stringify({ ...reg, age: Number(reg.age) }) });
       setRegisterMode(false);
       selectPatient(created);
     } catch (e) {
@@ -144,30 +170,51 @@ function DispenseWorkflow() {
   const planFrom = (rxId: string) => {
     setBusy(true); setError("");
     api<{ lines: PlanLine[] }>(`/dispensing/prescription/${rxId}/plan`)
-      .then(({ lines: planLines }) => {
-        setLines(planLines.map((pl) => ({
-          medicineId: pl.medicineId,
-          medicineName: pl.medicineName,
-          dosage: pl.dosage,
-          form: pl.form,
-          duration: pl.duration,
-          batchId: pl.recommendedBatchId ?? "",
-          quantity: String(pl.requestedQuantity ?? (pl.onHand > 0 ? 1 : 0)),
-          onHand: pl.onHand,
-          batches: pl.batches,
-          enabled: !!pl.recommendedBatchId,
-          requiresPrescription: pl.requiresPrescription,
-        })));
-        setStep(3);
-      })
-      .catch((e) => setError(e instanceof Error ? e.message : "Failed to load prescription"))
+      .then(({ lines: pl }) => { setLines(pl.map(planLineToDispLine)); setPlanLoaded(true); })
+      .catch((e) => setError(e instanceof Error ? e.message : "Failed to load dispensing plan"))
       .finally(() => setBusy(false));
   };
 
-  const useExisting = () => {
-    if (!selectedRxId) return setError("Select an active prescription");
-    setSelectedRxId(selectedRxId);
+  /* auto-load plan when an existing prescription is selected */
+  useEffect(() => {
+    if (rxMode !== "existing" || !selectedRxId) return;
+    const rx = rxList.find((r) => r.id === selectedRxId);
+    if (rx) setRxSummary({ doctorName: rx.doctorName ?? "", diagnosisNotes: rx.diagnosisNotes ?? "" });
     planFrom(selectedRxId);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedRxId, rxMode]);
+
+  const switchRxMode = (mode: "existing" | "new") => {
+    setRxMode(mode);
+    setPlanLoaded(false);
+    setLines([]);
+  };
+
+  /* OCR: upload image → auto-populate fields */
+  const handleOcr = async () => {
+    if (!file) return;
+    setOcrLoading(true);
+    try {
+      const fd = new FormData();
+      fd.append("file", file);
+      const result = await api<{
+        doctorName?: string;
+        diagnosisNotes?: string;
+        medicines?: { medicineName?: string; dosage?: string; quantity?: number }[];
+      }>("/prescriptions/ocr", { method: "POST", body: fd });
+
+      if (result.doctorName) setNewRx((r) => ({ ...r, doctorName: result.doctorName! }));
+      if (result.diagnosisNotes) setNewRx((r) => ({ ...r, diagnosisNotes: result.diagnosisNotes! }));
+      if (result.medicines?.length) {
+        const mapped = result.medicines.map((m) => {
+          const match = medicines.find((med) => med.medicineName.toLowerCase() === (m.medicineName ?? "").toLowerCase());
+          return { medicineId: match?.id ?? "", dosage: m.dosage ?? "", quantity: m.quantity ? String(m.quantity) : "" };
+        });
+        setNewRxLines(mapped.length ? mapped : [{ medicineId: "", dosage: "", quantity: "" }]);
+      }
+    } catch {
+      /* OCR failed — user fills manually, no error shown */
+    } finally { setOcrLoading(false); }
   };
 
   const createRxThenPlan = async () => {
@@ -179,15 +226,15 @@ function DispenseWorkflow() {
       const fd = new FormData();
       fd.append("patientId", patient!.id);
       if (newRx.doctorName) fd.append("doctorName", newRx.doctorName);
-      if (newRx.department) fd.append("department", newRx.department);
       if (newRx.diagnosisNotes) fd.append("diagnosisNotes", newRx.diagnosisNotes);
       fd.append("medicines", JSON.stringify(validLines.map((l) => ({
         medicineId: l.medicineId, dosage: l.dosage, quantity: l.quantity ? Number(l.quantity) : undefined,
       }))));
       if (file) fd.append("prescription", file);
       const created = await api<{ id: string }>("/prescriptions", { method: "POST", body: fd });
-      planFrom(created.id);
       setSelectedRxId(created.id);
+      setRxSummary({ doctorName: newRx.doctorName, diagnosisNotes: newRx.diagnosisNotes });
+      planFrom(created.id);
     } catch (e) {
       setError(e instanceof Error ? e.message : "Failed to create prescription");
     } finally { setBusy(false); }
@@ -200,11 +247,10 @@ function DispenseWorkflow() {
 
   const lineError = (l: DispLine): string => {
     if (!l.enabled) return "";
-    const qty = Number(l.quantity);
-    if (!l.batchId) return "No stock available";
-    if (qty <= 0) return "Enter a quantity";
+    if (!l.batchId) return "No stock";
+    if (Number(l.quantity) <= 0) return "Enter qty";
     const batch = l.batches.find((b) => b.id === l.batchId);
-    if (batch && qty > batch.quantity) return `Only ${batch.quantity} in batch`;
+    if (batch && Number(l.quantity) > batch.quantity) return `Max ${batch.quantity}`;
     return "";
   };
 
@@ -222,23 +268,18 @@ function DispenseWorkflow() {
         body: JSON.stringify({
           patientId: patient!.id,
           prescriptionId: selectedRxId,
-          dispensingPurpose: purpose || undefined,
-          prescribingDepartment: department || undefined,
           lines: confirmLines.map((l) => ({
-            medicineId: l.medicineId,
-            batchId: l.batchId,
-            quantity: Number(l.quantity),
-            dosage: l.dosage || undefined,
-            form: l.form || undefined,
-            duration: l.duration || undefined,
+            medicineId: l.medicineId, batchId: l.batchId, quantity: Number(l.quantity),
+            dosage: l.dosage || undefined, form: l.form || undefined, duration: l.duration || undefined,
           })),
         }),
       });
       setSuccess(`Dispensed ${res.count} medicine line(s) to ${patient!.firstName} ${patient!.lastName}.`);
-      // Reset for next patient
       setStep(1); setPatient(null); setPq(""); setResults([]); setRxList([]);
-      setSelectedRxId(""); setLines([]); setPurpose(""); setDepartment("");
-      setNewRxLines([{ medicineId: "", dosage: "", quantity: "" }]); setNewRx({ doctorName: "", department: "", diagnosisNotes: "" }); setFile(null);
+      setSelectedRxId(""); setLines([]); setPlanLoaded(false);
+      setNewRxLines([{ medicineId: "", dosage: "", quantity: "" }]);
+      setNewRx({ doctorName: "", diagnosisNotes: "" }); setFile(null);
+      setRxSummary({ doctorName: "", diagnosisNotes: "" });
     } catch (e) {
       setError(e instanceof Error ? e.message : "Dispensing failed");
     } finally { setBusy(false); }
@@ -246,21 +287,25 @@ function DispenseWorkflow() {
 
   if (!hasAccess) return null;
 
+  /* ── render ── */
   return (
     <div className="mx-auto max-w-4xl space-y-4">
       <Stepper step={step} />
       {error && <p className="rounded-lg bg-red-50 p-3 text-sm text-red-700">{error}</p>}
       {success && <p className="rounded-lg bg-green-50 p-3 text-sm text-green-700">{success}</p>}
 
-      {/* Selected patient chip */}
       {patient && step > 1 && (
         <div className="flex items-center justify-between rounded-lg border bg-slate-50 px-3 py-2 text-sm">
-          <span><Check className="mr-1 inline h-4 w-4 text-emerald-600" /><strong>{patient.firstName} {patient.lastName}</strong> · {patient.patientId}{patient.age ? ` · ${patient.gender}, ${patient.age}y` : ""}</span>
+          <span>
+            <Check className="mr-1 inline h-4 w-4 text-emerald-600" />
+            <strong>{patient.firstName} {patient.lastName}</strong> · {patient.patientId}
+            {patient.age ? ` · ${patient.gender}, ${patient.age}y` : ""}
+          </span>
           <Button size="sm" variant="ghost" onClick={() => { setStep(1); setPatient(null); }}>Change</Button>
         </div>
       )}
 
-      {/* STEP 1 — Patient */}
+      {/* ── STEP 1: Patient (unchanged) ── */}
       {step === 1 && (
         <Card>
           <CardContent className="space-y-3 p-4">
@@ -277,17 +322,27 @@ function DispenseWorkflow() {
                 </div>
                 <div className="divide-y rounded-lg border">
                   {results.map((p) => (
-                    <button key={p.id} type="button" onClick={() => selectPatient(p)} className="flex w-full items-center justify-between px-3 py-2.5 text-left text-sm hover:bg-slate-50">
-                      <span><strong>{p.firstName} {p.lastName}</strong> · {p.patientId}{p.age ? ` · ${p.gender}, ${p.age}y` : ""}{p.phoneNumber ? ` · ${p.phoneNumber}` : ""}</span>
+                    <button key={p.id} type="button" onClick={() => selectPatient(p)}
+                      className="flex w-full items-center justify-between px-3 py-2.5 text-left text-sm hover:bg-slate-50">
+                      <span>
+                        <strong>{p.firstName} {p.lastName}</strong> · {p.patientId}
+                        {p.age ? ` · ${p.gender}, ${p.age}y` : ""}
+                        {p.phoneNumber ? ` · ${p.phoneNumber}` : ""}
+                      </span>
                       <span className="text-medflow-600">Select →</span>
                     </button>
                   ))}
                   {pq.trim().length >= 2 && results.length === 0 && (
                     <div className="px-3 py-3 text-sm text-slate-500">
-                      No patient found. <button type="button" className="text-medflow-600 underline" onClick={() => setRegisterMode(true)}>Register a new patient</button>.
+                      No patient found.{" "}
+                      <button type="button" className="text-medflow-600 underline" onClick={() => setRegisterMode(true)}>
+                        Register a new patient
+                      </button>.
                     </div>
                   )}
-                  {pq.trim().length < 2 && <div className="px-3 py-3 text-sm text-slate-400">Type at least 2 characters to search.</div>}
+                  {pq.trim().length < 2 && (
+                    <div className="px-3 py-3 text-sm text-slate-400">Type at least 2 characters to search.</div>
+                  )}
                 </div>
               </>
             ) : (
@@ -303,7 +358,10 @@ function DispenseWorkflow() {
                     </select>
                   </div>
                   <div><Label>Age *</Label><Input inputMode="numeric" value={reg.age} onChange={(e) => setReg({ ...reg, age: e.target.value.replace(/\D/g, "") })} /></div>
-                  <div className="sm:col-span-2"><Label>Phone</Label><Input inputMode="tel" value={reg.phoneNumber} onChange={(e) => setReg({ ...reg, phoneNumber: sanitizePhone(e.target.value) })} placeholder="Phone number" /></div>
+                  <div className="sm:col-span-2">
+                    <Label>Phone</Label>
+                    <Input inputMode="tel" value={reg.phoneNumber} onChange={(e) => setReg({ ...reg, phoneNumber: sanitizePhone(e.target.value) })} placeholder="Phone number" />
+                  </div>
                 </div>
                 <div className="flex gap-2">
                   <Button onClick={registerPatient} disabled={busy}>{busy ? "Saving…" : "Save & continue"}</Button>
@@ -315,139 +373,300 @@ function DispenseWorkflow() {
         </Card>
       )}
 
-      {/* STEP 2 — Prescription */}
+      {/* ── STEP 2: Prescription & Medicines ── */}
       {step === 2 && patient && (
         <Card>
-          <CardContent className="space-y-3 p-4">
-            <div className="flex gap-2 text-sm">
-              <button type="button" onClick={() => setRxMode("existing")} className={`rounded-full border px-3 py-1 font-medium ${rxMode === "existing" ? "border-medflow-300 bg-medflow-50 text-medflow-700" : "border-slate-200 text-slate-500"}`}>Existing prescription</button>
-              <button type="button" onClick={() => setRxMode("new")} className={`rounded-full border px-3 py-1 font-medium ${rxMode === "new" ? "border-medflow-300 bg-medflow-50 text-medflow-700" : "border-slate-200 text-slate-500"}`}>Create new</button>
-            </div>
+          <CardContent className="space-y-4 p-4">
 
-            {rxMode === "existing" ? (
-              <div className="space-y-3">
-                {rxList.length === 0 ? (
-                  <p className="text-sm text-amber-600">No active prescriptions for this patient. Switch to “Create new”.</p>
-                ) : (
-                  <div className="divide-y rounded-lg border">
-                    {rxList.map((rx) => (
-                      <label key={rx.id} className="flex cursor-pointer items-center gap-3 px-3 py-2.5 text-sm hover:bg-slate-50">
-                        <input type="radio" name="rx" className="accent-medflow-600" checked={selectedRxId === rx.id} onChange={() => setSelectedRxId(rx.id)} />
-                        <span><strong>{rx.prescriptionId}</strong>{rx.doctorName ? ` · ${rx.doctorName}` : ""}{rx.medicines ? ` · ${rx.medicines.length} med(s)` : ""}</span>
-                      </label>
-                    ))}
+            {planLoaded ? (
+              /* ── Plan loaded: show dispense adjustment table ── */
+              <>
+                {(rxSummary.doctorName || rxSummary.diagnosisNotes) && (
+                  <div className="rounded-lg bg-slate-50 px-3 py-2 text-sm text-slate-600">
+                    {rxSummary.doctorName && <span className="font-medium">Dr. {rxSummary.doctorName}</span>}
+                    {rxSummary.doctorName && rxSummary.diagnosisNotes && " · "}
+                    {rxSummary.diagnosisNotes && <span>{rxSummary.diagnosisNotes}</span>}
                   </div>
                 )}
-                <div className="flex gap-2">
-                  <Button onClick={useExisting} disabled={busy || !selectedRxId}>Continue</Button>
-                  <Button variant="outline" onClick={() => setStep(1)}>Back</Button>
+
+                <p className="text-sm text-slate-500">
+                  FEFO batch auto-selected. Uncheck lines to skip, or adjust qty before continuing.
+                </p>
+
+                <div className="overflow-x-auto rounded-lg border">
+                  <table className="w-full min-w-[640px] text-sm">
+                    <thead className="bg-slate-50 text-left text-xs text-slate-500">
+                      <tr>
+                        <th className="p-2 pl-3 w-8"></th>
+                        <th className="p-2">Medicine</th>
+                        <th className="p-2 w-28">Dosage</th>
+                        <th className="p-2">Batch (FEFO)</th>
+                        <th className="p-2 w-24 text-right">Qty</th>
+                        <th className="p-2 w-24 text-right">On Hand</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y">
+                      {lines.length === 0 && (
+                        <tr><td colSpan={6} className="p-4 text-center text-slate-400">No medicine lines.</td></tr>
+                      )}
+                      {lines.map((l, i) => {
+                        const le = lineError(l);
+                        return (
+                          <tr key={l.medicineId} className={!l.enabled ? "bg-slate-50/60 opacity-50" : ""}>
+                            <td className="p-2 pl-3">
+                              <input type="checkbox" className="h-4 w-4 accent-medflow-600"
+                                checked={l.enabled} disabled={l.batches.length === 0}
+                                onChange={(e) => setLine(i, { enabled: e.target.checked })} />
+                            </td>
+                            <td className="p-2">
+                              <span className="font-medium">{l.medicineName}</span>
+                              {l.requiresPrescription && (
+                                <span className="ml-1.5 inline-flex items-center gap-0.5 rounded-full bg-amber-50 px-1.5 py-0.5 text-[10px] font-semibold text-amber-700">
+                                  <FileText className="h-3 w-3" /> Rx
+                                </span>
+                              )}
+                              {l.batches.length === 0 && <span className="ml-2 text-xs text-red-500">Out of stock</span>}
+                            </td>
+                            <td className="p-2 text-slate-500">{l.dosage || "—"}</td>
+                            <td className="p-2">
+                              {l.batches.length > 0 ? (
+                                <select className="h-8 rounded border px-2 text-xs" value={l.batchId}
+                                  disabled={!l.enabled}
+                                  onChange={(e) => setLine(i, { batchId: e.target.value })}>
+                                  {l.batches.map((b) => (
+                                    <option key={b.id} value={b.id}>
+                                      {b.batchNumber} · exp {new Date(b.expiryDate).toLocaleDateString()} · {b.quantity}
+                                    </option>
+                                  ))}
+                                </select>
+                              ) : <span className="text-slate-400">—</span>}
+                            </td>
+                            <td className="p-2">
+                              <div className="flex items-center justify-end gap-1">
+                                <Input className="w-20 text-right" inputMode="numeric"
+                                  disabled={!l.enabled || l.batches.length === 0}
+                                  value={l.quantity}
+                                  onChange={(e) => setLine(i, { quantity: e.target.value.replace(/\D/g, "") })} />
+                                {le && <span className="text-[11px] text-red-500 whitespace-nowrap">{le}</span>}
+                              </div>
+                            </td>
+                            <td className="p-2 text-right text-slate-500">{l.onHand}</td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
                 </div>
-              </div>
+
+                <div className="flex gap-2">
+                  <Button onClick={() => setStep(3)} disabled={confirmLines.length === 0}>
+                    Continue to Confirm
+                  </Button>
+                  <Button variant="outline"
+                    onClick={() => { setPlanLoaded(false); setLines([]); setSelectedRxId(""); }}>
+                    ← Change Prescription
+                  </Button>
+                </div>
+              </>
             ) : (
-              <div className="space-y-3">
-                <div className="grid gap-3 sm:grid-cols-2">
-                  <div><Label>Doctor</Label><Input value={newRx.doctorName} onChange={(e) => setNewRx({ ...newRx, doctorName: e.target.value.replace(/[^A-Za-z .'-]/g, "") })} /></div>
-                  <div><Label>Department</Label><Input value={newRx.department} onChange={(e) => setNewRx({ ...newRx, department: e.target.value })} placeholder="Department" /></div>
-                  <div className="sm:col-span-2"><Label>Diagnosis</Label><Input value={newRx.diagnosisNotes} onChange={(e) => setNewRx({ ...newRx, diagnosisNotes: e.target.value })} /></div>
-                  <div><Label>Upload scan (optional)</Label><Input type="file" accept="image/jpeg,image/png,image/jpg,.pdf,application/pdf" onChange={(e) => setFile(e.target.files?.[0] || null)} /></div>
+              /* ── Prescription form ── */
+              <>
+                <div className="flex gap-2 text-sm">
+                  <button type="button"
+                    onClick={() => switchRxMode("existing")}
+                    className={`rounded-full border px-3 py-1 font-medium ${rxMode === "existing" ? "border-medflow-300 bg-medflow-50 text-medflow-700" : "border-slate-200 text-slate-500"}`}>
+                    Existing prescription
+                  </button>
+                  <button type="button"
+                    onClick={() => switchRxMode("new")}
+                    className={`rounded-full border px-3 py-1 font-medium ${rxMode === "new" ? "border-medflow-300 bg-medflow-50 text-medflow-700" : "border-slate-200 text-slate-500"}`}>
+                    New prescription
+                  </button>
                 </div>
-                <div>
-                  <Label>Medicines</Label>
-                  <div className="space-y-2">
-                    {newRxLines.map((ln, i) => (
-                      <div key={i} className="flex flex-wrap items-center gap-2">
-                        <select className="h-10 flex-1 rounded-lg border px-2 text-sm" value={ln.medicineId} onChange={(e) => setNewRxLines((ls) => ls.map((x, idx) => idx === i ? { ...x, medicineId: e.target.value } : x))}>
-                          <option value="">Select medicine</option>
-                          {medicines.map((m) => <option key={m.id} value={m.id}>{m.medicineName}</option>)}
-                        </select>
-                        <Input className="w-24" placeholder="Dosage" value={ln.dosage} onChange={(e) => setNewRxLines((ls) => ls.map((x, idx) => idx === i ? { ...x, dosage: e.target.value } : x))} />
-                        <Input className="w-20" inputMode="numeric" placeholder="Qty" value={ln.quantity} onChange={(e) => setNewRxLines((ls) => ls.map((x, idx) => idx === i ? { ...x, quantity: e.target.value.replace(/\D/g, "") } : x))} />
-                        {newRxLines.length > 1 && <button type="button" className="text-sm text-red-500" onClick={() => setNewRxLines((ls) => ls.filter((_, idx) => idx !== i))}>Remove</button>}
+
+                {rxMode === "existing" ? (
+                  <div className="space-y-3">
+                    {rxList.length === 0 ? (
+                      <p className="text-sm text-amber-600">No active prescriptions. Switch to "New prescription".</p>
+                    ) : (
+                      <div className="divide-y rounded-lg border">
+                        {rxList.map((rx) => (
+                          <label key={rx.id} className="flex cursor-pointer items-center gap-3 px-3 py-2.5 text-sm hover:bg-slate-50">
+                            <input type="radio" name="rx" className="accent-medflow-600"
+                              checked={selectedRxId === rx.id} onChange={() => setSelectedRxId(rx.id)} />
+                            <span>
+                              <strong>{rx.prescriptionId}</strong>
+                              {rx.doctorName ? ` · Dr. ${rx.doctorName}` : ""}
+                              {rx.diagnosisNotes ? ` · ${rx.diagnosisNotes}` : ""}
+                              {rx.medicines ? ` · ${rx.medicines.length} med(s)` : ""}
+                            </span>
+                          </label>
+                        ))}
                       </div>
-                    ))}
+                    )}
+                    {busy && <p className="text-sm text-slate-400">Loading plan…</p>}
+                    <Button variant="outline" onClick={() => setStep(1)}>← Back</Button>
                   </div>
-                  <Button size="sm" variant="outline" className="mt-2" onClick={() => setNewRxLines((ls) => [...ls, { medicineId: "", dosage: "", quantity: "" }])}>+ Add medicine</Button>
-                </div>
-                <div className="flex gap-2">
-                  <Button onClick={createRxThenPlan} disabled={busy}>{busy ? "Saving…" : "Create & continue"}</Button>
-                  <Button variant="outline" onClick={() => setStep(1)}>Back</Button>
-                </div>
-              </div>
+                ) : (
+                  /* New prescription form */
+                  <div className="space-y-4">
+                    {/* OCR upload */}
+                    <div className="rounded-lg border border-dashed p-3">
+                      <p className="mb-2 text-sm font-medium text-slate-600">Upload prescription scan (optional)</p>
+                      <div className="flex flex-wrap items-center gap-2">
+                        <Input type="file" accept="image/jpeg,image/png,image/jpg,.pdf,application/pdf"
+                          className="flex-1 min-w-0"
+                          onChange={(e) => setFile(e.target.files?.[0] || null)} />
+                        <Button type="button" variant="outline" size="sm"
+                          disabled={!file || ocrLoading} onClick={handleOcr}>
+                          {ocrLoading
+                            ? <><Loader2 className="mr-1.5 h-4 w-4 animate-spin" /> Scanning…</>
+                            : <><Upload className="mr-1.5 h-4 w-4" /> Scan & Auto-fill</>}
+                        </Button>
+                      </div>
+                      {file && !ocrLoading && (
+                        <p className="mt-1 text-xs text-slate-400">Click "Scan & Auto-fill" to extract details automatically.</p>
+                      )}
+                    </div>
+
+                    {/* Doctor + Diagnosis */}
+                    <div className="grid gap-3 sm:grid-cols-2">
+                      <div>
+                        <Label>Doctor</Label>
+                        <Input value={newRx.doctorName}
+                          onChange={(e) => setNewRx({ ...newRx, doctorName: e.target.value.replace(/[^A-Za-z .'-]/g, "") })}
+                          placeholder="Doctor name" />
+                      </div>
+                      <div>
+                        <Label>Diagnosis</Label>
+                        <Input value={newRx.diagnosisNotes}
+                          onChange={(e) => setNewRx({ ...newRx, diagnosisNotes: e.target.value })}
+                          placeholder="Diagnosis / notes" />
+                      </div>
+                    </div>
+
+                    {/* Medicine table */}
+                    <div>
+                      <Label className="mb-1.5 block">Medicines</Label>
+                      <div className="overflow-x-auto rounded-lg border">
+                        <table className="w-full min-w-[480px] text-sm">
+                          <thead className="bg-slate-50 text-left text-xs text-slate-500">
+                            <tr>
+                              <th className="p-2 pl-3">Medicine</th>
+                              <th className="p-2 w-32">Dosage</th>
+                              <th className="p-2 w-24 text-right">Qty</th>
+                              <th className="p-2 w-10"></th>
+                            </tr>
+                          </thead>
+                          <tbody className="divide-y">
+                            {newRxLines.map((ln, i) => (
+                              <tr key={i}>
+                                <td className="p-2 pl-3">
+                                  <select className="w-full rounded border px-2 py-1.5 text-sm"
+                                    value={ln.medicineId}
+                                    onChange={(e) => setNewRxLines((ls) => ls.map((x, idx) => idx === i ? { ...x, medicineId: e.target.value } : x))}>
+                                    <option value="">Select medicine…</option>
+                                    {medicines.map((m) => <option key={m.id} value={m.id}>{m.medicineName}</option>)}
+                                  </select>
+                                </td>
+                                <td className="p-2">
+                                  <Input placeholder="e.g. 500mg" value={ln.dosage}
+                                    onChange={(e) => setNewRxLines((ls) => ls.map((x, idx) => idx === i ? { ...x, dosage: e.target.value } : x))} />
+                                </td>
+                                <td className="p-2">
+                                  <Input className="text-right" inputMode="numeric" placeholder="Qty" value={ln.quantity}
+                                    onChange={(e) => setNewRxLines((ls) => ls.map((x, idx) => idx === i ? { ...x, quantity: e.target.value.replace(/\D/g, "") } : x))} />
+                                </td>
+                                <td className="p-2">
+                                  {newRxLines.length > 1 && (
+                                    <button type="button"
+                                      className="flex h-8 w-8 items-center justify-center rounded text-slate-400 hover:bg-red-50 hover:text-red-500"
+                                      onClick={() => setNewRxLines((ls) => ls.filter((_, idx) => idx !== i))}>
+                                      <Trash2 className="h-4 w-4" />
+                                    </button>
+                                  )}
+                                </td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+                      <button type="button"
+                        className="mt-2 flex items-center gap-1 text-sm text-medflow-600 hover:text-medflow-700"
+                        onClick={() => setNewRxLines((ls) => [...ls, { medicineId: "", dosage: "", quantity: "" }])}>
+                        <Plus className="h-4 w-4" /> Add medicine
+                      </button>
+                    </div>
+
+                    <div className="flex gap-2">
+                      <Button onClick={createRxThenPlan} disabled={busy}>{busy ? "Creating…" : "Create & Review"}</Button>
+                      <Button variant="outline" onClick={() => setStep(1)}>← Back</Button>
+                    </div>
+                  </div>
+                )}
+              </>
             )}
           </CardContent>
         </Card>
       )}
 
-      {/* STEP 3 — Medicines */}
-      {step === 3 && (
+      {/* ── STEP 3: Confirm ── */}
+      {step === 3 && patient && (
         <Card>
-          <CardContent className="space-y-3 p-4">
-            <p className="text-sm text-muted-foreground">FEFO batch auto-selected per line. Adjust quantity or batch, then continue.</p>
-            <div className="space-y-2">
-              {lines.map((l, i) => {
-                const le = lineError(l);
-                return (
-                  <div key={l.medicineId} className={`rounded-lg border p-3 ${!l.enabled ? "opacity-60" : ""}`}>
-                    <div className="flex flex-wrap items-center justify-between gap-2">
-                      <label className="flex items-center gap-2 font-medium">
-                        <input type="checkbox" className="h-4 w-4 accent-medflow-600" checked={l.enabled} disabled={!l.batches.length} onChange={(e) => setLine(i, { enabled: e.target.checked })} />
-                        {l.medicineName}{l.dosage ? ` · ${l.dosage}` : ""}
-                        {l.requiresPrescription && (
-                          <span className="inline-flex items-center gap-1 rounded-full bg-amber-50 px-2 py-0.5 text-[10px] font-semibold text-amber-700">
-                            <FileText className="h-3 w-3" /> Rx Required
-                          </span>
-                        )}
-                      </label>
-                      <span className="text-sm text-slate-500">On hand: {l.onHand}</span>
-                    </div>
-                    {l.batches.length === 0 ? (
-                      <p className="mt-1 text-sm text-red-600">Out of stock — line disabled.</p>
-                    ) : (
-                      <div className="mt-2 flex flex-wrap items-end gap-2">
-                        <div>
-                          <Label className="text-sm">Batch (FEFO)</Label>
-                          <select className="h-9 rounded-lg border px-2 text-sm" value={l.batchId} disabled={!l.enabled} onChange={(e) => setLine(i, { batchId: e.target.value })}>
-                            {l.batches.map((b) => <option key={b.id} value={b.id}>{b.batchNumber} · exp {new Date(b.expiryDate).toLocaleDateString()} · {b.quantity} left</option>)}
-                          </select>
-                        </div>
-                        <div>
-                          <Label className="text-sm">Quantity</Label>
-                          <Input className="w-24" inputMode="numeric" disabled={!l.enabled} value={l.quantity} onChange={(e) => setLine(i, { quantity: e.target.value.replace(/\D/g, "") })} />
-                        </div>
-                        {le && <span className="pb-2 text-sm text-red-600">{le}</span>}
-                      </div>
-                    )}
-                  </div>
-                );
-              })}
-              {lines.length === 0 && <p className="text-sm text-muted-foreground">This prescription has no medicine lines.</p>}
-            </div>
-            <div className="flex gap-2">
-              <Button onClick={() => setStep(4)} disabled={confirmLines.length === 0}>Continue</Button>
-              <Button variant="outline" onClick={() => setStep(2)}>Back</Button>
-            </div>
-          </CardContent>
-        </Card>
-      )}
+          <CardContent className="space-y-4 p-4">
+            <p className="font-semibold text-slate-800">Confirm Dispensing</p>
 
-      {/* STEP 4 — Confirm */}
-      {step === 4 && patient && (
-        <Card>
-          <CardContent className="space-y-3 p-4">
-            <p className="font-medium">Confirm dispensing</p>
-            <ul className="space-y-1 rounded-lg border p-3 text-sm">
-              {confirmLines.map((l) => {
-                const batch = l.batches.find((b) => b.id === l.batchId);
-                return <li key={l.medicineId}>• {l.medicineName} — <strong>{l.quantity}</strong>{l.dosage ? ` (${l.dosage})` : ""} from batch {batch?.batchNumber}</li>;
-              })}
-            </ul>
-            <div className="grid gap-3 sm:grid-cols-2">
-              <div><Label>Dispensing purpose</Label><Input value={purpose} onChange={(e) => setPurpose(e.target.value)} placeholder="Dispensing purpose" /></div>
-              <div><Label>Prescribing department</Label><Input value={department} onChange={(e) => setDepartment(e.target.value)} placeholder="Department" /></div>
+            {/* Summary */}
+            <div className="grid gap-2 rounded-lg bg-slate-50 p-3 text-sm sm:grid-cols-2">
+              <div>
+                <p className="text-xs text-slate-500">Patient</p>
+                <p className="font-medium">{patient.firstName} {patient.lastName} · {patient.patientId}</p>
+              </div>
+              {rxSummary.doctorName && (
+                <div>
+                  <p className="text-xs text-slate-500">Doctor</p>
+                  <p className="font-medium">{rxSummary.doctorName}</p>
+                </div>
+              )}
+              {rxSummary.diagnosisNotes && (
+                <div className="sm:col-span-2">
+                  <p className="text-xs text-slate-500">Diagnosis</p>
+                  <p className="font-medium">{rxSummary.diagnosisNotes}</p>
+                </div>
+              )}
             </div>
+
+            {/* Medicines */}
+            <div className="overflow-x-auto rounded-lg border">
+              <table className="w-full text-sm">
+                <thead className="bg-slate-50 text-left text-xs text-slate-500">
+                  <tr>
+                    <th className="p-2 pl-3">Medicine</th>
+                    <th className="p-2 w-32">Dosage</th>
+                    <th className="p-2 w-20 text-right">Qty</th>
+                    <th className="p-2 w-32 text-right">Available Stock</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y">
+                  {confirmLines.map((l) => (
+                    <tr key={l.medicineId}>
+                      <td className="p-2 pl-3 font-medium">{l.medicineName}</td>
+                      <td className="p-2 text-slate-500">{l.dosage || "—"}</td>
+                      <td className="p-2 text-right font-semibold">{l.quantity}</td>
+                      <td className={`p-2 text-right font-medium ${Number(l.quantity) > l.onHand ? "text-red-600" : "text-emerald-600"}`}>
+                        {l.onHand}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+
             <div className="flex gap-2">
-              <Button onClick={dispense} disabled={busy}>{busy ? "Dispensing…" : "Confirm & Dispense"}</Button>
-              <Button variant="outline" onClick={() => setStep(3)}>Back</Button>
+              <Button onClick={dispense} disabled={busy} className="bg-emerald-600 text-white hover:bg-emerald-700">
+                {busy ? "Dispensing…" : "Confirm & Dispense"}
+              </Button>
+              <Button variant="outline" onClick={() => setStep(2)}>← Back</Button>
             </div>
           </CardContent>
         </Card>
