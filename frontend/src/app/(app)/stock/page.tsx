@@ -6,7 +6,6 @@ import { useRouter } from "next/navigation";
 import {
   ShoppingCart,
   PackageCheck,
-  ClipboardList,
   ArrowLeftRight,
   Scale,
   RotateCcw,
@@ -47,17 +46,9 @@ const HUB_ITEMS: HubItem[] = [
   {
     href: "/stock/receipt",
     label: "Receive Stock",
-    description: "Confirm receipt of ordered stock into inventory",
+    description: "Receive pending orders, track partial deliveries, and view receipt history",
     icon: PackageCheck,
     color: "text-emerald-600 bg-emerald-50",
-    module: "receiveStock",
-  },
-  {
-    href: "/stock/orders/received",
-    label: "Received Orders",
-    description: "History of fulfilled and partially received orders",
-    icon: ClipboardList,
-    color: "text-teal-600 bg-teal-50",
     module: "receiveStock",
   },
   {
