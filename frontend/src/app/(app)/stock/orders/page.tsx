@@ -11,6 +11,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { MedicineCombobox } from "@/components/ui/medicine-combobox";
 
 interface OrderSource {
   id: string;
@@ -393,20 +394,13 @@ export default function OrdersPage() {
                       <div className="grid gap-2 md:grid-cols-3">
                         <div>
                           <Label>Medicine *</Label>
-                          <select
-                            className="h-11 w-full rounded-lg border px-3"
+                          <MedicineCombobox
+                            medicines={medicines}
                             value={line.medicineId}
-                            onChange={(e) => updateLine(idx, { medicineId: e.target.value })}
-                            required
+                            onChange={(id) => updateLine(idx, { medicineId: id })}
                             disabled={isReceived}
-                          >
-                            <option value="">Select medicine</option>
-                            {medicines.map((m) => (
-                              <option key={m.id} value={m.id}>
-                                {m.medicineName}{m.strengths?.length ? ` - ${m.strengths.map((s) => s.strength).join(", ")}` : ""}
-                              </option>
-                            ))}
-                          </select>
+                            className="h-11"
+                          />
                         </div>
                         <div>
                           <Label>Qty Ordered *</Label>

@@ -10,6 +10,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { MedicineCombobox } from "@/components/ui/medicine-combobox";
 
 interface Facility { id: string; name: string; code: string; facilityType: string }
 interface Medicine { id: string; medicineName: string; genericName?: string; unitType: string }
@@ -130,10 +131,12 @@ export default function NewRequisitionPage() {
             <div key={i} className="flex gap-3 items-end">
               <div className="flex-1">
                 <Label>Medicine *</Label>
-                <select className="mt-1 h-10 w-full rounded-lg border px-3 text-sm" value={line.medicineId} onChange={(e) => updateLine(i, "medicineId", e.target.value)}>
-                  <option value="">Select medicine…</option>
-                  {medicines.map((m) => <option key={m.id} value={m.id}>{m.medicineName}{m.genericName ? ` (${m.genericName})` : ""}</option>)}
-                </select>
+                <MedicineCombobox
+                  medicines={medicines}
+                  value={line.medicineId}
+                  onChange={(id) => updateLine(i, "medicineId", id)}
+                  className="mt-1"
+                />
               </div>
               <div className="w-32">
                 <Label>Qty Requested *</Label>

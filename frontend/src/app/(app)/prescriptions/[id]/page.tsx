@@ -10,6 +10,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { OperationsTabs } from "@/components/layout/operations-tabs";
+import { MedicineCombobox } from "@/components/ui/medicine-combobox";
 
 function apiBaseUrl() {
   return resolveApiUrl().replace(/\/api$/, "");
@@ -442,10 +443,13 @@ export default function PrescriptionsPage() {
                 {/* Medicine */}
                 <div className="sm:col-span-2">
                   <Label>Medicine (optional)</Label>
-                  <select className="h-11 w-full rounded-lg border px-3 text-sm" value={form.medicineId} onChange={(e) => setField("medicineId", e.target.value)}>
-                    <option value="">None</option>
-                    {medicines.map((m) => <option key={m.id} value={m.id}>{m.medicineName}</option>)}
-                  </select>
+                  <MedicineCombobox
+                    medicines={medicines}
+                    value={form.medicineId}
+                    onChange={(id) => setField("medicineId", id)}
+                    placeholder="Search or leave blank…"
+                    className="h-11"
+                  />
                 </div>
                 <div>
                   <Label>Dosage</Label>

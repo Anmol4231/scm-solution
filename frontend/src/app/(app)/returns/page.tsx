@@ -8,6 +8,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { MedicineCombobox } from "@/components/ui/medicine-combobox";
 
 type Tab = "patient" | "ams" | "inter";
 
@@ -94,10 +95,12 @@ export default function ReturnsPage() {
               )}
               <div>
                 <Label>Medicine</Label>
-                <select className="mt-1 h-10 w-full rounded-lg border px-3 text-sm" value={patient.medicineId} onChange={(e) => setPatient({ ...patient, medicineId: e.target.value })} required>
-                  <option value="">Select medicine…</option>
-                  {medicines.map((m) => <option key={m.id} value={m.id}>{m.medicineName}</option>)}
-                </select>
+                <MedicineCombobox
+                  medicines={medicines}
+                  value={patient.medicineId}
+                  onChange={(id) => setPatient({ ...patient, medicineId: id })}
+                  className="mt-1"
+                />
               </div>
               <div className="grid grid-cols-2 gap-3">
                 <div><Label>Quantity</Label><Input type="number" min={1} value={patient.quantity || ""} onChange={(e) => setPatient({ ...patient, quantity: +e.target.value })} required /></div>
@@ -141,10 +144,12 @@ export default function ReturnsPage() {
               </div>
               <div>
                 <Label>Medicine *</Label>
-                <select className="mt-1 h-10 w-full rounded-lg border px-3 text-sm" value={ams.medicineId} onChange={(e) => setAms({ ...ams, medicineId: e.target.value })} required>
-                  <option value="">Select medicine…</option>
-                  {medicines.map((m) => <option key={m.id} value={m.id}>{m.medicineName}</option>)}
-                </select>
+                <MedicineCombobox
+                  medicines={medicines}
+                  value={ams.medicineId}
+                  onChange={(id) => setAms({ ...ams, medicineId: id })}
+                  className="mt-1"
+                />
               </div>
               <div className="grid grid-cols-2 gap-3">
                 <div><Label>Batch Number *</Label><Input value={ams.batchNumber} onChange={(e) => setAms({ ...ams, batchNumber: e.target.value })} required /></div>
@@ -183,10 +188,12 @@ export default function ReturnsPage() {
               </div>
               <div>
                 <Label>Medicine *</Label>
-                <select className="mt-1 h-10 w-full rounded-lg border px-3 text-sm" value={inter.medicineId} onChange={(e) => setInter({ ...inter, medicineId: e.target.value })} required>
-                  <option value="">Select medicine…</option>
-                  {medicines.map((m) => <option key={m.id} value={m.id}>{m.medicineName}</option>)}
-                </select>
+                <MedicineCombobox
+                  medicines={medicines}
+                  value={inter.medicineId}
+                  onChange={(id) => setInter({ ...inter, medicineId: id })}
+                  className="mt-1"
+                />
               </div>
               <div className="grid grid-cols-2 gap-3">
                 <div><Label>Batch Number *</Label><Input value={inter.batchNumber} onChange={(e) => setInter({ ...inter, batchNumber: e.target.value })} required /></div>

@@ -11,6 +11,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { MedicineCombobox } from "@/components/ui/medicine-combobox";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 interface Category { id: string; name: string }
@@ -511,10 +512,12 @@ export default function ExpiryPage() {
 
               <div>
                 <Label>Medicine <span className="text-red-500">*</span></Label>
-                <select className="mt-1 h-9 w-full rounded-lg border px-3 text-sm" value={recordForm.medicineId} onChange={(e) => setRecordForm({ ...recordForm, medicineId: e.target.value })} required>
-                  <option value="">Select medicine</option>
-                  {medicines.map((m) => <option key={m.id} value={m.id}>{m.medicineName}</option>)}
-                </select>
+                <MedicineCombobox
+                  medicines={medicines}
+                  value={recordForm.medicineId}
+                  onChange={(id) => setRecordForm({ ...recordForm, medicineId: id })}
+                  className="mt-1 h-9"
+                />
               </div>
 
               <div className="grid grid-cols-2 gap-3">

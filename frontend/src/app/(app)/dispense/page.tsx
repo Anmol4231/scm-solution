@@ -11,6 +11,7 @@ import { Label } from "@/components/ui/label";
 import { Card, CardContent } from "@/components/ui/card";
 import { sanitizePersonName, sanitizePhone, validators } from "@/lib/validation";
 import { OperationsTabs } from "@/components/layout/operations-tabs";
+import { MedicineCombobox } from "@/components/ui/medicine-combobox";
 
 interface Patient { id: string; patientId: string; firstName: string; lastName: string; gender?: string; age?: number; phoneNumber?: string | null }
 interface RxOption { id: string; prescriptionId: string; status: string; doctorName?: string | null; diagnosisNotes?: string | null; medicines?: { medicineId: string }[] }
@@ -74,6 +75,57 @@ function planLineToDispLine(pl: PlanLine): DispLine {
   };
 }
 
+// ── OCR medicine matching ──────────────────────────────────────────────────────
+
+function levenshtein(a: string, b: string): number {
+  let prev = Array.from({ length: b.length + 1 }, (_, j) => j);
+  const curr = new Array<number>(b.length + 1).fill(0);
+  for (let i = 1; i <= a.length; i++) {
+    curr[0] = i;
+    for (let j = 1; j <= b.length; j++) {
+      curr[j] =
+        a[i - 1] === b[j - 1]
+          ? prev[j - 1]
+          : 1 + Math.min(prev[j], curr[j - 1], prev[j - 1]);
+    }
+    prev = [...curr];
+  }
+  return prev[b.length];
+}
+
+function matchMedicines(ocrName: string, medicines: Medicine[]): Medicine[] {
+  const q = ocrName.toLowerCase().trim();
+  if (!q) return [];
+
+  // 1. Exact
+  const exact = medicines.filter((m) => m.medicineName === ocrName);
+  if (exact.length) return exact;
+
+  // 2. Case-insensitive exact
+  const ci = medicines.filter((m) => m.medicineName.toLowerCase() === q);
+  if (ci.length) return ci;
+
+  // 3. Starts-with (medicine name starts with OCR query — most common: "Paracetamol" → "Paracetamol 500mg")
+  const sw = medicines.filter((m) => m.medicineName.toLowerCase().startsWith(q));
+  if (sw.length) return sw;
+
+  // 4. Contains
+  const contains = medicines.filter((m) => m.medicineName.toLowerCase().includes(q));
+  if (contains.length) return contains;
+
+  // 5. Fuzzy (Levenshtein similarity > 0.5)
+  return medicines
+    .map((m) => {
+      const name = m.medicineName.toLowerCase();
+      const dist = levenshtein(q, name);
+      return { medicine: m, similarity: 1 - dist / Math.max(q.length, name.length) };
+    })
+    .filter((x) => x.similarity > 0.5)
+    .sort((a, b) => b.similarity - a.similarity)
+    .slice(0, 5)
+    .map((x) => x.medicine);
+}
+
 function DispenseWorkflow() {
   const hasAccess = useRequirePermission("dispensing");
   const searchParams = useSearchParams();
@@ -116,6 +168,8 @@ function DispenseWorkflow() {
   const [ocrState, setOcrState] = useState<OcrState>("idle");
   const [ocrResult, setOcrResult] = useState<OcrResult | null>(null);
   const [rawTextOpen, setRawTextOpen] = useState(false);
+  interface OcrLineMatch { lineIndex: number; ocrName: string; candidates: Medicine[] }
+  const [ocrAmbiguous, setOcrAmbiguous] = useState<OcrLineMatch[]>([]);
 
   /* prescription summary carried to confirm screen */
   const [rxSummary, setRxSummary] = useState({ doctorName: "", diagnosisNotes: "" });
@@ -203,6 +257,7 @@ function DispenseWorkflow() {
     setRxMode(mode);
     setPlanLoaded(false);
     setLines([]);
+    setOcrAmbiguous([]);
   };
 
   /* OCR: upload image → extract fields → auto-populate form */
@@ -211,6 +266,7 @@ function DispenseWorkflow() {
     setOcrState("scanning");
     setOcrResult(null);
     setRawTextOpen(false);
+    setOcrAmbiguous([]);
     try {
       const fd = new FormData();
       fd.append("file", file);
@@ -221,20 +277,37 @@ function DispenseWorkflow() {
       // Auto-populate editable form fields
       if (result.doctorName) setNewRx((r) => ({ ...r, doctorName: result.doctorName! }));
       if (result.diagnosisNotes) setNewRx((r) => ({ ...r, diagnosisNotes: result.diagnosisNotes! }));
+
+      // Priority-based medicine matching (exact → case-insensitive → starts-with → contains → fuzzy)
       if (result.medicines?.length) {
-        const mapped = result.medicines.map((m) => {
-          const match = medicines.find(
-            (med) => med.medicineName.toLowerCase() === m.medicineName.toLowerCase()
-          );
-          return { medicineId: match?.id ?? "", dosage: m.dosage ?? "", quantity: m.quantity ? String(m.quantity) : "" };
+        const mapped: { medicineId: string; dosage: string; quantity: string }[] = [];
+        const ambiguous: OcrLineMatch[] = [];
+
+        result.medicines.forEach((m, idx) => {
+          const candidates = matchMedicines(m.medicineName, medicines);
+          mapped.push({
+            medicineId: candidates.length === 1 ? candidates[0].id : "",
+            dosage: m.dosage ?? "",
+            quantity: m.quantity ? String(m.quantity) : "",
+          });
+          if (candidates.length !== 1) {
+            ambiguous.push({ lineIndex: idx, ocrName: m.medicineName, candidates });
+          }
         });
+
         setNewRxLines(mapped.length ? mapped : [{ medicineId: "", dosage: "", quantity: "" }]);
+        setOcrAmbiguous(ambiguous);
       }
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
       setOcrState("failed");
       setOcrResult({ rawText: "", error: msg });
     }
+  };
+
+  const selectOcrMedicine = (lineIndex: number, medicineId: string) => {
+    setNewRxLines((ls) => ls.map((l, idx) => (idx === lineIndex ? { ...l, medicineId } : l)));
+    setOcrAmbiguous((prev) => prev.filter((x) => x.lineIndex !== lineIndex));
   };
 
   const createRxThenPlan = async () => {
@@ -299,7 +372,7 @@ function DispenseWorkflow() {
       setSelectedRxId(""); setLines([]); setPlanLoaded(false);
       setNewRxLines([{ medicineId: "", dosage: "", quantity: "" }]);
       setNewRx({ doctorName: "", diagnosisNotes: "" }); setFile(null);
-      setOcrState("idle"); setOcrResult(null); setRawTextOpen(false);
+      setOcrState("idle"); setOcrResult(null); setRawTextOpen(false); setOcrAmbiguous([]);
       setRxSummary({ doctorName: "", diagnosisNotes: "" });
     } catch (e) {
       setError(e instanceof Error ? e.message : "Dispensing failed");
@@ -543,6 +616,7 @@ function DispenseWorkflow() {
                             setFile(e.target.files?.[0] || null);
                             setOcrState("idle");
                             setOcrResult(null);
+                            setOcrAmbiguous([]);
                           }}
                         />
                         <Button
@@ -616,6 +690,42 @@ function DispenseWorkflow() {
                               {ocrResult.rawText || "(empty — image may be blank or unreadable)"}
                             </pre>
                           )}
+
+                          {/* Ambiguous / unmatched medicine resolution */}
+                          {ocrAmbiguous.length > 0 && (
+                            <div className="mt-2 space-y-1.5 border-t border-green-200 pt-2">
+                              {ocrAmbiguous.map((item) => (
+                                <div
+                                  key={item.lineIndex}
+                                  className={`rounded border p-2 text-xs ${item.candidates.length ? "border-amber-200 bg-amber-50" : "border-red-200 bg-red-50"}`}
+                                >
+                                  <p className={item.candidates.length ? "text-amber-800" : "text-red-700"}>
+                                    OCR: <strong>&ldquo;{item.ocrName}&rdquo;</strong>
+                                    {item.candidates.length === 0
+                                      ? " — not found in medicine master"
+                                      : " — select the correct match:"}
+                                  </p>
+                                  {item.candidates.length > 0 && (
+                                    <div className="mt-1 flex flex-wrap gap-1">
+                                      {item.candidates.map((c) => (
+                                        <button
+                                          key={c.id}
+                                          type="button"
+                                          className="rounded-full border border-amber-300 bg-white px-2 py-0.5 text-xs font-medium hover:bg-amber-100"
+                                          onClick={() => selectOcrMedicine(item.lineIndex, c.id)}
+                                        >
+                                          {c.medicineName}
+                                        </button>
+                                      ))}
+                                    </div>
+                                  )}
+                                  {item.candidates.length === 0 && (
+                                    <p className="mt-0.5 text-red-600">Search manually in the table below.</p>
+                                  )}
+                                </div>
+                              ))}
+                            </div>
+                          )}
                         </div>
                       )}
 
@@ -670,7 +780,7 @@ function DispenseWorkflow() {
                     {/* Medicine table */}
                     <div>
                       <Label className="mb-1.5 block">Medicines</Label>
-                      <div className="overflow-x-auto rounded-lg border">
+                      <div className="rounded-lg border">
                         <table className="w-full min-w-[480px] text-sm">
                           <thead className="bg-slate-50 text-left text-xs text-slate-500">
                             <tr>
@@ -684,12 +794,12 @@ function DispenseWorkflow() {
                             {newRxLines.map((ln, i) => (
                               <tr key={i}>
                                 <td className="p-2 pl-3">
-                                  <select className="w-full rounded border px-2 py-1.5 text-sm"
+                                  <MedicineCombobox
+                                    medicines={medicines}
                                     value={ln.medicineId}
-                                    onChange={(e) => setNewRxLines((ls) => ls.map((x, idx) => idx === i ? { ...x, medicineId: e.target.value } : x))}>
-                                    <option value="">Select medicine…</option>
-                                    {medicines.map((m) => <option key={m.id} value={m.id}>{m.medicineName}</option>)}
-                                  </select>
+                                    onChange={(id) => setNewRxLines((ls) => ls.map((x, idx) => idx === i ? { ...x, medicineId: id } : x))}
+                                    className="h-9"
+                                  />
                                 </td>
                                 <td className="p-2">
                                   <Input placeholder="e.g. 500mg" value={ln.dosage}

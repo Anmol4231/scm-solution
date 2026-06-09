@@ -7,6 +7,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Card, CardContent } from "@/components/ui/card";
+import { MedicineCombobox } from "@/components/ui/medicine-combobox";
 
 export default function RecordConsumptionPage() {
   const [medicines, setMedicines] = useState<{ id: string; medicineName: string }[]>([]);
@@ -71,10 +72,12 @@ export default function RecordConsumptionPage() {
           <form onSubmit={submit} className="space-y-4">
             <div>
               <Label>Medicine *</Label>
-              <select className="h-11 w-full rounded-lg border px-3" value={form.medicineId} onChange={(e) => setForm({ ...form, medicineId: e.target.value })} required>
-                <option value="">Select medicine</option>
-                {medicines.map((m) => <option key={m.id} value={m.id}>{m.medicineName}</option>)}
-              </select>
+              <MedicineCombobox
+                medicines={medicines}
+                value={form.medicineId}
+                onChange={(id) => setForm({ ...form, medicineId: id })}
+                className="h-11"
+              />
               {balance != null && (
                 <p className="mt-1 text-sm text-muted-foreground">In stock now: <strong>{balance}</strong> unit(s)</p>
               )}
