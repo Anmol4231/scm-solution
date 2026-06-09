@@ -2,7 +2,7 @@
 
 import { useEffect, useMemo, useState, Suspense } from "react";
 import { useSearchParams } from "next/navigation";
-import { Check, FileText, Search, UserPlus, ClipboardList, Syringe, Upload, Loader2, Plus, Trash2 } from "lucide-react";
+import { Check, FileText, Search, UserPlus, ClipboardList, Syringe, Upload, Loader2, Plus, Trash2, AlertCircle, CheckCircle2, ChevronDown } from "lucide-react";
 import { api } from "@/lib/api";
 import { useRequirePermission } from "@/hooks/useRequirePermission";
 import { Button } from "@/components/ui/button";
@@ -100,7 +100,22 @@ function DispenseWorkflow() {
     { medicineId: "", dosage: "", quantity: "" },
   ]);
   const [file, setFile] = useState<File | null>(null);
-  const [ocrLoading, setOcrLoading] = useState(false);
+
+  type OcrState = "idle" | "scanning" | "done" | "failed";
+  interface OcrResult {
+    rawText: string;
+    confidence?: number;
+    doctorName?: string | null;
+    diagnosisNotes?: string | null;
+    medicines?: { medicineName: string; dosage?: string; quantity?: number }[];
+    fieldsDetected?: string[];
+    warnings?: string[];
+    error?: string;
+    details?: string;
+  }
+  const [ocrState, setOcrState] = useState<OcrState>("idle");
+  const [ocrResult, setOcrResult] = useState<OcrResult | null>(null);
+  const [rawTextOpen, setRawTextOpen] = useState(false);
 
   /* prescription summary carried to confirm screen */
   const [rxSummary, setRxSummary] = useState({ doctorName: "", diagnosisNotes: "" });
@@ -190,31 +205,36 @@ function DispenseWorkflow() {
     setLines([]);
   };
 
-  /* OCR: upload image → auto-populate fields */
+  /* OCR: upload image → extract fields → auto-populate form */
   const handleOcr = async () => {
     if (!file) return;
-    setOcrLoading(true);
+    setOcrState("scanning");
+    setOcrResult(null);
+    setRawTextOpen(false);
     try {
       const fd = new FormData();
       fd.append("file", file);
-      const result = await api<{
-        doctorName?: string;
-        diagnosisNotes?: string;
-        medicines?: { medicineName?: string; dosage?: string; quantity?: number }[];
-      }>("/prescriptions/ocr", { method: "POST", body: fd });
+      const result = await api<OcrResult>("/prescriptions/ocr", { method: "POST", body: fd });
+      setOcrResult(result);
+      setOcrState("done");
 
+      // Auto-populate editable form fields
       if (result.doctorName) setNewRx((r) => ({ ...r, doctorName: result.doctorName! }));
       if (result.diagnosisNotes) setNewRx((r) => ({ ...r, diagnosisNotes: result.diagnosisNotes! }));
       if (result.medicines?.length) {
         const mapped = result.medicines.map((m) => {
-          const match = medicines.find((med) => med.medicineName.toLowerCase() === (m.medicineName ?? "").toLowerCase());
+          const match = medicines.find(
+            (med) => med.medicineName.toLowerCase() === m.medicineName.toLowerCase()
+          );
           return { medicineId: match?.id ?? "", dosage: m.dosage ?? "", quantity: m.quantity ? String(m.quantity) : "" };
         });
         setNewRxLines(mapped.length ? mapped : [{ medicineId: "", dosage: "", quantity: "" }]);
       }
-    } catch {
-      /* OCR failed — user fills manually, no error shown */
-    } finally { setOcrLoading(false); }
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      setOcrState("failed");
+      setOcrResult({ rawText: "", error: msg });
+    }
   };
 
   const createRxThenPlan = async () => {
@@ -279,6 +299,7 @@ function DispenseWorkflow() {
       setSelectedRxId(""); setLines([]); setPlanLoaded(false);
       setNewRxLines([{ medicineId: "", dosage: "", quantity: "" }]);
       setNewRx({ doctorName: "", diagnosisNotes: "" }); setFile(null);
+      setOcrState("idle"); setOcrResult(null); setRawTextOpen(false);
       setRxSummary({ doctorName: "", diagnosisNotes: "" });
     } catch (e) {
       setError(e instanceof Error ? e.message : "Dispensing failed");
@@ -510,22 +531,123 @@ function DispenseWorkflow() {
                 ) : (
                   /* New prescription form */
                   <div className="space-y-4">
-                    {/* OCR upload */}
-                    <div className="rounded-lg border border-dashed p-3">
-                      <p className="mb-2 text-sm font-medium text-slate-600">Upload prescription scan (optional)</p>
+                    {/* OCR upload + status */}
+                    <div className="space-y-2 rounded-lg border border-dashed p-3">
+                      <p className="text-sm font-medium text-slate-600">Upload prescription scan (optional — OCR auto-fills fields)</p>
                       <div className="flex flex-wrap items-center gap-2">
-                        <Input type="file" accept="image/jpeg,image/png,image/jpg,.pdf,application/pdf"
+                        <Input
+                          type="file"
+                          accept="image/jpeg,image/png,image/jpg"
                           className="flex-1 min-w-0"
-                          onChange={(e) => setFile(e.target.files?.[0] || null)} />
-                        <Button type="button" variant="outline" size="sm"
-                          disabled={!file || ocrLoading} onClick={handleOcr}>
-                          {ocrLoading
-                            ? <><Loader2 className="mr-1.5 h-4 w-4 animate-spin" /> Scanning…</>
+                          onChange={(e) => {
+                            setFile(e.target.files?.[0] || null);
+                            setOcrState("idle");
+                            setOcrResult(null);
+                          }}
+                        />
+                        <Button
+                          type="button"
+                          variant="outline"
+                          size="sm"
+                          disabled={!file || ocrState === "scanning"}
+                          onClick={handleOcr}
+                        >
+                          {ocrState === "scanning"
+                            ? <><Loader2 className="mr-1.5 h-4 w-4 animate-spin" /> Running OCR…</>
                             : <><Upload className="mr-1.5 h-4 w-4" /> Scan & Auto-fill</>}
                         </Button>
                       </div>
-                      {file && !ocrLoading && (
-                        <p className="mt-1 text-xs text-slate-400">Click "Scan & Auto-fill" to extract details automatically.</p>
+
+                      {/* Idle hint */}
+                      {ocrState === "idle" && file && (
+                        <p className="text-xs text-slate-400">JPG/PNG only. Click "Scan & Auto-fill" to extract Doctor, Diagnosis, and Medicines.</p>
+                      )}
+
+                      {/* Scanning */}
+                      {ocrState === "scanning" && (
+                        <div className="flex items-center gap-2 rounded-lg bg-blue-50 px-3 py-2 text-sm text-blue-700">
+                          <Loader2 className="h-4 w-4 animate-spin shrink-0" />
+                          <span>Running OCR on the image — this may take a few seconds on first run…</span>
+                        </div>
+                      )}
+
+                      {/* Done */}
+                      {ocrState === "done" && ocrResult && (
+                        <div className="space-y-1.5 rounded-lg border border-green-200 bg-green-50 p-3 text-sm">
+                          <div className="flex items-center gap-2 font-medium text-green-700">
+                            <CheckCircle2 className="h-4 w-4 shrink-0" />
+                            OCR Complete
+                            {ocrResult.confidence !== undefined && (
+                              <span className="ml-auto text-xs font-normal text-green-600">
+                                {ocrResult.confidence}% confidence
+                              </span>
+                            )}
+                          </div>
+
+                          {(ocrResult.fieldsDetected?.length ?? 0) > 0 ? (
+                            <p className="text-xs text-green-700">
+                              Fields detected: <strong>{ocrResult.fieldsDetected!.join(", ")}</strong>
+                            </p>
+                          ) : (
+                            <p className="text-xs font-medium text-orange-600">
+                              No prescription fields detected. Check the raw text below and fill in manually.
+                            </p>
+                          )}
+
+                          {(ocrResult.warnings?.length ?? 0) > 0 && (
+                            <ul className="space-y-0.5">
+                              {ocrResult.warnings!.map((w, i) => (
+                                <li key={i} className="text-xs text-amber-700">⚠ {w}</li>
+                              ))}
+                            </ul>
+                          )}
+
+                          {/* Raw text toggle */}
+                          <button
+                            type="button"
+                            className="flex items-center gap-1 text-xs text-slate-500 hover:text-slate-700"
+                            onClick={() => setRawTextOpen((v) => !v)}
+                          >
+                            <ChevronDown className={`h-3.5 w-3.5 transition-transform ${rawTextOpen ? "rotate-180" : ""}`} />
+                            {rawTextOpen ? "Hide" : "Show"} raw OCR text
+                          </button>
+                          {rawTextOpen && (
+                            <pre className="mt-1 max-h-40 overflow-auto rounded bg-white p-2 text-xs text-slate-700 whitespace-pre-wrap border">
+                              {ocrResult.rawText || "(empty — image may be blank or unreadable)"}
+                            </pre>
+                          )}
+                        </div>
+                      )}
+
+                      {/* Failed */}
+                      {ocrState === "failed" && ocrResult && (
+                        <div className="space-y-1.5 rounded-lg border border-red-200 bg-red-50 p-3 text-sm">
+                          <div className="flex items-center gap-2 font-medium text-red-700">
+                            <AlertCircle className="h-4 w-4 shrink-0" />
+                            OCR Failed — fill in fields manually
+                          </div>
+                          <p className="text-xs text-red-600">{ocrResult.error ?? "Unknown error"}</p>
+                          {ocrResult.details && (
+                            <p className="text-xs text-red-500 font-mono">{ocrResult.details}</p>
+                          )}
+                          {ocrResult.rawText && (
+                            <>
+                              <button
+                                type="button"
+                                className="flex items-center gap-1 text-xs text-slate-500 hover:text-slate-700"
+                                onClick={() => setRawTextOpen((v) => !v)}
+                              >
+                                <ChevronDown className={`h-3.5 w-3.5 transition-transform ${rawTextOpen ? "rotate-180" : ""}`} />
+                                {rawTextOpen ? "Hide" : "Show"} partial OCR text
+                              </button>
+                              {rawTextOpen && (
+                                <pre className="mt-1 max-h-40 overflow-auto rounded bg-white p-2 text-xs text-slate-700 whitespace-pre-wrap border">
+                                  {ocrResult.rawText}
+                                </pre>
+                              )}
+                            </>
+                          )}
+                        </div>
                       )}
                     </div>
 

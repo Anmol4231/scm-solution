@@ -9,6 +9,79 @@ import { requirePermission } from "../middleware/permission";
 import { generatePrescriptionId } from "../utils/ids";
 import { logAudit } from "../services/audit";
 
+/* ─── OCR text parser ─── */
+
+interface ParsedMedicine { medicineName: string; dosage?: string; quantity?: number }
+interface OcrParseResult {
+  doctorName?: string;
+  diagnosisNotes?: string;
+  medicines: ParsedMedicine[];
+  fieldsDetected: string[];
+  warnings: string[];
+}
+
+function parsePrescriptionText(rawText: string): OcrParseResult {
+  const result: OcrParseResult = { medicines: [], fieldsDetected: [], warnings: [] };
+
+  const lines = rawText
+    .split(/\r?\n/)
+    .map((l) => l.trim())
+    .filter(Boolean);
+
+  // Each regex: label (colon | dash | equals | space) value
+  // \s*[-:=]?\s* handles: "Doctor- X", "Doctor: X", "Doctor X", "Doctor:X"
+  const patterns = {
+    doctor:    /^(?:doctor|dr\.?)\s*[-:=]?\s*(.+)/i,
+    diagnosis: /^(?:diagnosis|diag\.?)\s*[-:=]?\s*(.+)/i,
+    medicine:  /^medicines?\s*[-:=]?\s*(.+)/i,
+    qty:       /^(?:qty|quantity)\s*[-:=]?\s*(\d+(?:\.\d+)?)/i,
+    dosage:    /^(?:dosage|dose)\s*[-:=]?\s*(.+)/i,
+  };
+
+  const seen = new Set<string>();
+  const flag = (f: string) => { if (!seen.has(f)) { seen.add(f); result.fieldsDetected.push(f); } };
+
+  for (const line of lines) {
+    let m: RegExpExecArray | null;
+
+    m = patterns.doctor.exec(line);
+    if (m) { result.doctorName = m[1].trim(); flag("doctor"); continue; }
+
+    m = patterns.diagnosis.exec(line);
+    if (m) { result.diagnosisNotes = m[1].trim(); flag("diagnosis"); continue; }
+
+    m = patterns.medicine.exec(line);
+    if (m && m[1].trim()) {
+      result.medicines.push({ medicineName: m[1].trim() });
+      flag("medicine");
+      continue;
+    }
+
+    m = patterns.qty.exec(line);
+    if (m) {
+      const qty = parseFloat(m[1]);
+      if (!isNaN(qty)) {
+        if (result.medicines.length > 0) {
+          result.medicines[result.medicines.length - 1].quantity = qty;
+          flag("quantity");
+        } else {
+          result.warnings.push(`Quantity ${qty} found but no medicine to associate with it`);
+        }
+      }
+      continue;
+    }
+
+    m = patterns.dosage.exec(line);
+    if (m && result.medicines.length > 0) {
+      result.medicines[result.medicines.length - 1].dosage = m[1].trim();
+      flag("dosage");
+      continue;
+    }
+  }
+
+  return result;
+}
+
 const uploadDir = path.join(process.cwd(), "uploads");
 if (!fs.existsSync(uploadDir)) fs.mkdirSync(uploadDir, { recursive: true });
 
@@ -96,6 +169,69 @@ router.get("/", rxView, async (req, res, next) => {
   } catch (e) {
     next(e);
   }
+});
+
+/* POST /ocr — extract prescription fields from an uploaded image */
+router.post("/ocr", rxCreate, upload.single("file"), async (req, res, next) => {
+  if (!req.file) {
+    return res.status(400).json({
+      error: "No file uploaded. Attach a JPG or PNG image as the 'file' field.",
+      rawText: "", confidence: 0, doctorName: null, diagnosisNotes: null,
+      medicines: [], fieldsDetected: [], warnings: [],
+    });
+  }
+
+  const filePath = req.file.path;
+  const ext = path.extname(req.file.originalname).toLowerCase();
+
+  if (ext === ".pdf") {
+    fs.unlinkSync(filePath);
+    return res.status(400).json({
+      error: "PDF OCR is not supported yet. Please upload a JPG or PNG image.",
+      rawText: "", confidence: 0, doctorName: null, diagnosisNotes: null,
+      medicines: [], fieldsDetected: [], warnings: [],
+    });
+  }
+
+  let rawText = "";
+  let confidence = 0;
+  let ocrEngineError: string | null = null;
+
+  try {
+    // dynamic import keeps CJS compat while tesseract.js ships as ESM
+    const { createWorker } = await import("tesseract.js");
+    const worker = await createWorker("eng", 1, { logger: () => {} });
+    const { data } = await worker.recognize(filePath);
+    rawText = data.text ?? "";
+    confidence = data.confidence ?? 0;
+    await worker.terminate();
+  } catch (err) {
+    ocrEngineError = err instanceof Error ? err.message : String(err);
+  } finally {
+    try { fs.unlinkSync(filePath); } catch { /* ignore */ }
+  }
+
+  if (ocrEngineError) {
+    return res.status(500).json({
+      error: "OCR engine failed to process the image",
+      details: ocrEngineError,
+      rawText: "", confidence: 0, doctorName: null, diagnosisNotes: null,
+      medicines: [], fieldsDetected: [],
+      warnings: ["OCR engine could not process the image. Ensure it is a clear JPG or PNG."],
+    });
+  }
+
+  const parsed = parsePrescriptionText(rawText);
+
+  res.json({
+    rawText,
+    confidence: Math.round(confidence),
+    doctorName: parsed.doctorName ?? null,
+    diagnosisNotes: parsed.diagnosisNotes ?? null,
+    medicines: parsed.medicines,
+    fieldsDetected: parsed.fieldsDetected,
+    warnings: parsed.warnings,
+  });
 });
 
 router.post("/", rxCreate, upload.single("prescription"), async (req, res, next) => {
