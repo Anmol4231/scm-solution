@@ -7,6 +7,8 @@ import { requirePermission } from "../middleware/permission";
 import { daysUntilExpiry } from "../utils/stock";
 import { config } from "../utils/config";
 import { logAudit } from "../services/audit";
+import { decrementBatchOrThrow } from "../utils/stockGuards";
+import { refreshExpiredBatches, quarantineBatch } from "../services/batchLifecycle";
 
 const router = Router();
 router.use(authenticate, requireFacility);
@@ -22,6 +24,10 @@ router.get("/alerts", expiryView, async (req, res, next) => {
     const facilityFilter = req.query.facilityFilter as string | undefined;
     const withinDaysParam = req.query.withinDays as string | undefined;
     const statusFilter = (req.query.status as string) || "all";
+
+    // Keep the persisted batch lifecycle in step: flip newly-expired ACTIVE batches
+    // to EXPIRED before reporting, so expired stock is consistently unavailable.
+    await refreshExpiredBatches(facilityFilter || facilityId);
 
     const withinDays =
       withinDaysParam === "all" || !withinDaysParam
@@ -178,37 +184,48 @@ router.post("/record-expired", expiryEdit, async (req, res, next) => {
       },
     });
 
-    if (batch) {
-      const deduct = Math.min(batch.quantity, data.quantity);
-      await prisma.stockBatch.update({
-        where: { id: batch.id },
-        data: { quantity: { decrement: deduct } },
+    // Disposal removes physical stock and writes the EXPIRED ledger entry + the
+    // disposal record atomically, and transitions the batch to DISPOSED when emptied.
+    const deduct = batch ? Math.min(batch.quantity, data.quantity) : 0;
+
+    const record = await prisma.$transaction(async (tx) => {
+      if (batch && deduct > 0) {
+        // Conditional decrement — disposal can never drive the batch negative.
+        await decrementBatchOrThrow(tx, batch.id, deduct, `batch ${data.batchNumber}`);
+        const fresh = await tx.stockBatch.findUnique({ where: { id: batch.id } });
+        await tx.stockBatch.update({
+          where: { id: batch.id },
+          data: (fresh?.quantity ?? 0) <= 0
+            ? { status: "DISPOSED", disposedAt: new Date() }
+            : { status: "QUARANTINED", quarantinedAt: batch.quarantinedAt ?? new Date() },
+        });
+      }
+
+      const created = await tx.expiredMedicineRecord.create({
+        data: {
+          facilityId,
+          medicineId: data.medicineId,
+          batchNumber: data.batchNumber,
+          expiryDate: new Date(data.expiryDate),
+          quantity: data.quantity,
+          disposalMethod: data.disposalMethod,
+          disposalWitness: data.disposalWitness ?? null,
+          processedById: userId,
+        },
       });
-    }
 
-    const record = await prisma.expiredMedicineRecord.create({
-      data: {
-        facilityId,
-        medicineId: data.medicineId,
-        batchNumber: data.batchNumber,
-        expiryDate: new Date(data.expiryDate),
-        quantity: data.quantity,
-        disposalMethod: data.disposalMethod,
-        disposalWitness: data.disposalWitness ?? null,
-        processedById: userId,
-      },
-    });
-
-    await prisma.stockTransaction.create({
-      data: {
-        facilityId,
-        medicineId: data.medicineId,
-        batchId: batch?.id,
-        type: StockTransactionType.EXPIRED,
-        quantity: -data.quantity,
-        reason: `Disposal: ${data.disposalMethod}`,
-        performedById: userId,
-      },
+      await tx.stockTransaction.create({
+        data: {
+          facilityId,
+          medicineId: data.medicineId,
+          batchId: batch?.id,
+          type: StockTransactionType.EXPIRED,
+          quantity: -deduct,
+          reason: `Disposal: ${data.disposalMethod}`,
+          performedById: userId,
+        },
+      });
+      return created;
     });
 
     await logAudit({
@@ -217,10 +234,38 @@ router.post("/record-expired", expiryEdit, async (req, res, next) => {
       action: "DISPOSAL",
       entityType: "ExpiredMedicine",
       entityId: record.id,
-      details: { medicineId: data.medicineId, batchNumber: data.batchNumber, quantity: data.quantity, disposalMethod: data.disposalMethod },
+      details: {
+        medicineId: data.medicineId,
+        batchNumber: data.batchNumber,
+        quantityDisposed: deduct,
+        quantityRecorded: data.quantity,
+        disposalMethod: data.disposalMethod,
+        disposalWitness: data.disposalWitness ?? null,
+      },
     });
     res.status(201).json(record);
   } catch (e) {
+    next(e);
+  }
+});
+
+const quarantineSchema = z.object({
+  batchId: z.string().min(1),
+  reason: z.string().trim().min(1, "A quarantine reason is required"),
+});
+
+// POST /quarantine — place a batch on hold (ACTIVE|EXPIRED → QUARANTINED), making
+// it unavailable for dispensing/transfer pending disposal or release.
+router.post("/quarantine", expiryEdit, async (req, res, next) => {
+  try {
+    const data = quarantineSchema.parse(req.body);
+    await quarantineBatch({ batchId: data.batchId, userId: req.user!.userId, reason: data.reason });
+    const batch = await prisma.stockBatch.findUnique({ where: { id: data.batchId } });
+    res.json(batch);
+  } catch (e) {
+    if (e instanceof Error && e.message === "Batch not found") {
+      return res.status(404).json({ error: "Batch not found" });
+    }
     next(e);
   }
 });

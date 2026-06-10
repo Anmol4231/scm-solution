@@ -11,6 +11,7 @@ import { whatsappService } from "../whatsapp/service";
 import { createAlert } from "../services/alerts";
 import { AlertType, AlertSeverity } from "@prisma/client";
 import { createShipmentForTransfer } from "../services/shipment";
+import { assertBatchAvailable, decrementBatchOrThrow } from "../utils/stockGuards";
 
 const router = Router();
 router.use(authenticate);
@@ -41,6 +42,9 @@ router.post("/", transferCreate, async (req, res, next) => {
       return res.status(400).json({ error: "Invalid batch or insufficient quantity" });
     }
 
+    // Expired / quarantined stock can never be transferred.
+    assertBatchAvailable(batch, `${batch.medicine.medicineName} (batch ${batch.batchNumber})`);
+
     if (data.toFacilityId === batch.facilityId) {
       return res.status(400).json({ error: "Receiving facility must differ from sending facility" });
     }
@@ -54,10 +58,8 @@ router.post("/", transferCreate, async (req, res, next) => {
       }
     }
 
-    await prisma.stockBatch.update({
-      where: { id: batch.id },
-      data: { quantity: { decrement: data.quantity } },
-    });
+    // Conditional decrement guarantees stock cannot be driven negative under races.
+    await decrementBatchOrThrow(prisma, batch.id, data.quantity, `${batch.medicine.medicineName} (batch ${batch.batchNumber})`);
 
     const transfer = await prisma.transfer.create({
       data: {
@@ -300,6 +302,8 @@ router.post("/new", transferCreate, async (req, res, next) => {
       const batch = batches.find((b) => b.id === line.batchId);
       if (!batch) return res.status(400).json({ error: "Batch not found" });
       if (batch.quantity < line.quantityTransferred) return res.status(400).json({ error: `Insufficient stock in batch ${batch.batchNumber}` });
+      // Expired / quarantined stock can never be transferred.
+      assertBatchAvailable(batch, `${batch.medicine.medicineName} (batch ${batch.batchNumber})`);
     }
 
     const transfer = await prisma.transfer.create({
@@ -379,8 +383,10 @@ router.post("/:id/dispatch", transferEdit, async (req, res, next) => {
     await prisma.$transaction(async (tx) => {
       for (const line of transfer.lines) {
         const batch = await tx.stockBatch.findUnique({ where: { id: line.batchId } });
-        if (!batch || batch.quantity < line.quantityTransferred) throw new Error(`Insufficient stock in batch ${line.batchNumber} at time of dispatch`);
-        await tx.stockBatch.update({ where: { id: line.batchId }, data: { quantity: { decrement: line.quantityTransferred } } });
+        if (!batch) throw new Error(`Batch ${line.batchNumber} not found at time of dispatch`);
+        // Re-check expiry/availability and decrement atomically at dispatch time.
+        assertBatchAvailable(batch, `batch ${line.batchNumber}`);
+        await decrementBatchOrThrow(tx, line.batchId, line.quantityTransferred, `batch ${line.batchNumber}`);
         await tx.stockTransaction.create({
           data: {
             facilityId: transfer.fromFacilityId,

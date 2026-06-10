@@ -1,11 +1,12 @@
 import { Router } from "express";
 import { z } from "zod";
-import { DispensingRecipientType, Prisma, StockTransactionType } from "@prisma/client";
+import { DispensingRecipientType, StockTransactionType } from "@prisma/client";
 import { prisma } from "../lib/prisma";
 import { authenticate, getFacilityId, requireFacility } from "../middleware/auth";
 import { requirePermission } from "../middleware/permission";
 import { logAudit } from "../services/audit";
 import { checkLowStockAndStockout } from "../services/alerts";
+import { assertBatchAvailable, decrementBatchOrThrow } from "../utils/stockGuards";
 
 const router = Router();
 router.use(authenticate, requireFacility);
@@ -15,9 +16,6 @@ const dispenseCreate = requirePermission("dispensing", "create");
 
 const positiveWholeNumber = z.number().int("Quantity must be a whole number").positive("Quantity must be greater than zero");
 
-/** Thrown inside a $transaction to roll it back and surface a 400 instead of a 500. */
-class InsufficientStockError extends Error {}
-
 /**
  * Resolves the facility to dispense from. Pharmacists use their own facility;
  * cross-facility users (facilityId = null) must supply one explicitly. Returns
@@ -25,23 +23,6 @@ class InsufficientStockError extends Error {}
  */
 function resolveDispenseFacility(req: Parameters<typeof getFacilityId>[0], explicit?: string): string | null {
   return getFacilityId(req, explicit) ?? null;
-}
-
-/**
- * Atomically decrement a batch only if it still holds enough stock. The conditional
- * `WHERE quantity >= qty` makes the check-and-decrement a single SQL statement, so
- * concurrent dispenses can never drive stock negative. Returns false if it couldn't.
- */
-async function decrementBatch(
-  tx: Prisma.TransactionClient,
-  batchId: string,
-  quantity: number
-): Promise<boolean> {
-  const result = await tx.stockBatch.updateMany({
-    where: { id: batchId, quantity: { gte: quantity } },
-    data: { quantity: { decrement: quantity } },
-  });
-  return result.count > 0;
 }
 
 const dispenseSchema = z.object({
@@ -98,12 +79,11 @@ router.post("/", dispenseCreate, async (req, res, next) => {
       where: { id: data.batchId, facilityId, medicineId: data.medicineId },
     });
     if (!batch) return res.status(404).json({ error: "Batch not found" });
+    // Block dispensing of expired / quarantined stock.
+    assertBatchAvailable(batch, `${medicine?.medicineName ?? "medicine"} (batch ${batch.batchNumber})`);
 
-    let record;
-    try {
-      record = await prisma.$transaction(async (tx) => {
-        const ok = await decrementBatch(tx, batch.id, data.quantity);
-        if (!ok) throw new InsufficientStockError("Insufficient batch quantity");
+    const record = await prisma.$transaction(async (tx) => {
+        await decrementBatchOrThrow(tx, batch.id, data.quantity, `batch ${batch.batchNumber}`);
 
         const created = await tx.dispensingRecord.create({
           data: {
@@ -141,11 +121,7 @@ router.post("/", dispenseCreate, async (req, res, next) => {
           },
         });
         return created;
-      });
-    } catch (e) {
-      if (e instanceof InsufficientStockError) return res.status(400).json({ error: e.message });
-      throw e;
-    }
+    });
 
     await logAudit({
       facilityId,
@@ -188,9 +164,9 @@ router.get("/prescription/:id/plan", dispenseView, async (req, res, next) => {
 
     const lines = await Promise.all(
       prescription.medicines.map(async (pm) => {
-        // FEFO: soonest non-expired batch with stock first.
+        // FEFO: soonest non-expired, ACTIVE batch with stock first.
         const batches = await prisma.stockBatch.findMany({
-          where: { facilityId, medicineId: pm.medicineId, quantity: { gt: 0 }, expiryDate: { gte: today } },
+          where: { facilityId, medicineId: pm.medicineId, quantity: { gt: 0 }, status: "ACTIVE", expiryDate: { gte: today } },
           orderBy: { expiryDate: "asc" },
           select: { id: true, batchNumber: true, expiryDate: true, quantity: true },
         });
@@ -289,21 +265,21 @@ router.post("/batch", dispenseCreate, async (req, res, next) => {
       where: { id: { in: data.lines.map((l) => l.batchId) }, facilityId },
     });
     const batchById = new Map(batches.map((b) => [b.id, b]));
+    const medNameById = new Map(medicinesForCheck.map((m) => [m.id, m.medicineName]));
     for (const line of data.lines) {
       const batch = batchById.get(line.batchId);
       if (!batch || batch.medicineId !== line.medicineId) {
         return res.status(404).json({ error: `Batch not found for one of the medicines` });
       }
+      // Block dispensing of expired / quarantined stock.
+      assertBatchAvailable(batch, `${medNameById.get(line.medicineId) ?? "medicine"} (batch ${batch.batchNumber})`);
     }
 
-    let created;
-    try {
-      created = await prisma.$transaction(async (tx) => {
+    const created = await prisma.$transaction(async (tx) => {
         const records = [];
         for (const line of data.lines) {
           const batch = batchById.get(line.batchId)!;
-          const ok = await decrementBatch(tx, batch.id, line.quantity);
-          if (!ok) throw new InsufficientStockError(`Insufficient stock in batch ${batch.batchNumber}`);
+          await decrementBatchOrThrow(tx, batch.id, line.quantity, `batch ${batch.batchNumber}`);
           const record = await tx.dispensingRecord.create({
           data: {
             facilityId,
@@ -340,11 +316,7 @@ router.post("/batch", dispenseCreate, async (req, res, next) => {
         records.push(record);
       }
       return records;
-      });
-    } catch (e) {
-      if (e instanceof InsufficientStockError) return res.status(400).json({ error: e.message });
-      throw e;
-    }
+    });
 
     await logAudit({
       facilityId,

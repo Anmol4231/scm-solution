@@ -6,6 +6,7 @@ import { authenticate } from "../middleware/auth";
 import { isCrossFacilityRole } from "../utils/roles";
 import { logAudit } from "../services/audit";
 import { generateVoucherCode } from "../utils/ids";
+import { decrementBatchOrThrow } from "../utils/stockGuards";
 
 const router = Router();
 router.use(authenticate);
@@ -203,13 +204,10 @@ router.post("/:id/finalize", async (req, res, next) => {
       // 1. Deduct stock from AMS for each line
       for (const line of voucher.lines) {
         if (line.batchId) {
-          const batch = await tx.stockBatch.findFirst({ where: { id: line.batchId, facilityId: issuingFacilityId } });
-          if (batch && batch.quantity >= line.quantityIssued) {
-            await tx.stockBatch.update({ where: { id: batch.id }, data: { quantity: { decrement: line.quantityIssued } } });
-          } else if (batch) {
-            // Deduct what's available
-            await tx.stockBatch.update({ where: { id: batch.id }, data: { quantity: 0 } });
-          }
+          // Conditional decrement: never silently zero a batch (which previously
+          // let the ledger record an issue larger than the stock actually removed)
+          // and never drive it negative. Insufficient stock aborts the whole issue.
+          await decrementBatchOrThrow(tx, line.batchId, line.quantityIssued, `batch for issue voucher ${voucher.voucherCode}`);
         }
         // Stock transaction: TRANSFER_OUT at issuing facility
         await tx.stockTransaction.create({

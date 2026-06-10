@@ -82,6 +82,13 @@ enum TransferStatus {
   CANCELLED
 }
 
+enum BatchStatus {
+  ACTIVE
+  EXPIRED
+  QUARANTINED
+  DISPOSED
+}
+
 enum DispensingRecipientType {
   PATIENT
   HEALTHCARE_WORKER
@@ -415,6 +422,10 @@ model StockBatch {
   unitCost         Float?
   supplierSource   String?
   storageCondition String?
+  status           BatchStatus @default(ACTIVE)
+  quarantinedAt    DateTime?
+  quarantineReason String?
+  disposedAt       DateTime?
   createdAt        DateTime @default(now())
   updatedAt  DateTime @updatedAt
 
@@ -429,6 +440,7 @@ model StockBatch {
   @@unique([medicineId, facilityId, batchNumber])
   @@index([expiryDate])
   @@index([facilityId, medicineId])
+  @@index([status, expiryDate])
 }
 
 model StockTransaction {

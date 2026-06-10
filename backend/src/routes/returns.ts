@@ -5,6 +5,7 @@ import { prisma } from "../lib/prisma";
 import { authenticate, getFacilityId, requireFacility } from "../middleware/auth";
 import { isCrossFacilityRole } from "../utils/roles";
 import { logAudit } from "../services/audit";
+import { assertNotExpired, isExpired, decrementBatchOrThrow } from "../utils/stockGuards";
 
 const router = Router();
 router.use(authenticate, requireFacility);
@@ -40,13 +41,17 @@ router.post("/patient", async (req, res, next) => {
     }
 
     let batchId: string | undefined;
+    let restocked = false;
     if (reusable && data.batchNumber) {
       const batch = await prisma.stockBatch.findUnique({
         where: { medicineId_facilityId_batchNumber: { medicineId: data.medicineId, facilityId, batchNumber: data.batchNumber } },
       });
-      if (batch) {
+      // Only return stock to available inventory if the batch is ACTIVE and not expired.
+      // Expired / quarantined stock must never re-enter usable inventory via a return.
+      if (batch && batch.status === "ACTIVE" && !isExpired(batch.expiryDate)) {
         await prisma.stockBatch.update({ where: { id: batch.id }, data: { quantity: { increment: data.quantity } } });
         batchId = batch.id;
+        restocked = true;
         await prisma.stockTransaction.create({
           data: {
             facilityId,
@@ -74,7 +79,7 @@ router.post("/patient", async (req, res, next) => {
         condition: data.condition,
         returnReason: data.returnReason,
         reusable,
-        stockAdjusted: reusable && !!batchId,
+        stockAdjusted: restocked,
         processedById: userId,
         notes: data.notes,
       },
@@ -112,6 +117,11 @@ router.post("/facility", async (req, res, next) => {
       return res.status(400).json({ error: "Receiving facility must differ from source" });
     }
 
+    // A facility return credits the destination as usable inventory, so it is a
+    // form of receiving — expired stock must never flow through it. Dispose expired
+    // stock via the Expiry / disposal workflow instead.
+    assertNotExpired(expiryDate, data.batchNumber);
+
     const sourceBatch = await prisma.stockBatch.findUnique({
       where: { medicineId_facilityId_batchNumber: { medicineId: data.medicineId, facilityId, batchNumber: data.batchNumber } },
     });
@@ -120,8 +130,8 @@ router.post("/facility", async (req, res, next) => {
     }
 
     await prisma.$transaction(async (tx) => {
-      // Deduct from returning facility
-      await tx.stockBatch.update({ where: { id: sourceBatch.id }, data: { quantity: { decrement: data.quantity } } });
+      // Deduct from returning facility (conditional decrement — never goes negative)
+      await decrementBatchOrThrow(tx, sourceBatch.id, data.quantity, `batch ${data.batchNumber}`);
       await tx.stockTransaction.create({
         data: {
           facilityId,

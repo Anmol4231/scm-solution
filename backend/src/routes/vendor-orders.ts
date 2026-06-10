@@ -6,6 +6,7 @@ import { authenticate, getFacilityId, requireFacility } from "../middleware/auth
 import { requirePermission, requireAnyPermission } from "../middleware/permission";
 import { logAudit } from "../services/audit";
 import { generateOrderCode, generateReceiptCode } from "../utils/ids";
+import { assertFutureExpiry, decrementBatchOrThrow } from "../utils/stockGuards";
 
 const router = Router();
 router.use(authenticate, requireFacility);
@@ -627,6 +628,12 @@ router.patch("/:id/receipts/:receiptId", receiveEdit, async (req, res, next) => 
             : new Date(receiptLine.expiryDate);
           const newExpiryDate = correction.expiryDate ? new Date(correction.expiryDate) : oldExpiryDate;
 
+          // A corrected expiry date must still be a valid future date — a receipt
+          // edit can never backdate stock into an expired state.
+          if (correction.expiryDate) {
+            assertFutureExpiry(newExpiryDate, `${receiptLine.medicine.medicineName} (batch ${newBatchNumber})`);
+          }
+
           const batchChanged = newBatchNumber !== oldBatchNumber;
 
           if (newQty !== oldQty || batchChanged) {
@@ -652,10 +659,7 @@ router.patch("/:id/receipts/:receiptId", receiveEdit, async (req, res, next) => 
               );
             }
 
-            await tx.stockBatch.update({
-              where: { id: receiptLine.batchId },
-              data: { quantity: { decrement: oldQty } },
-            });
+            await decrementBatchOrThrow(tx, receiptLine.batchId, oldQty, `${receiptLine.medicine.medicineName} (batch ${oldBatchNumber})`);
             const balAfterRemove = await tx.stockBatch.aggregate({
               _sum: { quantity: true },
               where: { medicineId: receiptLine.medicineId, facilityId: order.facilityId },
@@ -740,10 +744,16 @@ router.patch("/:id/receipts/:receiptId", receiveEdit, async (req, res, next) => 
                   `Cannot reduce received quantity for "${receiptLine.medicine.medicineName}" below ${minCorrectable} — ${consumed} unit${consumed !== 1 ? "s" : ""} have already been dispensed or transferred from this batch (${available} remain in stock).`
                 );
               }
-              await tx.stockBatch.update({
-                where: { id: receiptLine.batchId },
-                data: { quantity: { increment: diff } },
-              });
+              if (diff < 0) {
+                // Reduction — conditional decrement backstops the friendly check above
+                // so a correction can never drive the batch negative.
+                await decrementBatchOrThrow(tx, receiptLine.batchId, -diff, `${receiptLine.medicine.medicineName} (batch ${oldBatchNumber})`);
+              } else {
+                await tx.stockBatch.update({
+                  where: { id: receiptLine.batchId },
+                  data: { quantity: { increment: diff } },
+                });
+              }
               const bal = await tx.stockBatch.aggregate({
                 _sum: { quantity: true },
                 where: { medicineId: receiptLine.medicineId, facilityId: order.facilityId },

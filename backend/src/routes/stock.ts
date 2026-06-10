@@ -5,6 +5,7 @@ import { prisma } from "../lib/prisma";
 import { authenticate, getFacilityId, requireFacility } from "../middleware/auth";
 import { requirePermission } from "../middleware/permission";
 import { getMedicineBalance, getBatchSupplyTotals, periodStart, daysUntilExpiry } from "../utils/stock";
+import { assertFutureExpiry, decrementBatchOrThrow, NegativeStockError } from "../utils/stockGuards";
 import { config } from "../utils/config";
 import { logAudit } from "../services/audit";
 import { createAlert } from "../services/alerts";
@@ -36,6 +37,9 @@ router.post("/receipt", receiveStockCreate, async (req, res, next) => {
     const data = receiptSchema.parse(req.body);
     const facilityId = getFacilityId(req)!;
     const userId = req.user!.userId;
+
+    // Expired stock can never be received.
+    assertFutureExpiry(data.expiryDate, data.batchNumber);
 
     const expiryDate = new Date(data.expiryDate);
     let batch = await prisma.stockBatch.findUnique({
@@ -127,8 +131,18 @@ router.post("/consumption", stockCreate, async (req, res, next) => {
     let result: { balance: number; transactionId: string };
     try {
       result = await prisma.$transaction(async (tx) => {
+        const startOfToday = new Date();
+        startOfToday.setHours(0, 0, 0, 0);
+        // Consume only ACTIVE, non-expired stock (FEFO). Expired / quarantined
+        // batches are never drawn down.
         const batches = await tx.stockBatch.findMany({
-          where: { medicineId: data.medicineId, facilityId, quantity: { gt: 0 } },
+          where: {
+            medicineId: data.medicineId,
+            facilityId,
+            quantity: { gt: 0 },
+            status: "ACTIVE",
+            expiryDate: { gte: startOfToday },
+          },
           orderBy: { expiryDate: "asc" },
         });
 
@@ -145,7 +159,7 @@ router.post("/consumption", stockCreate, async (req, res, next) => {
           remaining -= deduct;
         }
         // All-or-nothing: if the full quantity can't be covered, roll everything back.
-        if (remaining > 0) throw new InsufficientStockError("Insufficient stock for the recorded consumption");
+        if (remaining > 0) throw new InsufficientStockError("Insufficient non-expired stock for the recorded consumption");
 
         await tx.consumptionReport.create({
           data: { facilityId, medicineId: data.medicineId, quantityUsed: data.quantityUsed, reportingPeriod: data.reportingPeriod },
@@ -194,30 +208,58 @@ router.post("/adjustment", stockEdit, async (req, res, next) => {
     const systemBalance = await getMedicineBalance(data.medicineId, facilityId);
     const discrepancy = data.physicalCount - systemBalance;
 
-    const batches = await prisma.stockBatch.findMany({
-      where: { medicineId: data.medicineId, facilityId },
-      orderBy: { createdAt: "asc" },
-      take: 1,
-    });
-
-    if (batches[0] && discrepancy !== 0) {
-      await prisma.stockBatch.update({
-        where: { id: batches[0].id },
-        data: { quantity: { increment: discrepancy } },
+    // Reconcile inside a transaction so the batch adjustment and the ledger entry
+    // are atomic, and so a downward adjustment can NEVER drive a batch negative.
+    const adjustmentTx = await prisma.$transaction(async (txc) => {
+      const batches = await txc.stockBatch.findMany({
+        where: { medicineId: data.medicineId, facilityId },
+        orderBy: { expiryDate: "asc" }, // FEFO — draw down soonest-expiring first
       });
-    }
 
-    const tx = await prisma.stockTransaction.create({
-      data: {
-        facilityId,
-        medicineId: data.medicineId,
-        batchId: batches[0]?.id,
-        type: StockTransactionType.ADJUSTMENT,
-        quantity: discrepancy,
-        balanceAfter: data.physicalCount,
-        reason: data.reason,
-        performedById: userId,
-      },
+      if (discrepancy < 0) {
+        // Spread the reduction across batches; conditional decrements guarantee no
+        // batch goes below zero. If the count dropped below what physically exists
+        // (a race), roll back rather than create negative stock.
+        let toRemove = -discrepancy;
+        for (const b of batches) {
+          if (toRemove <= 0) break;
+          const take = Math.min(b.quantity, toRemove);
+          if (take <= 0) continue;
+          await decrementBatchOrThrow(txc, b.id, take, `${data.medicineId} (batch ${b.batchNumber})`);
+          toRemove -= take;
+        }
+        if (toRemove > 0) {
+          throw new NegativeStockError(
+            "Physical count is below current stock by more than is available — adjustment would create negative inventory."
+          );
+        }
+      } else if (discrepancy > 0) {
+        // Surplus must land on a real batch (with an expiry). Without one we cannot
+        // represent it safely — direct the user to the receiving flow instead.
+        const target = batches.find((b) => b.status === "ACTIVE") ?? batches[0];
+        if (!target) {
+          throw new NegativeStockError(
+            "Cannot increase stock for a medicine with no existing batch. Use Receive Stock to book in new inventory with a batch and expiry."
+          );
+        }
+        await txc.stockBatch.update({
+          where: { id: target.id },
+          data: { quantity: { increment: discrepancy } },
+        });
+      }
+
+      return txc.stockTransaction.create({
+        data: {
+          facilityId,
+          medicineId: data.medicineId,
+          batchId: batches[0]?.id,
+          type: StockTransactionType.ADJUSTMENT,
+          quantity: discrepancy,
+          balanceAfter: data.physicalCount,
+          reason: data.reason,
+          performedById: userId,
+        },
+      });
     });
 
     await logAudit({
@@ -229,7 +271,7 @@ router.post("/adjustment", stockEdit, async (req, res, next) => {
       details: { systemBalance, physicalCount: data.physicalCount, discrepancy, reason: data.reason },
     });
 
-    res.status(201).json({ transaction: tx, systemBalance, physicalCount: data.physicalCount, discrepancy });
+    res.status(201).json({ transaction: adjustmentTx, systemBalance, physicalCount: data.physicalCount, discrepancy });
   } catch (e) {
     next(e);
   }
