@@ -49,7 +49,7 @@ export default function TransfersPage() {
   useEffect(() => { load(); }, [status]);
 
   const pendingIncoming = transfers.filter(
-    (t) => user?.facilityId && t.toFacility.id === user.facilityId && t.status === "IN_TRANSIT"
+    (t) => user?.facilityId && t.toFacility.id === user.facilityId && (t.status === "IN_TRANSIT" || t.status === "PARTIALLY_RECEIVED")
   );
   const pendingAuth = transfers.filter(
     (t) => user?.facilityId && t.fromFacility.id === user.facilityId && t.status === "PENDING"
@@ -70,16 +70,21 @@ export default function TransfersPage() {
           <Link href="/stock" className="text-sm text-medflow-600 hover:underline">← Stock Management</Link>
           <h1 className="mt-1 text-2xl font-bold">Transfers</h1>
         </div>
-        <Link href="/transfers/send">
-          <Button>New Transfer</Button>
-        </Link>
+        <div className="flex gap-2">
+          <Link href="/transfers/receive">
+            <Button variant="outline">Receive Transfers</Button>
+          </Link>
+          <Link href="/transfers/send">
+            <Button>New Transfer</Button>
+          </Link>
+        </div>
       </div>
 
       {/* Action banners */}
       {pendingIncoming.length > 0 && (
-        <div className="rounded-lg border border-amber-300 bg-amber-50 p-4">
-          <p className="font-semibold text-amber-800">{pendingIncoming.length} incoming transfer{pendingIncoming.length > 1 ? "s" : ""} in transit — awaiting your receipt</p>
-        </div>
+        <Link href="/transfers/receive" className="block rounded-lg border border-amber-300 bg-amber-50 p-4 hover:bg-amber-100">
+          <p className="font-semibold text-amber-800">{pendingIncoming.length} incoming transfer{pendingIncoming.length > 1 ? "s" : ""} awaiting your receipt — click to receive →</p>
+        </Link>
       )}
       {pendingAuth.length > 0 && (
         <div className="rounded-lg border border-blue-300 bg-blue-50 p-4">
