@@ -1,5 +1,6 @@
 import { Router } from "express";
 import { z } from "zod";
+import { Prisma } from "@prisma/client";
 import { prisma } from "../lib/prisma";
 import { authenticate, getFacilityId, requireFacility } from "../middleware/auth";
 import { requirePermission } from "../middleware/permission";
@@ -51,14 +52,25 @@ router.post("/", patientCreate, async (req, res, next) => {
   try {
     const data = createSchema.parse(req.body);
     const facilityId = data.facilityId || getFacilityId(req)!;
-    const count = await prisma.patient.count();
-    const patient = await prisma.patient.create({
-      data: {
-        patientId: generatePatientId(count + 1),
-        ...data,
-        facilityId,
-      },
-    });
+    // count()+1 is not unique under concurrency — retry on collision with a bumped sequence.
+    let patient!: Awaited<ReturnType<typeof prisma.patient.create>>;
+    for (let attempt = 0; ; attempt++) {
+      const count = await prisma.patient.count();
+      try {
+        patient = await prisma.patient.create({
+          data: {
+            patientId: generatePatientId(count + 1 + attempt),
+            ...data,
+            facilityId,
+          },
+        });
+        break;
+      } catch (err) {
+        const isUniqueCollision =
+          err instanceof Prisma.PrismaClientKnownRequestError && err.code === "P2002";
+        if (!isUniqueCollision || attempt >= 4) throw err;
+      }
+    }
     await logAudit({
       facilityId,
       userId: req.user!.userId,

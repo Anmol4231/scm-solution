@@ -3,84 +3,14 @@ import multer from "multer";
 import path from "path";
 import fs from "fs";
 import { z } from "zod";
+import { Prisma } from "@prisma/client";
 import { prisma } from "../lib/prisma";
 import { authenticate, getFacilityId, requireFacility } from "../middleware/auth";
 import { requirePermission } from "../middleware/permission";
 import { generatePrescriptionId } from "../utils/ids";
 import { logAudit } from "../services/audit";
-
-/* ─── OCR text parser ─── */
-
-interface ParsedMedicine { medicineName: string; dosage?: string; quantity?: number }
-interface OcrParseResult {
-  doctorName?: string;
-  diagnosisNotes?: string;
-  medicines: ParsedMedicine[];
-  fieldsDetected: string[];
-  warnings: string[];
-}
-
-function parsePrescriptionText(rawText: string): OcrParseResult {
-  const result: OcrParseResult = { medicines: [], fieldsDetected: [], warnings: [] };
-
-  const lines = rawText
-    .split(/\r?\n/)
-    .map((l) => l.trim())
-    .filter(Boolean);
-
-  // Each regex: label (colon | dash | equals | space) value
-  // \s*[-:=]?\s* handles: "Doctor- X", "Doctor: X", "Doctor X", "Doctor:X"
-  const patterns = {
-    doctor:    /^(?:doctor|dr\.?)\s*[-:=]?\s*(.+)/i,
-    diagnosis: /^(?:diagnosis|diag\.?)\s*[-:=]?\s*(.+)/i,
-    medicine:  /^medicines?\s*[-:=]?\s*(.+)/i,
-    qty:       /^(?:qty|quantity)\s*[-:=]?\s*(\d+(?:\.\d+)?)/i,
-    dosage:    /^(?:dosage|dose)\s*[-:=]?\s*(.+)/i,
-  };
-
-  const seen = new Set<string>();
-  const flag = (f: string) => { if (!seen.has(f)) { seen.add(f); result.fieldsDetected.push(f); } };
-
-  for (const line of lines) {
-    let m: RegExpExecArray | null;
-
-    m = patterns.doctor.exec(line);
-    if (m) { result.doctorName = m[1].trim(); flag("doctor"); continue; }
-
-    m = patterns.diagnosis.exec(line);
-    if (m) { result.diagnosisNotes = m[1].trim(); flag("diagnosis"); continue; }
-
-    m = patterns.medicine.exec(line);
-    if (m && m[1].trim()) {
-      result.medicines.push({ medicineName: m[1].trim() });
-      flag("medicine");
-      continue;
-    }
-
-    m = patterns.qty.exec(line);
-    if (m) {
-      const qty = parseFloat(m[1]);
-      if (!isNaN(qty)) {
-        if (result.medicines.length > 0) {
-          result.medicines[result.medicines.length - 1].quantity = qty;
-          flag("quantity");
-        } else {
-          result.warnings.push(`Quantity ${qty} found but no medicine to associate with it`);
-        }
-      }
-      continue;
-    }
-
-    m = patterns.dosage.exec(line);
-    if (m && result.medicines.length > 0) {
-      result.medicines[result.medicines.length - 1].dosage = m[1].trim();
-      flag("dosage");
-      continue;
-    }
-  }
-
-  return result;
-}
+import { parsePrescriptionText } from "../utils/ocrPrescriptionParser";
+import { matchMedicine } from "../utils/medicineMatcher";
 
 const uploadDir = path.join(process.cwd(), "uploads");
 if (!fs.existsSync(uploadDir)) fs.mkdirSync(uploadDir, { recursive: true });
@@ -121,10 +51,14 @@ const createSchema = z.object({
   medicines: z
     .array(
       z.object({
-        medicineId: z.string(),
+        medicineId: z.string().min(1, "Please select a medicine from the Medicine Master."),
         dosage: z.string().optional(),
         form: z.string().optional(),
-        quantity: z.number().optional(),
+        quantity: z
+          .number()
+          .int("Quantity must be a whole number")
+          .positive("Quantity must be greater than zero")
+          .optional(),
         duration: z.string().optional(),
         notes: z.string().optional(),
       })
@@ -223,12 +157,52 @@ router.post("/ocr", rxCreate, upload.single("file"), async (req, res, next) => {
 
   const parsed = parsePrescriptionText(rawText);
 
+  // Resolve each extracted medicine against the Medicine Master (fuzzy matching,
+  // abbreviations like "PCM", strength disambiguation "500mg vs 650mg").
+  const master = await prisma.medicine.findMany({
+    where: { isActive: true, deletedAt: null },
+    select: {
+      id: true,
+      medicineName: true,
+      genericName: true,
+      strengths: { where: { isActive: true }, select: { strength: true } },
+    },
+  });
+
+  const medicines = parsed.medicines.map((pm) => {
+    const match = matchMedicine(pm.medicineName, pm.strength, master);
+    return {
+      medicineName: pm.medicineName,
+      strength: pm.strength ?? null,
+      dosage: pm.dosage ?? pm.strength ?? null,
+      quantity: pm.quantity ?? null,
+      medicineId: match.medicineId,
+      matchedName: match.matchedName,
+      matchConfidence: match.confidence,
+      candidates: match.candidates.map((c) => ({ id: c.id, medicineName: c.medicineName })),
+    };
+  });
+
+  // Drop pure noise: lines that matched nothing in the master AND carried no
+  // qty/strength evidence are almost certainly letterhead/footer junk.
+  const filtered = medicines.filter(
+    (m) => m.medicineId || m.candidates.length > 0 || m.quantity != null || m.strength
+  );
+  for (const dropped of medicines.filter((m) => !filtered.includes(m))) {
+    parsed.warnings.push(`Ignored unrecognized text: "${dropped.medicineName}"`);
+  }
+  for (const m of filtered) {
+    if (!m.medicineId && m.candidates.length === 0) {
+      parsed.warnings.push(`"${m.medicineName}" not found in medicine master — select manually.`);
+    }
+  }
+
   res.json({
     rawText,
     confidence: Math.round(confidence),
     doctorName: parsed.doctorName ?? null,
     diagnosisNotes: parsed.diagnosisNotes ?? null,
-    medicines: parsed.medicines,
+    medicines: filtered,
     fieldsDetected: parsed.fieldsDetected,
     warnings: parsed.warnings,
   });
@@ -240,15 +214,51 @@ router.post("/", rxCreate, upload.single("prescription"), async (req, res, next)
       ...req.body,
       medicines: req.body.medicines ? JSON.parse(req.body.medicines) : undefined,
     });
-    const facilityId = getFacilityId(req)!;
-    const count = await prisma.prescription.count();
+
+    if (!body.patientId) {
+      return res.status(400).json({ error: "A patient must be selected before creating a prescription." });
+    }
+
+    const emptyMedicine = body.medicines?.find((m) => !m.medicineId);
+    if (emptyMedicine) {
+      return res.status(400).json({ error: "Please select a medicine from the Medicine Master." });
+    }
+
+    // Cross-facility roles (SUPER_ADMIN, PROVINCIAL_MANAGER) have no fixed facilityId.
+    // For prescription creation (always patient-scoped), fall back to the patient's facility.
+    let facilityId = getFacilityId(req);
+    if (!facilityId) {
+      const pat = await prisma.patient.findUnique({
+        where: { id: body.patientId },
+        select: { facilityId: true },
+      });
+      facilityId = pat?.facilityId ?? null;
+    }
+    if (!facilityId) {
+      return res.status(400).json({ error: "Unable to determine facility context for this prescription." });
+    }
+
     const fileUrl = req.file ? `/uploads/${req.file.filename}` : undefined;
 
-    const prescription = await prisma.prescription.create({
+    // count()+1 is not unique under concurrency — retry on collision with a bumped sequence.
+    const createWithUniqueId = async (): Promise<Awaited<ReturnType<typeof createPrescription>>> => {
+      for (let attempt = 0; ; attempt++) {
+        const count = await prisma.prescription.count();
+        try {
+          return await createPrescription(generatePrescriptionId(count + 1 + attempt));
+        } catch (err) {
+          const isUniqueCollision =
+            err instanceof Prisma.PrismaClientKnownRequestError && err.code === "P2002";
+          if (!isUniqueCollision || attempt >= 4) throw err;
+        }
+      }
+    };
+
+    const createPrescription = (rxId: string) => prisma.prescription.create({
       data: {
-        prescriptionId: generatePrescriptionId(count + 1),
-        patientId: body.patientId,
-        facilityId,
+        prescriptionId: rxId,
+        patient: { connect: { id: body.patientId } },
+        facility: { connect: { id: facilityId } },
         doctorName: body.doctorName,
         department: body.department,
         diagnosisNotes: body.diagnosisNotes,
@@ -260,11 +270,22 @@ router.post("/", rxCreate, upload.single("prescription"), async (req, res, next)
         prescriptionDate: body.prescriptionDate ? new Date(body.prescriptionDate) : new Date(),
         uploadedPrescriptionUrl: fileUrl,
         medicines: body.medicines
-          ? { create: body.medicines }
+          ? {
+              create: body.medicines.map((m) => ({
+                medicine: { connect: { id: m.medicineId } },
+                dosage: m.dosage,
+                form: m.form,
+                quantity: m.quantity,
+                duration: m.duration,
+                notes: m.notes,
+              })),
+            }
           : undefined,
       },
       include: { medicines: { include: { medicine: true } }, patient: true },
     });
+
+    const prescription = await createWithUniqueId();
 
     await logAudit({
       facilityId,

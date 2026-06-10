@@ -2,9 +2,10 @@
 
 import { useEffect, useMemo, useState, Suspense } from "react";
 import { useSearchParams } from "next/navigation";
-import { Check, FileText, Search, UserPlus, ClipboardList, Syringe, Upload, Loader2, Plus, Trash2, AlertCircle, CheckCircle2, ChevronDown } from "lucide-react";
+import { Check, FileText, Search, UserPlus, ClipboardList, Syringe, Upload, Loader2, Plus, Trash2, AlertCircle, CheckCircle2, ChevronDown, Building2 } from "lucide-react";
 import { api } from "@/lib/api";
 import { useRequirePermission } from "@/hooks/useRequirePermission";
+import { useAuth } from "@/lib/auth-context";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -12,20 +13,23 @@ import { Card, CardContent } from "@/components/ui/card";
 import { sanitizePersonName, sanitizePhone, validators } from "@/lib/validation";
 import { OperationsTabs } from "@/components/layout/operations-tabs";
 import { MedicineCombobox } from "@/components/ui/medicine-combobox";
+import { levenshtein } from "@/lib/medicine-search";
 
 interface Patient { id: string; patientId: string; firstName: string; lastName: string; gender?: string; age?: number; phoneNumber?: string | null }
 interface RxOption { id: string; prescriptionId: string; status: string; doctorName?: string | null; diagnosisNotes?: string | null; medicines?: { medicineId: string }[] }
-interface Medicine { id: string; medicineName: string }
+interface Medicine { id: string; medicineName: string; strengths?: { strength: string }[] }
 interface PlanBatch { id: string; batchNumber: string; expiryDate: string; quantity: number }
 interface PlanLine {
   medicineId: string; medicineName: string; dosage: string; form: string; duration: string;
   requestedQuantity: number | null; onHand: number; recommendedBatchId: string | null; batches: PlanBatch[];
   requiresPrescription: boolean;
+  prescribedQuantity: number | null; alreadyDispensed: number; remainingQuantity: number | null; fulfilled: boolean;
 }
 interface DispLine {
   medicineId: string; medicineName: string; dosage: string; form: string; duration: string;
   batchId: string; quantity: string; onHand: number; batches: PlanBatch[];
   enabled: boolean; requiresPrescription: boolean;
+  prescribedQuantity: number | null; alreadyDispensed: number; remainingQuantity: number | null; fulfilled: boolean;
 }
 
 type Step = 1 | 2 | 3;
@@ -67,68 +71,117 @@ function planLineToDispLine(pl: PlanLine): DispLine {
     form: pl.form,
     duration: pl.duration,
     batchId: pl.recommendedBatchId ?? "",
+    // Pre-fill with what *remains* on the Rx (partial dispensing aware)
     quantity: String(pl.requestedQuantity ?? (pl.onHand > 0 ? 1 : 0)),
     onHand: pl.onHand,
     batches: pl.batches,
-    enabled: !!pl.recommendedBatchId,
+    enabled: !!pl.recommendedBatchId && !pl.fulfilled,
     requiresPrescription: pl.requiresPrescription,
+    prescribedQuantity: pl.prescribedQuantity ?? null,
+    alreadyDispensed: pl.alreadyDispensed ?? 0,
+    remainingQuantity: pl.remainingQuantity ?? null,
+    fulfilled: pl.fulfilled ?? false,
   };
 }
 
-// ── OCR medicine matching ──────────────────────────────────────────────────────
+// ── OCR medicine matching (fallback when the backend returns no match data) ────
 
-function levenshtein(a: string, b: string): number {
-  let prev = Array.from({ length: b.length + 1 }, (_, j) => j);
-  const curr = new Array<number>(b.length + 1).fill(0);
-  for (let i = 1; i <= a.length; i++) {
-    curr[0] = i;
-    for (let j = 1; j <= b.length; j++) {
-      curr[j] =
-        a[i - 1] === b[j - 1]
-          ? prev[j - 1]
-          : 1 + Math.min(prev[j], curr[j - 1], prev[j - 1]);
-    }
-    prev = [...curr];
+// Full display label for a medicine, deduplicating strength already in the name
+function medicineLabel(m: Medicine): string {
+  if (m.strengths?.length) {
+    const nameLower = m.medicineName.toLowerCase();
+    const extra = m.strengths
+      .filter((s) => {
+        const sl = s.strength.toLowerCase();
+        return !nameLower.endsWith(sl) && !nameLower.includes(` ${sl}`);
+      })
+      .map((s) => s.strength)
+      .join(" / ");
+    return extra ? `${m.medicineName} ${extra}` : m.medicineName;
   }
-  return prev[b.length];
+  return m.medicineName;
 }
 
 function matchMedicines(ocrName: string, medicines: Medicine[]): Medicine[] {
   const q = ocrName.toLowerCase().trim();
   if (!q) return [];
 
-  // 1. Exact
-  const exact = medicines.filter((m) => m.medicineName === ocrName);
+  // 1. Exact match on full display label
+  const exact = medicines.filter((m) => medicineLabel(m).toLowerCase() === q);
   if (exact.length) return exact;
 
-  // 2. Case-insensitive exact
+  // 2. Case-insensitive exact on base name
   const ci = medicines.filter((m) => m.medicineName.toLowerCase() === q);
   if (ci.length) return ci;
 
-  // 3. Starts-with (medicine name starts with OCR query — most common: "Paracetamol" → "Paracetamol 500mg")
-  const sw = medicines.filter((m) => m.medicineName.toLowerCase().startsWith(q));
+  // 3. Label or name starts with OCR query
+  const sw = medicines.filter(
+    (m) => m.medicineName.toLowerCase().startsWith(q) || medicineLabel(m).toLowerCase().startsWith(q)
+  );
   if (sw.length) return sw;
 
-  // 4. Contains
-  const contains = medicines.filter((m) => m.medicineName.toLowerCase().includes(q));
-  if (contains.length) return contains;
+  // 4. OCR query starts with medicine base name (OCR captured extra tokens)
+  const qStartsWithBase = medicines.filter((m) => q.startsWith(m.medicineName.toLowerCase()));
+  if (qStartsWithBase.length) {
+    return qStartsWithBase
+      .map((m) => ({ m, dist: levenshtein(q, medicineLabel(m).toLowerCase()) }))
+      .sort((a, b) => a.dist - b.dist)
+      .slice(0, 3)
+      .map((x) => x.m);
+  }
 
-  // 5. Fuzzy (Levenshtein similarity > 0.5)
-  return medicines
+  // 5. Contains (label or name)
+  const contains = medicines.filter(
+    (m) => medicineLabel(m).toLowerCase().includes(q) || m.medicineName.toLowerCase().includes(q)
+  );
+  if (contains.length) return contains.slice(0, 10);
+
+  // 6. Fuzzy — score against both label and base name, take the better score
+  const scored = medicines
     .map((m) => {
+      const label = medicineLabel(m).toLowerCase();
       const name = m.medicineName.toLowerCase();
-      const dist = levenshtein(q, name);
-      return { medicine: m, similarity: 1 - dist / Math.max(q.length, name.length) };
+      const simLabel = 1 - levenshtein(q, label) / Math.max(q.length, label.length);
+      const simName  = 1 - levenshtein(q, name)  / Math.max(q.length, name.length);
+      return { medicine: m, similarity: Math.max(simLabel, simName) };
     })
     .filter((x) => x.similarity > 0.5)
-    .sort((a, b) => b.similarity - a.similarity)
-    .slice(0, 5)
-    .map((x) => x.medicine);
+    .sort((a, b) => b.similarity - a.similarity);
+
+  if (!scored.length) return [];
+
+  // Auto-collapse: single high-confidence result avoids user disambiguation
+  const top = scored[0];
+  const second = scored[1];
+  if (top.similarity >= 0.8 && (!second || top.similarity - second.similarity >= 0.15)) {
+    return [top.medicine];
+  }
+
+  return scored.slice(0, 5).map((x) => x.medicine);
 }
 
 function DispenseWorkflow() {
   const hasAccess = useRequirePermission("dispensing");
   const searchParams = useSearchParams();
+  const { user, switchFacility } = useAuth();
+
+  /* ── Facility selection (shown when user has no facility context) ── */
+  const [facilities, setFacilities] = useState<{ id: string; name: string; code: string }[]>([]);
+  const [facilityPickId, setFacilityPickId] = useState("");
+  const [facilityBusy, setFacilityBusy] = useState(false);
+
+  useEffect(() => {
+    if (!user?.facilityId) {
+      api<{ id: string; name: string; code: string }[]>("/auth/facilities").then(setFacilities).catch(() => {});
+    }
+  }, [user?.facilityId]);
+
+  const confirmFacility = async () => {
+    if (!facilityPickId) return;
+    setFacilityBusy(true);
+    try { await switchFacility(facilityPickId); } catch { /* error handled by auth */ }
+    finally { setFacilityBusy(false); }
+  };
 
   const [step, setStep] = useState<Step>(1);
   const [error, setError] = useState("");
@@ -159,7 +212,17 @@ function DispenseWorkflow() {
     confidence?: number;
     doctorName?: string | null;
     diagnosisNotes?: string | null;
-    medicines?: { medicineName: string; dosage?: string; quantity?: number }[];
+    medicines?: {
+      medicineName: string;
+      strength?: string | null;
+      dosage?: string | null;
+      quantity?: number | null;
+      // Server-side Medicine Master match (fuzzy + abbreviations + strength)
+      medicineId?: string | null;
+      matchedName?: string | null;
+      matchConfidence?: number;
+      candidates?: { id: string; medicineName: string }[];
+    }[];
     fieldsDetected?: string[];
     warnings?: string[];
     error?: string;
@@ -278,19 +341,38 @@ function DispenseWorkflow() {
       if (result.doctorName) setNewRx((r) => ({ ...r, doctorName: result.doctorName! }));
       if (result.diagnosisNotes) setNewRx((r) => ({ ...r, diagnosisNotes: result.diagnosisNotes! }));
 
-      // Priority-based medicine matching (exact → case-insensitive → starts-with → contains → fuzzy)
+      // Medicine resolution: prefer the server-side Medicine Master match
+      // (fuzzy + abbreviations + strength disambiguation); fall back to local
+      // priority matching when the backend sent no match data.
       if (result.medicines?.length) {
         const mapped: { medicineId: string; dosage: string; quantity: string }[] = [];
         const ambiguous: OcrLineMatch[] = [];
+        const byId = new Map(medicines.map((m) => [m.id, m]));
 
         result.medicines.forEach((m, idx) => {
-          const candidates = matchMedicines(m.medicineName, medicines);
+          let medicineId = m.medicineId ?? "";
+          let candidates: Medicine[] = [];
+
+          if (!medicineId) {
+            candidates = (m.candidates ?? [])
+              .map((c) => byId.get(c.id))
+              .filter((c): c is Medicine => !!c);
+            if (!candidates.length && m.matchConfidence === undefined) {
+              // Old-style response — local fallback matching
+              candidates = matchMedicines(m.medicineName, medicines);
+            }
+            if (candidates.length === 1) {
+              medicineId = candidates[0].id;
+              candidates = [];
+            }
+          }
+
           mapped.push({
-            medicineId: candidates.length === 1 ? candidates[0].id : "",
-            dosage: m.dosage ?? "",
+            medicineId,
+            dosage: m.dosage ?? m.strength ?? "",
             quantity: m.quantity ? String(m.quantity) : "",
           });
-          if (candidates.length !== 1) {
+          if (!medicineId) {
             ambiguous.push({ lineIndex: idx, ocrName: m.medicineName, candidates });
           }
         });
@@ -312,8 +394,18 @@ function DispenseWorkflow() {
 
   const createRxThenPlan = async () => {
     setError("");
-    const validLines = newRxLines.filter((l) => l.medicineId);
-    if (!validLines.length) return setError("Add at least one medicine to the prescription");
+
+    // Lines where the user entered something (medicine or quantity)
+    const filledLines = newRxLines.filter((l) => l.medicineId || l.quantity.trim());
+
+    if (!filledLines.length) return setError("Add at least one medicine to the prescription.");
+
+    // Every filled line must have a medicine selected
+    const missingMedicine = filledLines.find((l) => !l.medicineId);
+    if (missingMedicine) return setError("Please select a medicine from the Medicine Master.");
+
+    const validLines = filledLines; // all have non-empty medicineId at this point
+
     setBusy(true);
     try {
       const fd = new FormData();
@@ -343,7 +435,9 @@ function DispenseWorkflow() {
     if (!l.batchId) return "No stock";
     if (Number(l.quantity) <= 0) return "Enter qty";
     const batch = l.batches.find((b) => b.id === l.batchId);
-    if (batch && Number(l.quantity) > batch.quantity) return `Max ${batch.quantity}`;
+    if (batch && Number(l.quantity) > batch.quantity) return `Max ${batch.quantity} in batch`;
+    if (l.remainingQuantity != null && Number(l.quantity) > l.remainingQuantity)
+      return `Max ${l.remainingQuantity} on Rx`;
     return "";
   };
 
@@ -384,11 +478,42 @@ function DispenseWorkflow() {
   /* ── render ── */
   return (
     <div className="mx-auto max-w-4xl space-y-4">
-      <Stepper step={step} />
+
+      {/* Facility selector — shown when the user has no facility context */}
+      {!user?.facilityId && (
+        <Card>
+          <CardContent className="space-y-3 p-4">
+            <div className="flex items-center gap-2 text-sm font-medium text-slate-700">
+              <Building2 className="h-4 w-4 text-medflow-600" />
+              Select a facility to dispense from
+            </div>
+            <p className="text-xs text-slate-500">
+              Your account is not assigned to a facility. Choose one to continue.
+            </p>
+            <div className="flex gap-2">
+              <select
+                className="h-9 flex-1 rounded-lg border px-3 text-sm"
+                value={facilityPickId}
+                onChange={(e) => setFacilityPickId(e.target.value)}
+              >
+                <option value="">— Select facility —</option>
+                {facilities.map((f) => (
+                  <option key={f.id} value={f.id}>{f.name} ({f.code})</option>
+                ))}
+              </select>
+              <Button onClick={confirmFacility} disabled={!facilityPickId || facilityBusy}>
+                {facilityBusy ? <Loader2 className="h-4 w-4 animate-spin" /> : "Confirm"}
+              </Button>
+            </div>
+          </CardContent>
+        </Card>
+      )}
+
+      {user?.facilityId && <Stepper step={step} />}
       {error && <p className="rounded-lg bg-red-50 p-3 text-sm text-red-700">{error}</p>}
       {success && <p className="rounded-lg bg-green-50 p-3 text-sm text-green-700">{success}</p>}
 
-      {patient && step > 1 && (
+      {user?.facilityId && patient && step > 1 && (
         <div className="flex items-center justify-between rounded-lg border bg-slate-50 px-3 py-2 text-sm">
           <span>
             <Check className="mr-1 inline h-4 w-4 text-emerald-600" />
@@ -400,7 +525,7 @@ function DispenseWorkflow() {
       )}
 
       {/* ── STEP 1: Patient (unchanged) ── */}
-      {step === 1 && (
+      {user?.facilityId && step === 1 && (
         <Card>
           <CardContent className="space-y-3 p-4">
             {!registerMode ? (
@@ -468,7 +593,7 @@ function DispenseWorkflow() {
       )}
 
       {/* ── STEP 2: Prescription & Medicines ── */}
-      {step === 2 && patient && (
+      {user?.facilityId && step === 2 && patient && (
         <Card>
           <CardContent className="space-y-4 p-4">
 
@@ -493,7 +618,6 @@ function DispenseWorkflow() {
                       <tr>
                         <th className="p-2 pl-3 w-8"></th>
                         <th className="p-2">Medicine</th>
-                        <th className="p-2 w-28">Dosage</th>
                         <th className="p-2">Batch (FEFO)</th>
                         <th className="p-2 w-24 text-right">Qty</th>
                         <th className="p-2 w-24 text-right">On Hand</th>
@@ -501,7 +625,7 @@ function DispenseWorkflow() {
                     </thead>
                     <tbody className="divide-y">
                       {lines.length === 0 && (
-                        <tr><td colSpan={6} className="p-4 text-center text-slate-400">No medicine lines.</td></tr>
+                        <tr><td colSpan={5} className="p-4 text-center text-slate-400">No medicine lines.</td></tr>
                       )}
                       {lines.map((l, i) => {
                         const le = lineError(l);
@@ -509,7 +633,7 @@ function DispenseWorkflow() {
                           <tr key={l.medicineId} className={!l.enabled ? "bg-slate-50/60 opacity-50" : ""}>
                             <td className="p-2 pl-3">
                               <input type="checkbox" className="h-4 w-4 accent-medflow-600"
-                                checked={l.enabled} disabled={l.batches.length === 0}
+                                checked={l.enabled} disabled={l.batches.length === 0 || l.fulfilled}
                                 onChange={(e) => setLine(i, { enabled: e.target.checked })} />
                             </td>
                             <td className="p-2">
@@ -519,9 +643,17 @@ function DispenseWorkflow() {
                                   <FileText className="h-3 w-3" /> Rx
                                 </span>
                               )}
-                              {l.batches.length === 0 && <span className="ml-2 text-xs text-red-500">Out of stock</span>}
+                              {l.fulfilled ? (
+                                <span className="ml-1.5 rounded-full bg-emerald-50 px-1.5 py-0.5 text-[10px] font-semibold text-emerald-700">
+                                  Fully dispensed
+                                </span>
+                              ) : l.alreadyDispensed > 0 && l.prescribedQuantity != null && (
+                                <span className="ml-1.5 rounded-full bg-blue-50 px-1.5 py-0.5 text-[10px] font-semibold text-blue-700">
+                                  {l.alreadyDispensed}/{l.prescribedQuantity} dispensed · {l.remainingQuantity} left
+                                </span>
+                              )}
+                              {!l.fulfilled && l.batches.length === 0 && <span className="ml-2 text-xs text-red-500">Out of stock</span>}
                             </td>
-                            <td className="p-2 text-slate-500">{l.dosage || "—"}</td>
                             <td className="p-2">
                               {l.batches.length > 0 ? (
                                 <select className="h-8 rounded border px-2 text-xs" value={l.batchId}
@@ -785,7 +917,6 @@ function DispenseWorkflow() {
                           <thead className="bg-slate-50 text-left text-xs text-slate-500">
                             <tr>
                               <th className="p-2 pl-3">Medicine</th>
-                              <th className="p-2 w-32">Dosage</th>
                               <th className="p-2 w-24 text-right">Qty</th>
                               <th className="p-2 w-10"></th>
                             </tr>
@@ -800,10 +931,6 @@ function DispenseWorkflow() {
                                     onChange={(id) => setNewRxLines((ls) => ls.map((x, idx) => idx === i ? { ...x, medicineId: id } : x))}
                                     className="h-9"
                                   />
-                                </td>
-                                <td className="p-2">
-                                  <Input placeholder="e.g. 500mg" value={ln.dosage}
-                                    onChange={(e) => setNewRxLines((ls) => ls.map((x, idx) => idx === i ? { ...x, dosage: e.target.value } : x))} />
                                 </td>
                                 <td className="p-2">
                                   <Input className="text-right" inputMode="numeric" placeholder="Qty" value={ln.quantity}
@@ -831,7 +958,7 @@ function DispenseWorkflow() {
                     </div>
 
                     <div className="flex gap-2">
-                      <Button onClick={createRxThenPlan} disabled={busy}>{busy ? "Creating…" : "Create & Review"}</Button>
+                      <Button onClick={createRxThenPlan} disabled={busy}>{busy ? "Submitting…" : "Submit"}</Button>
                       <Button variant="outline" onClick={() => setStep(1)}>← Back</Button>
                     </div>
                   </div>
@@ -843,7 +970,7 @@ function DispenseWorkflow() {
       )}
 
       {/* ── STEP 3: Confirm ── */}
-      {step === 3 && patient && (
+      {user?.facilityId && step === 3 && patient && (
         <Card>
           <CardContent className="space-y-4 p-4">
             <p className="font-semibold text-slate-800">Confirm Dispensing</p>
@@ -874,7 +1001,6 @@ function DispenseWorkflow() {
                 <thead className="bg-slate-50 text-left text-xs text-slate-500">
                   <tr>
                     <th className="p-2 pl-3">Medicine</th>
-                    <th className="p-2 w-32">Dosage</th>
                     <th className="p-2 w-20 text-right">Qty</th>
                     <th className="p-2 w-32 text-right">Available Stock</th>
                   </tr>
@@ -883,7 +1009,6 @@ function DispenseWorkflow() {
                   {confirmLines.map((l) => (
                     <tr key={l.medicineId}>
                       <td className="p-2 pl-3 font-medium">{l.medicineName}</td>
-                      <td className="p-2 text-slate-500">{l.dosage || "—"}</td>
                       <td className="p-2 text-right font-semibold">{l.quantity}</td>
                       <td className={`p-2 text-right font-medium ${Number(l.quantity) > l.onHand ? "text-red-600" : "text-emerald-600"}`}>
                         {l.onHand}

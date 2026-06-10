@@ -2,6 +2,7 @@
 
 import { useState, useRef, useEffect, useMemo } from "react";
 import { Search, X, ChevronDown } from "lucide-react";
+import { searchMedicines } from "@/lib/medicine-search";
 
 export interface MedicineOption {
   id: string;
@@ -10,11 +11,20 @@ export interface MedicineOption {
   genericName?: string;
 }
 
+function strengthsNotInName(m: MedicineOption): string[] {
+  if (!m.strengths?.length) return [];
+  const nameLower = m.medicineName.toLowerCase();
+  return m.strengths
+    .filter((s) => {
+      const sl = s.strength.toLowerCase();
+      return !nameLower.endsWith(sl) && !nameLower.includes(` ${sl}`);
+    })
+    .map((s) => s.strength);
+}
+
 export function medicineDisplayLabel(m: MedicineOption): string {
-  if (m.strengths?.length) {
-    return `${m.medicineName} ${m.strengths.map((s) => s.strength).join(" / ")}`;
-  }
-  return m.medicineName;
+  const extra = strengthsNotInName(m);
+  return extra.length ? `${m.medicineName} ${extra.join(" / ")}` : m.medicineName;
 }
 
 interface Props {
@@ -48,23 +58,17 @@ export function MedicineCombobox({
   const heightClass = parts.find((p) => /^h-/.test(p)) ?? "h-10";
   const outerClass = parts.filter((p) => !/^h-/.test(p)).join(" ");
 
-  // Sync display text when value changes externally
+  // Sync display text when value changes externally OR when medicines load after value is set
   useEffect(() => {
     setQuery(selected ? medicineDisplayLabel(selected) : "");
-  }, [value]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [value, selected]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  const filtered = useMemo((): MedicineOption[] => {
-    const q = query.trim().toLowerCase();
-    if (!q) return medicines.slice(0, 60);
-    return medicines
-      .filter(
-        (m) =>
-          m.medicineName.toLowerCase().includes(q) ||
-          medicineDisplayLabel(m).toLowerCase().includes(q) ||
-          (m.genericName?.toLowerCase().includes(q) ?? false)
-      )
-      .slice(0, 60);
-  }, [query, medicines]);
+  // Abbreviations (pcm), strengths (500), generic names, multi-token (para 500),
+  // and fuzzy typo fallback (paracetmol) — see lib/medicine-search.
+  const filtered = useMemo(
+    (): MedicineOption[] => searchMedicines(query, medicines, 60),
+    [query, medicines]
+  );
 
   // Close on outside click — restore selected label if user typed without picking
   useEffect(() => {
@@ -200,13 +204,10 @@ export function MedicineCombobox({
                   onMouseEnter={() => setHighlighted(i)}
                 >
                   <span className="font-medium">{m.medicineName}</span>
-                  {m.strengths?.length ? (
+                  {strengthsNotInName(m).length > 0 ? (
                     <span className="ml-1 text-slate-500">
-                      {m.strengths.map((s) => s.strength).join(" / ")}
+                      {strengthsNotInName(m).join(" / ")}
                     </span>
-                  ) : null}
-                  {m.genericName ? (
-                    <span className="ml-1 text-xs text-slate-400">({m.genericName})</span>
                   ) : null}
                 </li>
               ))

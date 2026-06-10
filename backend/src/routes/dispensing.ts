@@ -6,7 +6,7 @@ import { authenticate, getFacilityId, requireFacility } from "../middleware/auth
 import { requirePermission } from "../middleware/permission";
 import { logAudit } from "../services/audit";
 import { checkLowStockAndStockout } from "../services/alerts";
-import { assertBatchAvailable, decrementBatchOrThrow } from "../utils/stockGuards";
+import { assertBatchAvailable, decrementBatchOrThrow, ValidationError } from "../utils/stockGuards";
 import { getMedicineBalanceTx } from "../utils/stock";
 import type { Prisma } from "@prisma/client";
 
@@ -58,6 +58,67 @@ async function dispensedByMedicine(prescriptionId: string): Promise<Map<string, 
     _sum: { quantity: true },
   });
   return new Map(grouped.map((g) => [g.medicineId, g._sum.quantity ?? 0]));
+}
+
+/**
+ * Authoritative in-transaction prescription guard. Takes a Postgres row lock on
+ * the prescription (FOR UPDATE) so concurrent dispenses for the same Rx are
+ * serialized, then re-verifies — under the lock — that the prescription is still
+ * ACTIVE and that every requested quantity fits within what remains prescribed.
+ *
+ * The same checks run before the transaction for fast, friendly 400s; this is
+ * the race-proof enforcement (two parallel requests can both pass the pre-check
+ * under READ COMMITTED, but only one at a time can pass this one).
+ */
+async function lockAndValidatePrescription(
+  tx: Prisma.TransactionClient,
+  args: {
+    prescriptionId: string;
+    patientId: string;
+    facilityId: string;
+    requestedByMed: Map<string, number>;
+    medNameById: Map<string, string>;
+  }
+): Promise<void> {
+  const { prescriptionId, patientId, facilityId, requestedByMed, medNameById } = args;
+
+  // Serialize all dispensing for this prescription.
+  await tx.$queryRaw`SELECT id FROM "Prescription" WHERE id = ${prescriptionId} FOR UPDATE`;
+
+  const rx = await tx.prescription.findFirst({
+    where: { id: prescriptionId, patientId, facilityId },
+    select: { status: true },
+  });
+  if (!rx) throw new ValidationError("Prescription not found for this patient at this facility.");
+  if (rx.status !== "ACTIVE") {
+    throw new ValidationError(`Prescription is ${rx.status.toLowerCase()} and can no longer be dispensed.`);
+  }
+
+  const lines = await tx.prescriptionMedicine.findMany({
+    where: { prescriptionId },
+    select: { medicineId: true, quantity: true },
+  });
+  const prescribed = new Map<string, number | null>();
+  for (const l of lines) {
+    if (l.quantity == null) { if (!prescribed.has(l.medicineId)) prescribed.set(l.medicineId, null); }
+    else prescribed.set(l.medicineId, (prescribed.get(l.medicineId) ?? 0) + l.quantity);
+  }
+  const grouped = await tx.dispensingRecord.groupBy({
+    by: ["medicineId"], where: { prescriptionId }, _sum: { quantity: true },
+  });
+  const dispensed = new Map(grouped.map((g) => [g.medicineId, g._sum.quantity ?? 0]));
+
+  for (const [medId, requested] of requestedByMed) {
+    const cap = prescribed.get(medId);
+    if (cap == null) continue; // unquantified line — no cap to enforce
+    const already = dispensed.get(medId) ?? 0;
+    const remaining = cap - already;
+    if (requested > remaining) {
+      throw new ValidationError(
+        `Cannot dispense ${requested} of "${medNameById.get(medId) ?? "this medicine"}" — only ${Math.max(0, remaining)} remaining of ${cap} prescribed (${already} already dispensed).`
+      );
+    }
+  }
 }
 
 /**
@@ -159,6 +220,20 @@ router.post("/", dispenseCreate, async (req, res, next) => {
     assertBatchAvailable(batch, `${medicine?.medicineName ?? "medicine"} (batch ${batch.batchNumber})`);
 
     const record = await prisma.$transaction(async (tx) => {
+        // Authoritative, race-proof guard: lock the Rx row, re-check status + remaining qty.
+        await lockAndValidatePrescription(tx, {
+          prescriptionId: data.prescriptionId,
+          patientId: data.patientId,
+          facilityId,
+          requestedByMed: new Map([[data.medicineId, data.quantity]]),
+          medNameById: new Map([[data.medicineId, medicine?.medicineName ?? "medicine"]]),
+        });
+        // Re-verify the batch under the transaction — it may have been
+        // quarantined/expired between the pre-check and now.
+        const freshBatch = await tx.stockBatch.findUnique({ where: { id: batch.id } });
+        if (!freshBatch) throw new ValidationError("Batch no longer exists.");
+        assertBatchAvailable(freshBatch, `${medicine?.medicineName ?? "medicine"} (batch ${freshBatch.batchNumber})`);
+
         const balanceBefore = await getMedicineBalanceTx(tx, data.medicineId, facilityId);
         await decrementBatchOrThrow(tx, batch.id, data.quantity, `batch ${batch.batchNumber}`);
 
@@ -239,12 +314,31 @@ router.get("/prescription/:id/plan", dispenseView, async (req, res, next) => {
       },
     });
     if (!prescription) return res.status(404).json({ error: "Prescription not found at this facility" });
+    if (prescription.status !== "ACTIVE") {
+      return res.status(400).json({
+        error: `Prescription ${prescription.prescriptionId} is ${prescription.status.toLowerCase()} — only active prescriptions can be dispensed.`,
+      });
+    }
 
     const today = new Date();
     today.setHours(0, 0, 0, 0);
 
+    // Partial/repeat dispensing: the plan must offer what *remains*, not what was
+    // originally prescribed. Aggregate duplicate medicine lines, subtract what has
+    // already been dispensed against this prescription.
+    const alreadyDispensed = await dispensedByMedicine(prescription.id);
+    const byMedicine = new Map<string, (typeof prescription.medicines)[number] & { totalQuantity: number | null }>();
+    for (const pm of prescription.medicines) {
+      const existing = byMedicine.get(pm.medicineId);
+      if (!existing) {
+        byMedicine.set(pm.medicineId, { ...pm, totalQuantity: pm.quantity ?? null });
+      } else if (pm.quantity != null) {
+        existing.totalQuantity = (existing.totalQuantity ?? 0) + pm.quantity;
+      }
+    }
+
     const lines = await Promise.all(
-      prescription.medicines.map(async (pm) => {
+      [...byMedicine.values()].map(async (pm) => {
         // FEFO: soonest non-expired, ACTIVE batch with stock first.
         const batches = await prisma.stockBatch.findMany({
           where: { facilityId, medicineId: pm.medicineId, quantity: { gt: 0 }, status: "ACTIVE", expiryDate: { gte: today } },
@@ -252,15 +346,24 @@ router.get("/prescription/:id/plan", dispenseView, async (req, res, next) => {
           select: { id: true, batchNumber: true, expiryDate: true, quantity: true },
         });
         const onHand = batches.reduce((sum, b) => sum + b.quantity, 0);
+        const prescribedQuantity = pm.totalQuantity;
+        const dispensedQty = alreadyDispensed.get(pm.medicineId) ?? 0;
+        const remainingQuantity =
+          prescribedQuantity == null ? null : Math.max(0, prescribedQuantity - dispensedQty);
+        const fulfilled = remainingQuantity === 0;
         return {
           medicineId: pm.medicineId,
           medicineName: pm.medicine.medicineName,
           dosage: pm.dosage ?? "",
           form: pm.form ?? pm.medicine.dosageForm ?? "",
           duration: pm.duration ?? "",
-          requestedQuantity: pm.quantity ?? null,
+          requestedQuantity: remainingQuantity,
+          prescribedQuantity,
+          alreadyDispensed: dispensedQty,
+          remainingQuantity,
+          fulfilled,
           onHand,
-          recommendedBatchId: batches[0]?.id ?? null,
+          recommendedBatchId: fulfilled ? null : batches[0]?.id ?? null,
           batches,
           requiresPrescription: pm.medicine.category?.requiresPrescription ?? false,
         };
@@ -379,9 +482,23 @@ router.post("/batch", dispenseCreate, async (req, res, next) => {
     }
 
     const created = await prisma.$transaction(async (tx) => {
+        // Authoritative, race-proof guard: lock the Rx row, re-check status + remaining qty.
+        await lockAndValidatePrescription(tx, {
+          prescriptionId: data.prescriptionId,
+          patientId: data.patientId,
+          facilityId,
+          requestedByMed,
+          medNameById,
+        });
+
         const records = [];
         for (const line of data.lines) {
           const batch = batchById.get(line.batchId)!;
+          // Re-verify batch availability under the transaction (quarantine/expiry races).
+          const freshBatch = await tx.stockBatch.findUnique({ where: { id: batch.id } });
+          if (!freshBatch) throw new ValidationError("Batch no longer exists.");
+          assertBatchAvailable(freshBatch, `${medNameById.get(line.medicineId) ?? "medicine"} (batch ${freshBatch.batchNumber})`);
+
           const balanceBefore = await getMedicineBalanceTx(tx, line.medicineId, facilityId);
           await decrementBatchOrThrow(tx, batch.id, line.quantity, `batch ${batch.batchNumber}`);
           const record = await tx.dispensingRecord.create({
