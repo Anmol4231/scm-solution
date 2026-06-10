@@ -6,7 +6,7 @@ import { authenticate, getFacilityId, requireFacility } from "../middleware/auth
 import { requirePermission, requireAnyPermission } from "../middleware/permission";
 import { logAudit } from "../services/audit";
 import { generateOrderCode, generateReceiptCode } from "../utils/ids";
-import { assertFutureExpiry, decrementBatchOrThrow } from "../utils/stockGuards";
+import { assertFutureExpiry, decrementBatchOrThrow, ValidationError } from "../utils/stockGuards";
 
 const router = Router();
 router.use(authenticate, requireFacility);
@@ -617,7 +617,7 @@ router.patch("/:id/receipts/:receiptId", receiveEdit, async (req, res, next) => 
       if (data.lines) {
         for (const correction of data.lines) {
           const receiptLine = receipt.lines.find((l) => l.id === correction.lineId);
-          if (!receiptLine) throw new Error(`Receipt line ${correction.lineId} not found`);
+          if (!receiptLine) throw new ValidationError(`Receipt line ${correction.lineId} not found`);
 
           const oldQty = receiptLine.quantityReceived;
           const newQty = correction.quantityReceived ?? oldQty;
@@ -643,7 +643,7 @@ router.patch("/:id/receipts/:receiptId", receiveEdit, async (req, res, next) => 
             });
             const sumOthers = otherTotal._sum.quantityReceived ?? 0;
             if (sumOthers + newQty > receiptLine.orderLine.quantityOrdered) {
-              throw new Error(
+              throw new ValidationError(
                 `Corrected quantity exceeds ordered quantity for ${receiptLine.medicine.medicineName}`
               );
             }
@@ -654,7 +654,7 @@ router.patch("/:id/receipts/:receiptId", receiveEdit, async (req, res, next) => 
             if (!currentOldBatch || currentOldBatch.quantity < oldQty) {
               const available = currentOldBatch?.quantity ?? 0;
               const consumed = oldQty - available;
-              throw new Error(
+              throw new ValidationError(
                 `Cannot change batch for "${receiptLine.medicine.medicineName}" — ${consumed} of ${oldQty} received units have already been consumed or transferred from batch "${oldBatchNumber}" (${available} units remain). Correct the quantity to ${available} first, then change the batch.`
               );
             }
@@ -740,7 +740,7 @@ router.patch("/:id/receipts/:receiptId", receiveEdit, async (req, res, next) => 
                 const available = currentBatch?.quantity ?? 0;
                 const consumed = oldQty - available;
                 const minCorrectable = Math.max(0, oldQty - available);
-                throw new Error(
+                throw new ValidationError(
                   `Cannot reduce received quantity for "${receiptLine.medicine.medicineName}" below ${minCorrectable} — ${consumed} unit${consumed !== 1 ? "s" : ""} have already been dispensed or transferred from this batch (${available} remain in stock).`
                 );
               }

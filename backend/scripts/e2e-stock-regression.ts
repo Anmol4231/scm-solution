@@ -140,6 +140,23 @@ async function run() {
     ok(done?.status === "COMPLETED", `completed after exactly 10 (got ${done?.status})`);
   }
 
+  console.log("\n[Receipt-edit] Reducing below consumed → structured 400, no 500");
+  { const ord = await req("POST", "/api/orders", admin, { vendorId: ids.vendor, lines: [{ medicineId: ids.med, quantityOrdered: 50 }] });
+    const ordId = ord.body.id, ordLine = ord.body.lines[0].id;
+    await req("POST", `/api/orders/${ordId}/receive`, admin, { lines: [{ lineId: ordLine, batchNumber: `${SUFFIX}-RE`, expiryDate: future(300), quantityReceived: 50 }] });
+    const reBatch = await batch(`${SUFFIX}-RE`, ids.facA);
+    const rx = await prisma.prescription.create({ data: { prescriptionId: `${SUFFIX}-RXc`, patientId: ids.patient, facilityId: ids.facA, status: "ACTIVE", medicines: { create: [{ medicineId: ids.med, quantity: 30 }] } } });
+    await req("POST", "/api/dispensing/batch", admin, { patientId: ids.patient, prescriptionId: rx.id, lines: [{ medicineId: ids.med, batchId: reBatch!.id, quantity: 30 }] });
+    const full = await req("GET", `/api/orders/${ordId}`, admin);
+    const receiptId = full.body.receipts[0].id, receiptLineId = full.body.receipts[0].lines[0].id;
+    const edit = await req("PATCH", `/api/orders/${ordId}/receipts/${receiptId}`, admin, { reasonForChange: "reduce below consumed", lines: [{ lineId: receiptLineId, quantityReceived: 10 }] });
+    ok(edit.status === 400, `receipt-edit below consumed returns 400 (got ${edit.status})`);
+    ok(edit.body?.code === "ValidationError", `structured error code present (got ${JSON.stringify(edit.body?.code)})`);
+    ok(typeof edit.body?.error === "string" && /below/i.test(edit.body.error) && !/\bat\s|node_modules/.test(edit.body.error), `friendly message, no stack trace: "${edit.body?.error?.slice(0, 70)}"`);
+    const b = await batch(`${SUFFIX}-RE`, ids.facA);
+    ok((b?.quantity ?? 0) === 20, `inventory unchanged by rejected edit (got ${b?.quantity})`);
+  }
+
   console.log("\n[P3] Audit completeness — generate RETURN + EXPIRED, then verify ledger");
   { // facility return generates RETURN_OUT (A) + RETURN_IN (B)
     await req("POST", "/api/returns/facility", admin, { returnType: "FACILITY_TO_AMS", receivingFacilityId: ids.facB, medicineId: ids.med, batchNumber: `${SUFFIX}-RX`, expiryDate: future(400), quantity: 5, returnReason: "surplus" });
@@ -170,6 +187,10 @@ async function cleanup() {
   await prisma.shipmentEvent.deleteMany({ where: { shipment: { destinationFacilityId: { in: facs } } } });
   await prisma.shipment.deleteMany({ where: { destinationFacilityId: { in: facs } } });
   await prisma.transfer.deleteMany({ where: { OR: [{ fromFacilityId: { in: facs } }, { toFacilityId: { in: facs } }] } });
+  await prisma.stockReceiptLine.deleteMany({ where: { receipt: { facilityId: { in: facs } } } });
+  await prisma.stockReceipt.deleteMany({ where: { facilityId: { in: facs } } });
+  await prisma.stockOrderLine.deleteMany({ where: { order: { facilityId: { in: facs } } } });
+  await prisma.stockOrder.deleteMany({ where: { facilityId: { in: facs } } });
   await prisma.stockBatch.deleteMany({ where: { facilityId: { in: facs } } });
   await prisma.prescriptionMedicine.deleteMany({ where: { prescription: { facilityId: { in: facs } } } });
   await prisma.prescription.deleteMany({ where: { facilityId: { in: facs } } });

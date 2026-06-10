@@ -16,6 +16,14 @@
 
 import type { Prisma, StockBatch, BatchStatus } from "@prisma/client";
 
+/** Business-rule / validation failure (e.g. correcting a receipt below consumed). → 400 */
+export class ValidationError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "ValidationError";
+  }
+}
+
 /** Operation would drive a batch below zero (or the batch is gone). → 400 */
 export class NegativeStockError extends Error {
   constructor(message = "Operation would drive inventory below zero.") {

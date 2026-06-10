@@ -1,12 +1,14 @@
 import { Request, Response, NextFunction } from "express";
 import { ZodError } from "zod";
 import { Prisma } from "@prisma/client";
-import { NegativeStockError, ExpiredStockError } from "../utils/stockGuards";
+import { NegativeStockError, ExpiredStockError, ValidationError } from "../utils/stockGuards";
 
 export function errorHandler(err: unknown, _req: Request, res: Response, _next: NextFunction) {
-  // Stock-safety guards — surface as 400 client errors with their message intact.
-  if (err instanceof NegativeStockError || err instanceof ExpiredStockError) {
-    return res.status(400).json({ error: err.message });
+  // Typed business-rule / stock-safety errors — surface as structured 400 client
+  // errors with the message intact. These are expected validation outcomes, not
+  // server faults, so they are not logged with a stack trace.
+  if (err instanceof ValidationError || err instanceof NegativeStockError || err instanceof ExpiredStockError) {
+    return res.status(400).json({ error: err.message, code: err.name });
   }
 
   if (err instanceof ZodError) {
