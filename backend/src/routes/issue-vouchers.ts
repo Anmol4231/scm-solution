@@ -7,6 +7,7 @@ import { isCrossFacilityRole } from "../utils/roles";
 import { logAudit } from "../services/audit";
 import { generateVoucherCode } from "../utils/ids";
 import { decrementBatchOrThrow } from "../utils/stockGuards";
+import { getMedicineBalanceTx } from "../utils/stock";
 
 const router = Router();
 router.use(authenticate);
@@ -203,6 +204,7 @@ router.post("/:id/finalize", async (req, res, next) => {
     await prisma.$transaction(async (tx) => {
       // 1. Deduct stock from AMS for each line
       for (const line of voucher.lines) {
+        const balanceBefore = await getMedicineBalanceTx(tx, line.medicineId, issuingFacilityId);
         if (line.batchId) {
           // Conditional decrement: never silently zero a batch (which previously
           // let the ledger record an issue larger than the stock actually removed)
@@ -217,6 +219,8 @@ router.post("/:id/finalize", async (req, res, next) => {
             batchId: line.batchId ?? undefined,
             type: StockTransactionType.TRANSFER_OUT,
             quantity: -line.quantityIssued,
+            balanceBefore,
+            balanceAfter: balanceBefore - line.quantityIssued,
             reason: `Issue Voucher ${voucher.voucherCode}`,
             performedById: userId,
             notes: `Issued to requisition ${voucher.requisition.requisitionCode}`,

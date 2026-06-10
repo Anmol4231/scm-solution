@@ -7,6 +7,8 @@ import { requirePermission } from "../middleware/permission";
 import { logAudit } from "../services/audit";
 import { checkLowStockAndStockout } from "../services/alerts";
 import { assertBatchAvailable, decrementBatchOrThrow } from "../utils/stockGuards";
+import { getMedicineBalanceTx } from "../utils/stock";
+import type { Prisma } from "@prisma/client";
 
 const router = Router();
 router.use(authenticate, requireFacility);
@@ -23,6 +25,67 @@ const positiveWholeNumber = z.number().int("Quantity must be a whole number").po
  */
 function resolveDispenseFacility(req: Parameters<typeof getFacilityId>[0], explicit?: string): string | null {
   return getFacilityId(req, explicit) ?? null;
+}
+
+// ── Prescription fulfillment tracking (B-1) ──────────────────────────────────────
+
+/**
+ * Prescribed quantity per medicine for a prescription, summed across lines.
+ * Returns `null` for a medicine when no line specifies a quantity (no cap to enforce).
+ */
+async function prescribedByMedicine(prescriptionId: string): Promise<Map<string, number | null>> {
+  const lines = await prisma.prescriptionMedicine.findMany({
+    where: { prescriptionId },
+    select: { medicineId: true, quantity: true },
+  });
+  const map = new Map<string, number | null>();
+  for (const l of lines) {
+    if (l.quantity == null) {
+      if (!map.has(l.medicineId)) map.set(l.medicineId, null);
+    } else {
+      const prev = map.get(l.medicineId);
+      map.set(l.medicineId, (prev ?? 0) + l.quantity);
+    }
+  }
+  return map;
+}
+
+/** Already-dispensed quantity per medicine for a prescription. */
+async function dispensedByMedicine(prescriptionId: string): Promise<Map<string, number>> {
+  const grouped = await prisma.dispensingRecord.groupBy({
+    by: ["medicineId"],
+    where: { prescriptionId },
+    _sum: { quantity: true },
+  });
+  return new Map(grouped.map((g) => [g.medicineId, g._sum.quantity ?? 0]));
+}
+
+/**
+ * Mark a prescription COMPLETED once every prescribed (quantified) medicine line
+ * is fully dispensed. Prescriptions with any unquantified line stay ACTIVE.
+ */
+async function maybeCompletePrescription(tx: Prisma.TransactionClient, prescriptionId: string): Promise<void> {
+  const lines = await tx.prescriptionMedicine.findMany({
+    where: { prescriptionId },
+    select: { medicineId: true, quantity: true },
+  });
+  const prescribed = new Map<string, number | null>();
+  for (const l of lines) {
+    if (l.quantity == null) { if (!prescribed.has(l.medicineId)) prescribed.set(l.medicineId, null); }
+    else prescribed.set(l.medicineId, (prescribed.get(l.medicineId) ?? 0) + l.quantity);
+  }
+  if (prescribed.size === 0) return;
+
+  const grouped = await tx.dispensingRecord.groupBy({
+    by: ["medicineId"], where: { prescriptionId }, _sum: { quantity: true },
+  });
+  const dispensed = new Map(grouped.map((g) => [g.medicineId, g._sum.quantity ?? 0]));
+
+  for (const [medicineId, qty] of prescribed) {
+    if (qty == null) return; // can't auto-complete an open-ended line
+    if ((dispensed.get(medicineId) ?? 0) < qty) return;
+  }
+  await tx.prescription.update({ where: { id: prescriptionId }, data: { status: "COMPLETED" } });
 }
 
 const dispenseSchema = z.object({
@@ -75,6 +138,19 @@ router.post("/", dispenseCreate, async (req, res, next) => {
       }
     }
 
+    // B-1: enforce prescribed quantity — cannot dispense more than remains on the Rx line.
+    const prescribedMap = await prescribedByMedicine(data.prescriptionId);
+    const prescribed = prescribedMap.get(data.medicineId);
+    if (prescribed != null) {
+      const already = (await dispensedByMedicine(data.prescriptionId)).get(data.medicineId) ?? 0;
+      const remaining = prescribed - already;
+      if (data.quantity > remaining) {
+        return res.status(400).json({
+          error: `Cannot dispense ${data.quantity} of "${medicine?.medicineName ?? "this medicine"}" — only ${Math.max(0, remaining)} remaining of ${prescribed} prescribed (${already} already dispensed).`,
+        });
+      }
+    }
+
     const batch = await prisma.stockBatch.findFirst({
       where: { id: data.batchId, facilityId, medicineId: data.medicineId },
     });
@@ -83,6 +159,7 @@ router.post("/", dispenseCreate, async (req, res, next) => {
     assertBatchAvailable(batch, `${medicine?.medicineName ?? "medicine"} (batch ${batch.batchNumber})`);
 
     const record = await prisma.$transaction(async (tx) => {
+        const balanceBefore = await getMedicineBalanceTx(tx, data.medicineId, facilityId);
         await decrementBatchOrThrow(tx, batch.id, data.quantity, `batch ${batch.batchNumber}`);
 
         const created = await tx.dispensingRecord.create({
@@ -114,12 +191,16 @@ router.post("/", dispenseCreate, async (req, res, next) => {
             batchId: batch.id,
             type: StockTransactionType.DISPENSING,
             quantity: -data.quantity,
+            balanceBefore,
+            balanceAfter: balanceBefore - data.quantity,
             patientId: data.patientId,
             prescriptionId: data.prescriptionId,
             performedById: userId,
+            reason: "Dispensed to patient",
             notes: data.notes,
           },
         });
+        await maybeCompletePrescription(tx, data.prescriptionId);
         return created;
     });
 
@@ -259,13 +340,35 @@ router.post("/batch", dispenseCreate, async (req, res, next) => {
       }
     }
 
+    const medNameById = new Map(medicinesForCheck.map((m) => [m.id, m.medicineName]));
+
+    // B-1: enforce prescribed quantities. Aggregate requested-per-medicine across
+    // this batch's lines and add to what has already been dispensed on the Rx.
+    const prescribedMap = await prescribedByMedicine(data.prescriptionId);
+    const alreadyMap = await dispensedByMedicine(data.prescriptionId);
+    const requestedByMed = new Map<string, number>();
+    for (const line of data.lines) {
+      requestedByMed.set(line.medicineId, (requestedByMed.get(line.medicineId) ?? 0) + line.quantity);
+    }
+    for (const [medId, requested] of requestedByMed) {
+      const prescribed = prescribedMap.get(medId);
+      if (prescribed != null) {
+        const already = alreadyMap.get(medId) ?? 0;
+        const remaining = prescribed - already;
+        if (requested > remaining) {
+          return res.status(400).json({
+            error: `Cannot dispense ${requested} of "${medNameById.get(medId) ?? "this medicine"}" — only ${Math.max(0, remaining)} remaining of ${prescribed} prescribed (${already} already dispensed).`,
+          });
+        }
+      }
+    }
+
     // Pre-validate batch ↔ medicine pairing (cheap, friendly error). The authoritative
     // stock check is the conditional decrement inside the transaction below.
     const batches = await prisma.stockBatch.findMany({
       where: { id: { in: data.lines.map((l) => l.batchId) }, facilityId },
     });
     const batchById = new Map(batches.map((b) => [b.id, b]));
-    const medNameById = new Map(medicinesForCheck.map((m) => [m.id, m.medicineName]));
     for (const line of data.lines) {
       const batch = batchById.get(line.batchId);
       if (!batch || batch.medicineId !== line.medicineId) {
@@ -279,6 +382,7 @@ router.post("/batch", dispenseCreate, async (req, res, next) => {
         const records = [];
         for (const line of data.lines) {
           const batch = batchById.get(line.batchId)!;
+          const balanceBefore = await getMedicineBalanceTx(tx, line.medicineId, facilityId);
           await decrementBatchOrThrow(tx, batch.id, line.quantity, `batch ${batch.batchNumber}`);
           const record = await tx.dispensingRecord.create({
           data: {
@@ -307,14 +411,18 @@ router.post("/batch", dispenseCreate, async (req, res, next) => {
             batchId: batch.id,
             type: StockTransactionType.DISPENSING,
             quantity: -line.quantity,
+            balanceBefore,
+            balanceAfter: balanceBefore - line.quantity,
             patientId: data.patientId,
             prescriptionId: data.prescriptionId,
             performedById: userId,
+            reason: "Dispensed to patient",
             notes: line.notes,
           },
         });
         records.push(record);
       }
+      await maybeCompletePrescription(tx, data.prescriptionId);
       return records;
     });
 

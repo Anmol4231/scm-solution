@@ -6,6 +6,7 @@ import { authenticate, getFacilityId, requireFacility } from "../middleware/auth
 import { isCrossFacilityRole } from "../utils/roles";
 import { logAudit } from "../services/audit";
 import { assertNotExpired, isExpired, decrementBatchOrThrow } from "../utils/stockGuards";
+import { getMedicineBalance, getMedicineBalanceTx } from "../utils/stock";
 
 const router = Router();
 router.use(authenticate, requireFacility);
@@ -49,6 +50,7 @@ router.post("/patient", async (req, res, next) => {
       // Only return stock to available inventory if the batch is ACTIVE and not expired.
       // Expired / quarantined stock must never re-enter usable inventory via a return.
       if (batch && batch.status === "ACTIVE" && !isExpired(batch.expiryDate)) {
+        const balanceBefore = await getMedicineBalance(data.medicineId, facilityId);
         await prisma.stockBatch.update({ where: { id: batch.id }, data: { quantity: { increment: data.quantity } } });
         batchId = batch.id;
         restocked = true;
@@ -59,6 +61,8 @@ router.post("/patient", async (req, res, next) => {
             batchId: batch.id,
             type: StockTransactionType.RETURN_IN,
             quantity: data.quantity,
+            balanceBefore,
+            balanceAfter: balanceBefore + data.quantity,
             patientId: data.patientId,
             reason: data.returnReason,
             performedById: userId,
@@ -131,6 +135,7 @@ router.post("/facility", async (req, res, next) => {
 
     await prisma.$transaction(async (tx) => {
       // Deduct from returning facility (conditional decrement — never goes negative)
+      const srcBefore = await getMedicineBalanceTx(tx, data.medicineId, facilityId);
       await decrementBatchOrThrow(tx, sourceBatch.id, data.quantity, `batch ${data.batchNumber}`);
       await tx.stockTransaction.create({
         data: {
@@ -139,12 +144,15 @@ router.post("/facility", async (req, res, next) => {
           batchId: sourceBatch.id,
           type: StockTransactionType.RETURN_OUT,
           quantity: -data.quantity,
+          balanceBefore: srcBefore,
+          balanceAfter: srcBefore - data.quantity,
           reason: data.returnReason,
           performedById: userId,
         },
       });
 
       // Credit receiving facility (AMS or peer)
+      const destBefore = await getMedicineBalanceTx(tx, data.medicineId, data.receivingFacilityId);
       let destBatch = await tx.stockBatch.findUnique({
         where: { medicineId_facilityId_batchNumber: { medicineId: data.medicineId, facilityId: data.receivingFacilityId, batchNumber: data.batchNumber } },
       });
@@ -162,6 +170,8 @@ router.post("/facility", async (req, res, next) => {
           batchId: destBatch.id,
           type: StockTransactionType.RETURN_IN,
           quantity: data.quantity,
+          balanceBefore: destBefore,
+          balanceAfter: destBefore + data.quantity,
           reason: `Return from ${facilityId}: ${data.returnReason}`,
           performedById: userId,
         },

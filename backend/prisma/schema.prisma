@@ -453,6 +453,7 @@ model StockTransaction {
   batch           StockBatch?          @relation(fields: [batchId], references: [id])
   type            StockTransactionType
   quantity        Float
+  balanceBefore   Float?
   balanceAfter    Float?
   requestedQty    Float?
   receivedQty     Float?

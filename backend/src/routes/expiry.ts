@@ -8,6 +8,7 @@ import { daysUntilExpiry } from "../utils/stock";
 import { config } from "../utils/config";
 import { logAudit } from "../services/audit";
 import { decrementBatchOrThrow } from "../utils/stockGuards";
+import { getMedicineBalanceTx } from "../utils/stock";
 import { refreshExpiredBatches, quarantineBatch } from "../services/batchLifecycle";
 
 const router = Router();
@@ -189,6 +190,7 @@ router.post("/record-expired", expiryEdit, async (req, res, next) => {
     const deduct = batch ? Math.min(batch.quantity, data.quantity) : 0;
 
     const record = await prisma.$transaction(async (tx) => {
+      const balanceBefore = await getMedicineBalanceTx(tx, data.medicineId, facilityId);
       if (batch && deduct > 0) {
         // Conditional decrement — disposal can never drive the batch negative.
         await decrementBatchOrThrow(tx, batch.id, deduct, `batch ${data.batchNumber}`);
@@ -221,6 +223,8 @@ router.post("/record-expired", expiryEdit, async (req, res, next) => {
           batchId: batch?.id,
           type: StockTransactionType.EXPIRED,
           quantity: -deduct,
+          balanceBefore,
+          balanceAfter: balanceBefore - deduct,
           reason: `Disposal: ${data.disposalMethod}`,
           performedById: userId,
         },
