@@ -173,12 +173,16 @@ function matchMedicines(ocrName: string, medicines: Medicine[]): Medicine[] {
 function DispenseWorkflow() {
   const hasAccess = useRequirePermission("dispensing");
   const searchParams = useSearchParams();
-  const { user, switchFacility } = useAuth();
+  const { user } = useAuth();
 
   /* ── Facility selection (shown when user has no facility context) ── */
+  /* Stored locally — never mutates the auth session or JWT.           */
   const [facilities, setFacilities] = useState<{ id: string; name: string; code: string }[]>([]);
   const [facilityPickId, setFacilityPickId] = useState("");
-  const [facilityBusy, setFacilityBusy] = useState(false);
+  const [localFacilityId, setLocalFacilityId] = useState("");
+
+  /* Effective facility for all API calls on this page. */
+  const facId = user?.facilityId ?? localFacilityId;
 
   useEffect(() => {
     if (!user?.facilityId) {
@@ -186,11 +190,8 @@ function DispenseWorkflow() {
     }
   }, [user?.facilityId]);
 
-  const confirmFacility = async () => {
-    if (!facilityPickId) return;
-    setFacilityBusy(true);
-    try { await switchFacility(facilityPickId); } catch { /* error handled by auth */ }
-    finally { setFacilityBusy(false); }
+  const confirmFacility = () => {
+    if (facilityPickId) setLocalFacilityId(facilityPickId);
   };
 
   const [step, setStep] = useState<Step>(1);
@@ -269,7 +270,7 @@ function DispenseWorkflow() {
     if (registerMode) return;
     const t = setTimeout(() => {
       if (pq.trim().length < 2) { setResults([]); return; }
-      api<Patient[]>(`/patients?q=${encodeURIComponent(pq.trim())}`).then(setResults).catch(() => setResults([]));
+      api<Patient[]>(`/patients?q=${encodeURIComponent(pq.trim())}${facId ? `&facilityId=${facId}` : ""}`).then(setResults).catch(() => setResults([]));
     }, 300);
     return () => clearTimeout(t);
   }, [pq, registerMode]);
@@ -282,7 +283,7 @@ function DispenseWorkflow() {
   }, []);
 
   const loadPrescriptions = (patientId: string) => {
-    api<RxOption[]>(`/prescriptions?patientId=${patientId}`)
+    api<RxOption[]>(`/prescriptions?patientId=${patientId}${facId ? `&facilityId=${facId}` : ""}`)
       .then((list) => {
         const active = list.filter((r) => r.status === "ACTIVE");
         setRxList(active);
@@ -317,7 +318,7 @@ function DispenseWorkflow() {
     try {
       const created = await api<Patient>("/patients", {
         method: "POST",
-        body: JSON.stringify({ ...reg, age: Number(reg.age), allergies: reg.allergies.trim() || undefined }),
+        body: JSON.stringify({ ...reg, age: Number(reg.age), allergies: reg.allergies.trim() || undefined, facilityId: facId || undefined }),
       });
       setRegisterMode(false);
       selectPatient(created);
@@ -328,7 +329,7 @@ function DispenseWorkflow() {
 
   const planFrom = (rxId: string) => {
     setBusy(true); setError("");
-    api<{ lines: PlanLine[]; allergies?: AllergyInfo; prescription?: { prescriptionId: string } }>(`/dispensing/prescription/${rxId}/plan`)
+    api<{ lines: PlanLine[]; allergies?: AllergyInfo; prescription?: { prescriptionId: string } }>(`/dispensing/prescription/${rxId}/plan${facId ? `?facilityId=${facId}` : ""}`)
       .then(({ lines: pl, allergies, prescription }) => {
         setLines(pl.map(planLineToDispLine));
         setAllergyInfo(allergies ?? null);
@@ -366,7 +367,7 @@ function DispenseWorkflow() {
     try {
       const fd = new FormData();
       fd.append("file", file);
-      const result = await api<OcrResult>("/prescriptions/ocr", { method: "POST", body: fd });
+      const result = await api<OcrResult>(`/prescriptions/ocr${facId ? `?facilityId=${facId}` : ""}`, { method: "POST", body: fd });
       setOcrResult(result);
       setOcrState("done");
 
@@ -448,6 +449,7 @@ function DispenseWorkflow() {
     try {
       const fd = new FormData();
       fd.append("patientId", patient!.id);
+      if (facId) fd.append("facilityId", facId);
       if (newRx.doctorName) fd.append("doctorName", newRx.doctorName);
       if (newRx.diagnosisNotes) fd.append("diagnosisNotes", newRx.diagnosisNotes);
       fd.append("medicines", JSON.stringify(validLines.map((l) => ({
@@ -508,6 +510,7 @@ function DispenseWorkflow() {
         body: JSON.stringify({
           patientId: patient!.id,
           prescriptionId: selectedRxId,
+          facilityId: facId || undefined,
           lines: confirmLines.map((l) => ({
             medicineId: l.medicineId, batchId: l.batchId, quantity: Number(l.quantity),
             dosage: l.dosage || undefined, form: l.form || undefined, duration: l.duration || undefined,
@@ -554,7 +557,7 @@ function DispenseWorkflow() {
     <div className="mx-auto max-w-4xl space-y-4">
 
       {/* Facility selector — shown when the user has no facility context */}
-      {!user?.facilityId && (
+      {!facId && (
         <Card>
           <CardContent className="space-y-3 p-4">
             <div className="flex items-center gap-2 text-sm font-medium text-slate-700">
@@ -575,20 +578,20 @@ function DispenseWorkflow() {
                   <option key={f.id} value={f.id}>{f.name} ({f.code})</option>
                 ))}
               </select>
-              <Button onClick={confirmFacility} disabled={!facilityPickId || facilityBusy}>
-                {facilityBusy ? <Loader2 className="h-4 w-4 animate-spin" /> : "Confirm"}
+              <Button onClick={confirmFacility} disabled={!facilityPickId}>
+                Confirm
               </Button>
             </div>
           </CardContent>
         </Card>
       )}
 
-      {user?.facilityId && !docket && <Stepper step={step} />}
+      {facId && !docket && <Stepper step={step} />}
       {error && <p className="rounded-lg bg-red-50 p-3 text-sm text-red-700">{error}</p>}
       {success && <p className="rounded-lg bg-green-50 p-3 text-sm text-green-700">{success}</p>}
 
       {/* ── H5: printable dispensing docket (post-dispense) ── */}
-      {user?.facilityId && docket && (
+      {facId && docket && (
         <Card>
           <CardContent className="space-y-4 p-4">
             <div className="print-docket space-y-3">
@@ -649,7 +652,7 @@ function DispenseWorkflow() {
         }
       `}</style>
 
-      {user?.facilityId && !docket && patient && step > 1 && (
+      {facId && !docket && patient && step > 1 && (
         <>
           <div className="flex items-center justify-between rounded-lg border bg-slate-50 px-3 py-2 text-sm">
             <span>
@@ -673,7 +676,7 @@ function DispenseWorkflow() {
       )}
 
       {/* ── STEP 1: Patient ── */}
-      {user?.facilityId && !docket && step === 1 && (
+      {facId && !docket && step === 1 && (
         <Card>
           <CardContent className="space-y-3 p-4">
             {!registerMode ? (
@@ -747,7 +750,7 @@ function DispenseWorkflow() {
       )}
 
       {/* ── STEP 2: Prescription & Medicines ── */}
-      {user?.facilityId && !docket && step === 2 && patient && (
+      {facId && !docket && step === 2 && patient && (
         <Card>
           <CardContent className="space-y-4 p-4">
 
@@ -1134,7 +1137,7 @@ function DispenseWorkflow() {
       )}
 
       {/* ── STEP 3: Confirm ── */}
-      {user?.facilityId && !docket && step === 3 && patient && (
+      {facId && !docket && step === 3 && patient && (
         <Card>
           <CardContent className="space-y-4 p-4">
             <p className="font-semibold text-slate-800">Confirm Dispensing</p>
