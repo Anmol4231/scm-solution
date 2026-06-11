@@ -53,8 +53,11 @@ export function requireFacility(req: Request, res: Response, next: NextFunction)
 }
 
 export function getFacilityId(req: Request, queryFacilityId?: string): string | null {
-  if (isCrossFacilityRole(req.user!.role) && queryFacilityId) {
-    return queryFacilityId;
+  if (isCrossFacilityRole(req.user!.role)) {
+    // Cross-facility roles (SUPER_ADMIN, PROVINCIAL_MANAGER) must never be
+    // silently scoped by a JWT-embedded facilityId (e.g. from a stale
+    // switchFacility token). An explicit query/body param is the only source.
+    return queryFacilityId || null;
   }
   return req.user?.facilityId ?? null;
 }
