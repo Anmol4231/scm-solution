@@ -36,17 +36,22 @@ export default function TransfersPage() {
   const isAdmin = isCrossFacilityRole(user?.role);
   const hasAccess = useRequirePermission("transfers");
   const [transfers, setTransfers] = useState<Transfer[]>([]);
-  const [status, setStatus] = useState("");
+  const [view, setView] = useState<"sent" | "received">("sent");
   const [loading, setLoading] = useState(true);
 
   const load = () => {
     setLoading(true);
-    const params = new URLSearchParams();
-    if (status) params.set("status", status);
-    api<Transfer[]>(`/transfers?${params}`).then(setTransfers).finally(() => setLoading(false));
+    api<Transfer[]>(`/transfers`).then(setTransfers).finally(() => setLoading(false));
   };
 
-  useEffect(() => { load(); }, [status]);
+  useEffect(() => { load(); }, []);
+
+  // "Sent" = anything dispatched / in the pipeline but not yet fully received;
+  // "Received" = fully received. (Cancelled transfers are hidden from both.)
+  const SENT_STATUSES = ["PENDING", "AUTHORIZED", "IN_TRANSIT", "PARTIALLY_RECEIVED"];
+  const visible = transfers.filter((t) =>
+    view === "received" ? t.status === "RECEIVED" : SENT_STATUSES.includes(t.status)
+  );
 
   const pendingIncoming = transfers.filter(
     (t) => user?.facilityId && t.toFacility.id === user.facilityId && (t.status === "IN_TRANSIT" || t.status === "PARTIALLY_RECEIVED")
@@ -92,12 +97,12 @@ export default function TransfersPage() {
         </div>
       )}
 
-      {/* Status filter */}
+      {/* View filter */}
       <div className="flex flex-wrap gap-2">
-        {["", "PENDING", "AUTHORIZED", "IN_TRANSIT", "RECEIVED", "PARTIALLY_RECEIVED", "CANCELLED"].map((s) => (
-          <button key={s} onClick={() => setStatus(s)}
-            className={`rounded-full px-3 py-1 text-sm font-medium ${status === s ? "bg-medflow-600 text-white" : "bg-slate-100 text-slate-600 hover:bg-slate-200"}`}>
-            {s || "All"}
+        {([["sent", "Sent"], ["received", "Received"]] as const).map(([v, label]) => (
+          <button key={v} onClick={() => setView(v)}
+            className={`rounded-full px-4 py-1 text-sm font-medium ${view === v ? "bg-medflow-600 text-white" : "bg-slate-100 text-slate-600 hover:bg-slate-200"}`}>
+            {label}
           </button>
         ))}
       </div>
@@ -114,15 +119,14 @@ export default function TransfersPage() {
                 <th className="px-4 py-3 text-left font-medium text-slate-600">Source Facility</th>
                 <th className="px-4 py-3 text-left font-medium text-slate-600">Destination Facility</th>
                 <th className="px-4 py-3 text-left font-medium text-slate-600">Contents</th>
-                <th className="px-4 py-3 text-left font-medium text-slate-600">Priority</th>
                 <th className="px-4 py-3 text-left font-medium text-slate-600">Date</th>
               </tr>
             </thead>
             <tbody className="divide-y">
-              {transfers.length === 0 ? (
-                <tr><td colSpan={7} className="py-8 text-center text-slate-400">No transfers found.</td></tr>
+              {visible.length === 0 ? (
+                <tr><td colSpan={6} className="py-8 text-center text-slate-400">No {view} transfers.</td></tr>
               ) : (
-                transfers.map((t) => (
+                visible.map((t) => (
                   <tr key={t.id} className="hover:bg-slate-50">
                     <td className="px-4 py-3">
                       <Link href={`/transfers/${t.id}`} className="font-mono text-medflow-600 hover:underline">{t.transferCode}</Link>
@@ -133,11 +137,6 @@ export default function TransfersPage() {
                     <td className="px-4 py-3 text-slate-700">{t.fromFacility.name}</td>
                     <td className="px-4 py-3 text-slate-700">{t.toFacility.name}</td>
                     <td className="px-4 py-3 text-slate-600">{linesSummary(t)}</td>
-                    <td className="px-4 py-3">
-                      <span className={`rounded-full px-2 py-0.5 text-sm font-medium ${t.priority === "EMERGENCY" ? "bg-red-100 text-red-700" : t.priority === "URGENT" ? "bg-amber-100 text-amber-700" : "bg-slate-100 text-slate-600"}`}>
-                        {t.priority}
-                      </span>
-                    </td>
                     <td className="px-4 py-3 text-slate-500">{new Date(t.createdAt).toLocaleDateString()}</td>
                   </tr>
                 ))

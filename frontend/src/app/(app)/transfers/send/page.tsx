@@ -25,7 +25,6 @@ export default function SendTransferPage() {
   const [batches, setBatches] = useState<Batch[]>([]);
   const [fromFacilityId, setFromFacilityId] = useState(user?.facilityId ?? "");
   const [toFacilityId, setToFacilityId] = useState("");
-  const [priority, setPriority] = useState("ROUTINE");
   const [authorizationNotes, setAuthorizationNotes] = useState("");
   const [lines, setLines] = useState<Line[]>([{ batchId: "", quantityTransferred: 0 }]);
   const [error, setError] = useState("");
@@ -58,7 +57,6 @@ export default function SendTransferPage() {
     try {
       const body: Record<string, unknown> = {
         toFacilityId,
-        priority,
         authorizationNotes: authorizationNotes || undefined,
         lines: lines.map((l) => ({ batchId: l.batchId, quantityTransferred: l.quantityTransferred })),
       };
@@ -107,16 +105,6 @@ export default function SendTransferPage() {
                 <option value="">Select destination…</option>
                 {toFacilities.map((f) => <option key={f.id} value={f.id}>{f.name} ({f.code})</option>)}
               </select>
-            </div>
-            <div className="grid grid-cols-2 gap-4">
-              <div>
-                <Label>Priority</Label>
-                <select className="mt-1 h-10 w-full rounded-lg border px-3 text-sm" value={priority} onChange={(e) => setPriority(e.target.value)}>
-                  <option value="ROUTINE">Routine</option>
-                  <option value="URGENT">Urgent</option>
-                  <option value="EMERGENCY">Emergency</option>
-                </select>
-              </div>
             </div>
             <div>
               <Label>Notes</Label>

@@ -28,17 +28,42 @@ export interface ParsedRxMedicine {
 export interface OcrParseResult {
   doctorName?: string;
   diagnosisNotes?: string;
+  department?: string;
+  symptoms?: string;
+  allergies?: string;
+  /** ISO date (yyyy-mm-dd) when a parseable follow-up date was found. */
+  followUpDate?: string;
   medicines: ParsedRxMedicine[];
   fieldsDetected: string[];
   warnings: string[];
 }
 
 const LABELS = {
-  doctor: /^(?:doctor|dr|prescriber|physician)\b\.?\s*[-:=]?\s*(.+)$/i,
-  diagnosis: /^(?:diagnosis|diag|dx|condition)\b\.?\s*[-:=]?\s*(.+)$/i,
+  doctor: /^(?:doctor|dr|prescriber|physician|prescribed\s+by)\b\.?\s*[-:=]?\s*(.+)$/i,
+  diagnosis: /^(?:diagnosis|diag|dx|condition|impression|assessment)\b\.?\s*[-:=]?\s*(.+)$/i,
+  department: /^(?:department|dept|ward|clinic)\b\.?\s*[-:=]?\s*(.+)$/i,
+  symptoms: /^(?:symptoms?|chief\s+complaints?|complaints?|c\/o)\b\.?\s*[-:=]?\s*(.+)$/i,
+  allergies: /^(?:allerg(?:y|ies)|drug\s+allerg(?:y|ies)|allergic\s+to)\b\.?\s*[-:=]?\s*(.+)$/i,
+  followUp: /^(?:follow[- ]?up|review|return)\b\.?\s*(?:date|on)?\s*[-:=]?\s*(.+)$/i,
   medicine: /^(?:medicines?|med|drug)\b\.?\s*[-:=]?\s*(.*)$/i,
   dosage: /^(?:dosage|dose|sig)\b\.?\s*[-:=]?\s*(.+)$/i,
 };
+
+/** "12/07/2026", "12-07-26" (day-first) or "2026-07-12" → ISO yyyy-mm-dd. */
+function parseFollowUpDate(raw: string): string | undefined {
+  let m = /(\d{4})[\/\-](\d{1,2})[\/\-](\d{1,2})/.exec(raw);
+  if (m) {
+    const d = new Date(`${m[1]}-${m[2].padStart(2, "0")}-${m[3].padStart(2, "0")}`);
+    if (!isNaN(d.getTime())) return d.toISOString().slice(0, 10);
+  }
+  m = /(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{2,4})/.exec(raw);
+  if (m) {
+    const year = m[3].length === 2 ? `20${m[3]}` : m[3];
+    const d = new Date(`${year}-${m[2].padStart(2, "0")}-${m[1].padStart(2, "0")}`);
+    if (!isNaN(d.getTime())) return d.toISOString().slice(0, 10);
+  }
+  return undefined;
+}
 
 /** Section headers / letterhead noise that should never become a medicine. */
 const SKIP_LINE = /^(?:rx|℞|prescription|prescribed|medicines?|drugs?)\s*[:.\-—]*$/i;
@@ -128,6 +153,26 @@ export function parsePrescriptionText(rawText: string): OcrParseResult {
     }
     m = LABELS.diagnosis.exec(line);
     if (m) { result.diagnosisNotes = m[1].trim(); flag("diagnosis"); continue; }
+
+    m = LABELS.department.exec(line);
+    if (m) { result.department = m[1].trim(); flag("department"); continue; }
+
+    m = LABELS.symptoms.exec(line);
+    if (m) { result.symptoms = m[1].trim(); flag("symptoms"); continue; }
+
+    m = LABELS.allergies.exec(line);
+    if (m) { result.allergies = m[1].trim(); flag("allergies"); continue; }
+    if (/\bNKDA\b|\bno\s+known\s+(?:drug\s+)?allerg/i.test(line)) {
+      result.allergies = "NKDA"; flag("allergies"); continue;
+    }
+
+    m = LABELS.followUp.exec(line);
+    if (m) {
+      const iso = parseFollowUpDate(m[1]);
+      // Only consume the line when it actually carries a date — "Review the
+      // dosage" must not be eaten by the follow-up label.
+      if (iso) { result.followUpDate = iso; flag("followUpDate"); continue; }
+    }
 
     m = LABELS.dosage.exec(line);
     if (m) {

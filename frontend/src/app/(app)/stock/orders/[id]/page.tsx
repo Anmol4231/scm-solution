@@ -11,6 +11,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { formatDateTime, formatDate } from "@/lib/datetime";
 
 interface ReceiptLine {
   id: string;
@@ -272,7 +273,7 @@ export default function OrderDetailPage() {
             </div>
             <div>
               <p className="text-sm font-medium text-slate-500 uppercase tracking-wide">Created Date</p>
-              <p className="font-medium">{new Date(order.createdAt).toLocaleDateString()}</p>
+              <p className="font-medium">{formatDateTime(order.createdAt)}</p>
             </div>
           </div>
           {order.notes && (
@@ -332,13 +333,13 @@ export default function OrderDetailPage() {
                         Received by: <strong>{receipt.receivedBy.firstName} {receipt.receivedBy.lastName}</strong>
                       </span>
                       <span className="text-slate-600">
-                        Date: <strong>{new Date(receipt.createdAt).toLocaleDateString()}</strong>
+                        Date: <strong>{formatDateTime(receipt.createdAt)}</strong>
                       </span>
                     </div>
                     {receipt.lastEditedBy && (
                       <p className="text-sm text-amber-700">
                         Last edited by <strong>{receipt.lastEditedBy.firstName} {receipt.lastEditedBy.lastName}</strong>
-                        {receipt.lastEditedAt && <> on <strong>{new Date(receipt.lastEditedAt).toLocaleDateString()}</strong></>}
+                        {receipt.lastEditedAt && <> on <strong>{formatDateTime(receipt.lastEditedAt)}</strong></>}
                         {receipt.lastEditReason && <> — <em>{receipt.lastEditReason}</em></>}
                       </p>
                     )}
@@ -505,7 +506,7 @@ export default function OrderDetailPage() {
                             <td className="p-2 text-right font-semibold">{rl.quantityReceived}</td>
                             <td className="p-2 text-slate-500">{rl.batchNumber}</td>
                             <td className="p-2 text-slate-500">
-                              {new Date(rl.expiryDate).toLocaleDateString()}
+                              {formatDate(rl.expiryDate)}
                             </td>
                             <td className="p-2 text-slate-500">{rl.notes ?? "—"}</td>
                           </tr>

@@ -12,6 +12,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { MedicineCombobox } from "@/components/ui/medicine-combobox";
+import { formatDateTime } from "@/lib/datetime";
 
 interface OrderSource {
   id: string;
@@ -474,7 +475,7 @@ export default function OrdersPage() {
                   <td className="p-3 text-slate-600">
                     {o.orderedBy ? `${o.orderedBy.firstName} ${o.orderedBy.lastName}` : "—"}
                   </td>
-                  <td className="p-3">{new Date(o.createdAt).toLocaleDateString()}</td>
+                  <td className="p-3 whitespace-nowrap">{formatDateTime(o.createdAt)}</td>
                   <td className="p-3">
                     <div className="flex flex-wrap gap-1.5">
                       <Link href={`/stock/orders/${o.id}`}>

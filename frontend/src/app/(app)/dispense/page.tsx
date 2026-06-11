@@ -15,21 +15,29 @@ import { OperationsTabs } from "@/components/layout/operations-tabs";
 import { MedicineCombobox } from "@/components/ui/medicine-combobox";
 import { levenshtein } from "@/lib/medicine-search";
 
-interface Patient { id: string; patientId: string; firstName: string; lastName: string; gender?: string; age?: number; phoneNumber?: string | null }
+interface Patient { id: string; patientId: string; firstName: string; lastName: string; gender?: string; age?: number; phoneNumber?: string | null; allergies?: string | null }
 interface RxOption { id: string; prescriptionId: string; status: string; doctorName?: string | null; diagnosisNotes?: string | null; medicines?: { medicineId: string }[] }
 interface Medicine { id: string; medicineName: string; strengths?: { strength: string }[] }
 interface PlanBatch { id: string; batchNumber: string; expiryDate: string; quantity: number }
 interface PlanLine {
   medicineId: string; medicineName: string; dosage: string; form: string; duration: string;
   requestedQuantity: number | null; onHand: number; recommendedBatchId: string | null; batches: PlanBatch[];
-  requiresPrescription: boolean;
+  requiresPrescription: boolean; controlled?: boolean; noQuantityWarning?: boolean;
   prescribedQuantity: number | null; alreadyDispensed: number; remainingQuantity: number | null; fulfilled: boolean;
 }
 interface DispLine {
   medicineId: string; medicineName: string; dosage: string; form: string; duration: string;
   batchId: string; quantity: string; onHand: number; batches: PlanBatch[];
-  enabled: boolean; requiresPrescription: boolean;
+  enabled: boolean; requiresPrescription: boolean; controlled: boolean; noQuantityWarning: boolean;
   prescribedQuantity: number | null; alreadyDispensed: number; remainingQuantity: number | null; fulfilled: boolean;
+}
+interface AllergyInfo { patient: string | null; fromPrescriptions: string[] }
+interface Docket {
+  patient: Patient;
+  prescriptionId: string;
+  doctorName: string;
+  dispensedAt: string;
+  lines: { medicineName: string; quantity: number; batchNumber: string; expiryDate: string; dosage: string; duration: string }[];
 }
 
 type Step = 1 | 2 | 3;
@@ -77,6 +85,8 @@ function planLineToDispLine(pl: PlanLine): DispLine {
     batches: pl.batches,
     enabled: !!pl.recommendedBatchId && !pl.fulfilled,
     requiresPrescription: pl.requiresPrescription,
+    controlled: pl.controlled ?? false,
+    noQuantityWarning: pl.noQuantityWarning ?? false,
     prescribedQuantity: pl.prescribedQuantity ?? null,
     alreadyDispensed: pl.alreadyDispensed ?? 0,
     remainingQuantity: pl.remainingQuantity ?? null,
@@ -193,7 +203,7 @@ function DispenseWorkflow() {
   const [results, setResults] = useState<Patient[]>([]);
   const [patient, setPatient] = useState<Patient | null>(null);
   const [registerMode, setRegisterMode] = useState(false);
-  const [reg, setReg] = useState({ firstName: "", lastName: "", gender: "Female", age: "", phoneNumber: "" });
+  const [reg, setReg] = useState({ firstName: "", lastName: "", gender: "", age: "", phoneNumber: "", allergies: "" });
 
   /* ── Step 2 — prescription ── */
   const [rxList, setRxList] = useState<RxOption[]>([]);
@@ -243,6 +253,15 @@ function DispenseWorkflow() {
   /* ── Step 2/3 — dispense lines ── */
   const [lines, setLines] = useState<DispLine[]>([]);
 
+  /* C2: allergy info returned with the plan (patient field + Rx history union) */
+  const [allergyInfo, setAllergyInfo] = useState<AllergyInfo | null>(null);
+  /* human-readable Rx number from the plan (covers freshly created prescriptions) */
+  const [rxNumber, setRxNumber] = useState("");
+  /* C3: pharmacist must acknowledge controlled lines before confirming */
+  const [controlledAck, setControlledAck] = useState(false);
+  /* H5: printable docket shown after a successful dispense */
+  const [docket, setDocket] = useState<Docket | null>(null);
+
   useEffect(() => { api<Medicine[]>("/medicines").then(setMedicines).catch(() => {}); }, []);
 
   /* patient search (debounced) */
@@ -268,7 +287,11 @@ function DispenseWorkflow() {
         const active = list.filter((r) => r.status === "ACTIVE");
         setRxList(active);
         setRxMode(active.length ? "existing" : "new");
-        if (active.length === 1) setSelectedRxId(active[0].id);
+        // Deep link (?rxId=…) from the prescription detail page wins; otherwise
+        // auto-select when there is exactly one active prescription.
+        const wanted = searchParams.get("rxId");
+        if (wanted && active.some((r) => r.id === wanted)) setSelectedRxId(wanted);
+        else if (active.length === 1) setSelectedRxId(active[0].id);
       })
       .catch(() => setRxList([]));
   };
@@ -287,11 +310,15 @@ function DispenseWorkflow() {
     setError("");
     const f = validators.personName(reg.firstName, "First name"); if (f) return setError(f);
     const l = validators.personName(reg.lastName, "Last name"); if (l) return setError(l);
+    if (!reg.gender) return setError("Please select a gender.");
     const a = validators.age(reg.age); if (a) return setError(a);
     const ph = validators.phone(reg.phoneNumber); if (ph) return setError(ph);
     setBusy(true);
     try {
-      const created = await api<Patient>("/patients", { method: "POST", body: JSON.stringify({ ...reg, age: Number(reg.age) }) });
+      const created = await api<Patient>("/patients", {
+        method: "POST",
+        body: JSON.stringify({ ...reg, age: Number(reg.age), allergies: reg.allergies.trim() || undefined }),
+      });
       setRegisterMode(false);
       selectPatient(created);
     } catch (e) {
@@ -301,8 +328,14 @@ function DispenseWorkflow() {
 
   const planFrom = (rxId: string) => {
     setBusy(true); setError("");
-    api<{ lines: PlanLine[] }>(`/dispensing/prescription/${rxId}/plan`)
-      .then(({ lines: pl }) => { setLines(pl.map(planLineToDispLine)); setPlanLoaded(true); })
+    api<{ lines: PlanLine[]; allergies?: AllergyInfo; prescription?: { prescriptionId: string } }>(`/dispensing/prescription/${rxId}/plan`)
+      .then(({ lines: pl, allergies, prescription }) => {
+        setLines(pl.map(planLineToDispLine));
+        setAllergyInfo(allergies ?? null);
+        setRxNumber(prescription?.prescriptionId ?? "");
+        setControlledAck(false);
+        setPlanLoaded(true);
+      })
       .catch((e) => setError(e instanceof Error ? e.message : "Failed to load dispensing plan"))
       .finally(() => setBusy(false));
   };
@@ -404,7 +437,12 @@ function DispenseWorkflow() {
     const missingMedicine = filledLines.find((l) => !l.medicineId);
     if (missingMedicine) return setError("Please select a medicine from the Medicine Master.");
 
-    const validLines = filledLines; // all have non-empty medicineId at this point
+    // C4: every line needs a prescribed quantity — open-ended lines would allow
+    // unlimited dispensing.
+    const missingQty = filledLines.find((l) => !l.quantity.trim() || Number(l.quantity) <= 0);
+    if (missingQty) return setError("Every medicine on the prescription needs a prescribed quantity.");
+
+    const validLines = filledLines; // all have medicineId + quantity at this point
 
     setBusy(true);
     try {
@@ -413,7 +451,7 @@ function DispenseWorkflow() {
       if (newRx.doctorName) fd.append("doctorName", newRx.doctorName);
       if (newRx.diagnosisNotes) fd.append("diagnosisNotes", newRx.diagnosisNotes);
       fd.append("medicines", JSON.stringify(validLines.map((l) => ({
-        medicineId: l.medicineId, dosage: l.dosage, quantity: l.quantity ? Number(l.quantity) : undefined,
+        medicineId: l.medicineId, dosage: l.dosage, quantity: Number(l.quantity),
       }))));
       if (file) fd.append("prescription", file);
       const created = await api<{ id: string }>("/prescriptions", { method: "POST", body: fd });
@@ -441,12 +479,27 @@ function DispenseWorkflow() {
     return "";
   };
 
+  const resetWorkflow = () => {
+    setStep(1); setPatient(null); setPq(""); setResults([]); setRxList([]);
+    setSelectedRxId(""); setLines([]); setPlanLoaded(false);
+    setNewRxLines([{ medicineId: "", dosage: "", quantity: "" }]);
+    setNewRx({ doctorName: "", diagnosisNotes: "" }); setFile(null);
+    setOcrState("idle"); setOcrResult(null); setRawTextOpen(false); setOcrAmbiguous([]);
+    setRxSummary({ doctorName: "", diagnosisNotes: "" });
+    setAllergyInfo(null); setControlledAck(false); setDocket(null);
+  };
+
+  const hasControlledLines = useMemo(() => confirmLines.some((l) => l.controlled), [confirmLines]);
+
   const dispense = async () => {
     setError(""); setSuccess("");
     if (!confirmLines.length) return setError("No dispensable lines selected");
     for (const l of confirmLines) {
       const le = lineError(l);
       if (le) return setError(`${l.medicineName}: ${le}`);
+    }
+    if (hasControlledLines && !controlledAck) {
+      return setError("Please acknowledge the controlled medicine check before dispensing.");
     }
     setBusy(true);
     try {
@@ -461,19 +514,40 @@ function DispenseWorkflow() {
           })),
         }),
       });
+      setDocket({
+        patient: patient!,
+        prescriptionId: rxNumber || rxList.find((r) => r.id === selectedRxId)?.prescriptionId || "",
+        doctorName: rxSummary.doctorName,
+        dispensedAt: new Date().toISOString(),
+        lines: confirmLines.map((l) => {
+          const b = l.batches.find((x) => x.id === l.batchId);
+          return {
+            medicineName: l.medicineName, quantity: Number(l.quantity),
+            batchNumber: b?.batchNumber ?? "", expiryDate: b?.expiryDate ?? "",
+            dosage: l.dosage, duration: l.duration,
+          };
+        }),
+      });
       setSuccess(`Dispensed ${res.count} medicine line(s) to ${patient!.firstName} ${patient!.lastName}.`);
-      setStep(1); setPatient(null); setPq(""); setResults([]); setRxList([]);
-      setSelectedRxId(""); setLines([]); setPlanLoaded(false);
-      setNewRxLines([{ medicineId: "", dosage: "", quantity: "" }]);
-      setNewRx({ doctorName: "", diagnosisNotes: "" }); setFile(null);
-      setOcrState("idle"); setOcrResult(null); setRawTextOpen(false); setOcrAmbiguous([]);
-      setRxSummary({ doctorName: "", diagnosisNotes: "" });
     } catch (e) {
       setError(e instanceof Error ? e.message : "Dispensing failed");
     } finally { setBusy(false); }
   };
 
   if (!hasAccess) return null;
+
+  /* C2: union of allergy sources — patient record + prescription history */
+  const allergyTexts = (() => {
+    const list: string[] = [];
+    const push = (v?: string | null) => {
+      const t = (v ?? "").trim();
+      if (t && !/^(nkda|none|nil)$/i.test(t) && !list.some((x) => x.toLowerCase() === t.toLowerCase())) list.push(t);
+    };
+    push(patient?.allergies);
+    push(allergyInfo?.patient);
+    for (const a of allergyInfo?.fromPrescriptions ?? []) push(a);
+    return list;
+  })();
 
   /* ── render ── */
   return (
@@ -509,23 +583,97 @@ function DispenseWorkflow() {
         </Card>
       )}
 
-      {user?.facilityId && <Stepper step={step} />}
+      {user?.facilityId && !docket && <Stepper step={step} />}
       {error && <p className="rounded-lg bg-red-50 p-3 text-sm text-red-700">{error}</p>}
       {success && <p className="rounded-lg bg-green-50 p-3 text-sm text-green-700">{success}</p>}
 
-      {user?.facilityId && patient && step > 1 && (
-        <div className="flex items-center justify-between rounded-lg border bg-slate-50 px-3 py-2 text-sm">
-          <span>
-            <Check className="mr-1 inline h-4 w-4 text-emerald-600" />
-            <strong>{patient.firstName} {patient.lastName}</strong> · {patient.patientId}
-            {patient.age ? ` · ${patient.gender}, ${patient.age}y` : ""}
-          </span>
-          <Button size="sm" variant="ghost" onClick={() => { setStep(1); setPatient(null); }}>Change</Button>
-        </div>
+      {/* ── H5: printable dispensing docket (post-dispense) ── */}
+      {user?.facilityId && docket && (
+        <Card>
+          <CardContent className="space-y-4 p-4">
+            <div className="print-docket space-y-3">
+              <div className="flex items-start justify-between">
+                <div>
+                  <p className="text-base font-semibold">Dispensing Docket</p>
+                  <p className="text-sm text-slate-500">
+                    {docket.prescriptionId && <>Rx {docket.prescriptionId} · </>}
+                    {new Date(docket.dispensedAt).toLocaleString()}
+                  </p>
+                </div>
+                {user?.facility?.name && <p className="text-sm font-medium text-slate-600">{user.facility.name}</p>}
+              </div>
+              <div className="rounded-lg bg-slate-50 p-3 text-sm">
+                <p className="font-medium">{docket.patient.firstName} {docket.patient.lastName} · {docket.patient.patientId}</p>
+                {docket.patient.age ? <p className="text-slate-500">{docket.patient.gender}, {docket.patient.age}y</p> : null}
+                {docket.doctorName && <p className="text-slate-500">Prescriber: Dr. {docket.doctorName}</p>}
+              </div>
+              <table className="w-full text-sm">
+                <thead className="text-left text-xs text-slate-500">
+                  <tr>
+                    <th className="border-b p-1.5">Medicine</th>
+                    <th className="border-b p-1.5 text-right">Qty</th>
+                    <th className="border-b p-1.5">Dosage</th>
+                    <th className="border-b p-1.5">Duration</th>
+                    <th className="border-b p-1.5">Batch</th>
+                    <th className="border-b p-1.5">Expiry</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {docket.lines.map((l, i) => (
+                    <tr key={i}>
+                      <td className="border-b p-1.5 font-medium">{l.medicineName}</td>
+                      <td className="border-b p-1.5 text-right">{l.quantity}</td>
+                      <td className="border-b p-1.5">{l.dosage || "—"}</td>
+                      <td className="border-b p-1.5">{l.duration || "—"}</td>
+                      <td className="border-b p-1.5">{l.batchNumber}</td>
+                      <td className="border-b p-1.5">{l.expiryDate ? new Date(l.expiryDate).toLocaleDateString() : "—"}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+              <p className="text-xs text-slate-400">Keep this docket with the medicines. Follow the dosage instructions; contact the facility with any concerns.</p>
+            </div>
+            <div className="flex gap-2 print:hidden">
+              <Button onClick={() => window.print()} variant="outline">Print docket</Button>
+              <Button onClick={resetWorkflow}>New dispensing</Button>
+            </div>
+          </CardContent>
+        </Card>
       )}
 
-      {/* ── STEP 1: Patient (unchanged) ── */}
-      {user?.facilityId && step === 1 && (
+      <style jsx global>{`
+        @media print {
+          body * { visibility: hidden; }
+          .print-docket, .print-docket * { visibility: visible; }
+          .print-docket { position: absolute; inset: 0; padding: 24px; }
+        }
+      `}</style>
+
+      {user?.facilityId && !docket && patient && step > 1 && (
+        <>
+          <div className="flex items-center justify-between rounded-lg border bg-slate-50 px-3 py-2 text-sm">
+            <span>
+              <Check className="mr-1 inline h-4 w-4 text-emerald-600" />
+              <strong>{patient.firstName} {patient.lastName}</strong> · {patient.patientId}
+              {patient.age ? ` · ${patient.gender}, ${patient.age}y` : ""}
+            </span>
+            <Button size="sm" variant="ghost" onClick={() => { setStep(1); setPatient(null); }}>Change</Button>
+          </div>
+          {/* C2: allergy banner — always visible while dispensing to this patient */}
+          {allergyTexts.length > 0 && (
+            <div className="flex items-start gap-2 rounded-lg border border-red-300 bg-red-50 px-3 py-2 text-sm text-red-800">
+              <AlertCircle className="mt-0.5 h-4 w-4 shrink-0" />
+              <span>
+                <strong>Allergies:</strong> {allergyTexts.join("; ")}
+                <span className="ml-1 text-xs text-red-600">— verify before dispensing</span>
+              </span>
+            </div>
+          )}
+        </>
+      )}
+
+      {/* ── STEP 1: Patient ── */}
+      {user?.facilityId && !docket && step === 1 && (
         <Card>
           <CardContent className="space-y-3 p-4">
             {!registerMode ? (
@@ -533,7 +681,7 @@ function DispenseWorkflow() {
                 <div className="flex items-center justify-between gap-2">
                   <div className="relative flex-1">
                     <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
-                    <Input className="pl-9" placeholder="" value={pq} onChange={(e) => setPq(e.target.value)} autoFocus />
+                    <Input className="pl-9" placeholder="Search by name, patient ID, or phone…" value={pq} onChange={(e) => setPq(e.target.value)} autoFocus />
                   </div>
                   <Button variant="outline" onClick={() => { setRegisterMode(true); setError(""); }}>
                     <UserPlus className="mr-1.5 h-4 w-4" /> Register
@@ -571,8 +719,9 @@ function DispenseWorkflow() {
                   <div><Label>First name *</Label><Input value={reg.firstName} onChange={(e) => setReg({ ...reg, firstName: sanitizePersonName(e.target.value) })} /></div>
                   <div><Label>Last name *</Label><Input value={reg.lastName} onChange={(e) => setReg({ ...reg, lastName: sanitizePersonName(e.target.value) })} /></div>
                   <div>
-                    <Label>Gender</Label>
+                    <Label>Gender *</Label>
                     <select className="h-11 w-full rounded-lg border px-3 text-sm" value={reg.gender} onChange={(e) => setReg({ ...reg, gender: e.target.value })}>
+                      <option value="">— Select —</option>
                       <option>Female</option><option>Male</option><option>Other</option>
                     </select>
                   </div>
@@ -580,6 +729,11 @@ function DispenseWorkflow() {
                   <div className="sm:col-span-2">
                     <Label>Phone</Label>
                     <Input inputMode="tel" value={reg.phoneNumber} onChange={(e) => setReg({ ...reg, phoneNumber: sanitizePhone(e.target.value) })} placeholder="Phone number" />
+                  </div>
+                  <div className="sm:col-span-2">
+                    <Label>Known allergies</Label>
+                    <Input value={reg.allergies} onChange={(e) => setReg({ ...reg, allergies: e.target.value })}
+                      placeholder='e.g. "Penicillin" — leave blank if none known' />
                   </div>
                 </div>
                 <div className="flex gap-2">
@@ -593,7 +747,7 @@ function DispenseWorkflow() {
       )}
 
       {/* ── STEP 2: Prescription & Medicines ── */}
-      {user?.facilityId && step === 2 && patient && (
+      {user?.facilityId && !docket && step === 2 && patient && (
         <Card>
           <CardContent className="space-y-4 p-4">
 
@@ -641,6 +795,16 @@ function DispenseWorkflow() {
                               {l.requiresPrescription && (
                                 <span className="ml-1.5 inline-flex items-center gap-0.5 rounded-full bg-amber-50 px-1.5 py-0.5 text-[10px] font-semibold text-amber-700">
                                   <FileText className="h-3 w-3" /> Rx
+                                </span>
+                              )}
+                              {l.controlled && (
+                                <span className="ml-1.5 inline-flex items-center gap-0.5 rounded-full bg-red-50 px-1.5 py-0.5 text-[10px] font-semibold text-red-700">
+                                  <AlertCircle className="h-3 w-3" /> Controlled
+                                </span>
+                              )}
+                              {l.noQuantityWarning && !l.fulfilled && (
+                                <span className="ml-1.5 rounded-full bg-orange-50 px-1.5 py-0.5 text-[10px] font-semibold text-orange-700">
+                                  No Rx qty — verify against prescription
                                 </span>
                               )}
                               {l.fulfilled ? (
@@ -970,7 +1134,7 @@ function DispenseWorkflow() {
       )}
 
       {/* ── STEP 3: Confirm ── */}
-      {user?.facilityId && step === 3 && patient && (
+      {user?.facilityId && !docket && step === 3 && patient && (
         <Card>
           <CardContent className="space-y-4 p-4">
             <p className="font-semibold text-slate-800">Confirm Dispensing</p>
@@ -995,32 +1159,59 @@ function DispenseWorkflow() {
               )}
             </div>
 
-            {/* Medicines */}
+            {/* Medicines — batch + expiry shown so the final check is informed (M2) */}
             <div className="overflow-x-auto rounded-lg border">
-              <table className="w-full text-sm">
+              <table className="w-full min-w-[640px] text-sm">
                 <thead className="bg-slate-50 text-left text-xs text-slate-500">
                   <tr>
                     <th className="p-2 pl-3">Medicine</th>
-                    <th className="p-2 w-20 text-right">Qty</th>
-                    <th className="p-2 w-32 text-right">Available Stock</th>
+                    <th className="p-2 w-16 text-right">Qty</th>
+                    <th className="p-2">Dosage</th>
+                    <th className="p-2">Batch</th>
+                    <th className="p-2">Expiry</th>
+                    <th className="p-2 w-24 text-right">On Hand</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y">
-                  {confirmLines.map((l) => (
-                    <tr key={l.medicineId}>
-                      <td className="p-2 pl-3 font-medium">{l.medicineName}</td>
-                      <td className="p-2 text-right font-semibold">{l.quantity}</td>
-                      <td className={`p-2 text-right font-medium ${Number(l.quantity) > l.onHand ? "text-red-600" : "text-emerald-600"}`}>
-                        {l.onHand}
-                      </td>
-                    </tr>
-                  ))}
+                  {confirmLines.map((l) => {
+                    const b = l.batches.find((x) => x.id === l.batchId);
+                    return (
+                      <tr key={l.medicineId}>
+                        <td className="p-2 pl-3 font-medium">
+                          {l.medicineName}
+                          {l.controlled && (
+                            <span className="ml-1.5 rounded-full bg-red-50 px-1.5 py-0.5 text-[10px] font-semibold text-red-700">Controlled</span>
+                          )}
+                        </td>
+                        <td className="p-2 text-right font-semibold">{l.quantity}</td>
+                        <td className="p-2 text-slate-600">{[l.dosage, l.duration].filter(Boolean).join(" · ") || "—"}</td>
+                        <td className="p-2 text-slate-600">{b?.batchNumber ?? "—"}</td>
+                        <td className="p-2 text-slate-600">{b ? new Date(b.expiryDate).toLocaleDateString() : "—"}</td>
+                        <td className={`p-2 text-right font-medium ${Number(l.quantity) > l.onHand ? "text-red-600" : "text-emerald-600"}`}>
+                          {l.onHand}
+                        </td>
+                      </tr>
+                    );
+                  })}
                 </tbody>
               </table>
             </div>
 
+            {/* C3: controlled medicine acknowledgment */}
+            {hasControlledLines && (
+              <label className="flex cursor-pointer items-start gap-2 rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-800">
+                <input type="checkbox" className="mt-0.5 h-4 w-4 accent-red-600"
+                  checked={controlledAck} onChange={(e) => setControlledAck(e.target.checked)} />
+                <span>
+                  This dispensing includes <strong>controlled medicine(s)</strong>. I have verified the prescription,
+                  prescriber, patient identity, and quantity against the controlled drug requirements.
+                </span>
+              </label>
+            )}
+
             <div className="flex gap-2">
-              <Button onClick={dispense} disabled={busy} className="bg-emerald-600 text-white hover:bg-emerald-700">
+              <Button onClick={dispense} disabled={busy || (hasControlledLines && !controlledAck)}
+                className="bg-emerald-600 text-white hover:bg-emerald-700">
                 {busy ? "Dispensing…" : "Confirm & Dispense"}
               </Button>
               <Button variant="outline" onClick={() => setStep(2)}>← Back</Button>

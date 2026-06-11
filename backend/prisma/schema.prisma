@@ -288,6 +288,7 @@ model Patient {
   age              Int
   phoneNumber      String?
   address          String?
+  allergies        String?
   facilityId       String
   facility         Facility @relation(fields: [facilityId], references: [id])
   registrationDate DateTime @default(now())

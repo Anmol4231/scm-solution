@@ -22,7 +22,7 @@ interface Patient {
   phoneNumber?: string;
 }
 
-const EMPTY = { firstName: "", lastName: "", gender: "Female", age: "", phoneNumber: "", address: "" };
+const EMPTY = { firstName: "", lastName: "", gender: "Female", age: "", phoneNumber: "", address: "", allergies: "" };
 
 export default function PatientsPage() {
   const hasAccess = useRequirePermission("patients");
@@ -46,7 +46,7 @@ export default function PatientsPage() {
     const a = validators.age(form.age); if (a) return setError(a);
     const p = validators.phone(form.phoneNumber); if (p) return setError(p);
     try {
-      await api("/patients", { method: "POST", body: JSON.stringify({ ...form, age: Number(form.age) }) });
+      await api("/patients", { method: "POST", body: JSON.stringify({ ...form, age: Number(form.age), allergies: form.allergies.trim() || undefined }) });
       setSuccess(`Patient ${form.firstName} ${form.lastName} registered.`);
       setForm(EMPTY);
       setShowForm(false);
@@ -69,7 +69,7 @@ export default function PatientsPage() {
         <form onSubmit={search} className="flex flex-1 gap-2 sm:max-w-md">
           <div className="relative flex-1">
             <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
-            <Input className="pl-9" placeholder="" value={q} onChange={(e) => setQ(e.target.value)} />
+            <Input className="pl-9" placeholder="Search by name, patient ID, or phone…" value={q} onChange={(e) => setQ(e.target.value)} />
           </div>
           <Button type="submit" variant="outline">Search</Button>
         </form>
@@ -94,6 +94,7 @@ export default function PatientsPage() {
               <div><Label>Age *</Label><Input inputMode="numeric" value={form.age} onChange={(e) => setForm({ ...form, age: e.target.value.replace(/\D/g, "") })} /></div>
               <div><Label>Phone</Label><Input inputMode="tel" value={form.phoneNumber} onChange={(e) => setForm({ ...form, phoneNumber: sanitizePhone(e.target.value) })} placeholder="Phone number" /></div>
               <div><Label>Address</Label><Input value={form.address} onChange={(e) => setForm({ ...form, address: e.target.value })} /></div>
+              <div className="md:col-span-2"><Label>Known allergies</Label><Input value={form.allergies} onChange={(e) => setForm({ ...form, allergies: e.target.value })} placeholder='e.g. "Penicillin" — leave blank if none known' /></div>
               <div className="flex gap-2 md:col-span-2">
                 <Button type="submit">Save Patient</Button>
                 <Button type="button" variant="outline" onClick={() => { setShowForm(false); setForm(EMPTY); }}>Cancel</Button>

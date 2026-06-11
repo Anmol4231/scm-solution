@@ -54,11 +54,11 @@ const createSchema = z.object({
         medicineId: z.string().min(1, "Please select a medicine from the Medicine Master."),
         dosage: z.string().optional(),
         form: z.string().optional(),
+        // C4: required — an unquantified line would allow unlimited dispensing.
         quantity: z
-          .number()
+          .number({ required_error: "Each medicine needs a prescribed quantity." })
           .int("Quantity must be a whole number")
-          .positive("Quantity must be greater than zero")
-          .optional(),
+          .positive("Quantity must be greater than zero"),
         duration: z.string().optional(),
         notes: z.string().optional(),
       })
@@ -202,6 +202,10 @@ router.post("/ocr", rxCreate, upload.single("file"), async (req, res, next) => {
     confidence: Math.round(confidence),
     doctorName: parsed.doctorName ?? null,
     diagnosisNotes: parsed.diagnosisNotes ?? null,
+    department: parsed.department ?? null,
+    symptoms: parsed.symptoms ?? null,
+    allergies: parsed.allergies ?? null,
+    followUpDate: parsed.followUpDate ?? null,
     medicines: filtered,
     fieldsDetected: parsed.fieldsDetected,
     warnings: parsed.warnings,

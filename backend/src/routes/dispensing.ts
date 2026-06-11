@@ -8,6 +8,7 @@ import { logAudit } from "../services/audit";
 import { checkLowStockAndStockout } from "../services/alerts";
 import { assertBatchAvailable, decrementBatchOrThrow, ValidationError } from "../utils/stockGuards";
 import { getMedicineBalanceTx } from "../utils/stock";
+import { isRxExpired, rxExpiresAt, RX_VALIDITY_DAYS, RX_VALIDITY_DAYS_CONTROLLED } from "../utils/rxValidity";
 import type { Prisma } from "@prisma/client";
 
 const router = Router();
@@ -78,20 +79,34 @@ async function lockAndValidatePrescription(
     facilityId: string;
     requestedByMed: Map<string, number>;
     medNameById: Map<string, string>;
+    /** Medicines in this request whose category is flagged controlledDrug. */
+    controlledMedIds?: Set<string>;
   }
 ): Promise<void> {
-  const { prescriptionId, patientId, facilityId, requestedByMed, medNameById } = args;
+  const { prescriptionId, patientId, facilityId, requestedByMed, medNameById, controlledMedIds } = args;
 
   // Serialize all dispensing for this prescription.
   await tx.$queryRaw`SELECT id FROM "Prescription" WHERE id = ${prescriptionId} FOR UPDATE`;
 
   const rx = await tx.prescription.findFirst({
     where: { id: prescriptionId, patientId, facilityId },
-    select: { status: true },
+    select: { status: true, prescriptionDate: true },
   });
   if (!rx) throw new ValidationError("Prescription not found for this patient at this facility.");
   if (rx.status !== "ACTIVE") {
     throw new ValidationError(`Prescription is ${rx.status.toLowerCase()} and can no longer be dispensed.`);
+  }
+  // H3: prescription validity window.
+  if (isRxExpired(rx.prescriptionDate)) {
+    throw new ValidationError(
+      `Prescription has expired — prescriptions are valid for ${RX_VALIDITY_DAYS} days (issued ${rx.prescriptionDate.toISOString().slice(0, 10)}).`
+    );
+  }
+  if (controlledMedIds && controlledMedIds.size > 0 && isRxExpired(rx.prescriptionDate, true)) {
+    const names = [...controlledMedIds].map((id) => medNameById.get(id) ?? "controlled medicine").join(", ");
+    throw new ValidationError(
+      `Controlled medicines (${names}) may only be dispensed within ${RX_VALIDITY_DAYS_CONTROLLED} days of prescribing.`
+    );
   }
 
   const lines = await tx.prescriptionMedicine.findMany({
@@ -110,7 +125,16 @@ async function lockAndValidatePrescription(
 
   for (const [medId, requested] of requestedByMed) {
     const cap = prescribed.get(medId);
-    if (cap == null) continue; // unquantified line — no cap to enforce
+    if (cap == null) {
+      // C3/C4: controlled medicines must have an explicit prescribed quantity —
+      // an open-ended line would otherwise allow unlimited dispensing.
+      if (controlledMedIds?.has(medId)) {
+        throw new ValidationError(
+          `"${medNameById.get(medId) ?? "This medicine"}" is a controlled drug — it cannot be dispensed against a prescription line without a prescribed quantity.`
+        );
+      }
+      continue; // unquantified legacy line — no cap to enforce
+    }
     const already = dispensed.get(medId) ?? 0;
     const remaining = cap - already;
     if (requested > remaining) {
@@ -182,26 +206,43 @@ router.post("/", dispenseCreate, async (req, res, next) => {
     if (!prescription) {
       return res.status(400).json({ error: "Active prescription required for this patient" });
     }
+    // H3: friendly pre-check (authoritative re-check happens under the row lock).
+    if (isRxExpired(prescription.prescriptionDate)) {
+      return res.status(400).json({
+        error: `Prescription has expired — prescriptions are valid for ${RX_VALIDITY_DAYS} days (issued ${prescription.prescriptionDate.toISOString().slice(0, 10)}).`,
+      });
+    }
 
-    // Enforce requiresPrescription: medicine must be listed on the prescription.
+    // Enforce requiresPrescription/controlled: medicine must be listed on the prescription.
     const medicine = await prisma.medicine.findFirst({
       where: { id: data.medicineId },
-      select: { medicineName: true, category: { select: { requiresPrescription: true } } },
+      select: { medicineName: true, category: { select: { requiresPrescription: true, controlledDrug: true } } },
     });
-    if (medicine?.category?.requiresPrescription) {
+    const isControlled = medicine?.category?.controlledDrug ?? false;
+    if (medicine?.category?.requiresPrescription || isControlled) {
       const onRx = await prisma.prescriptionMedicine.findFirst({
         where: { prescriptionId: data.prescriptionId, medicineId: data.medicineId },
       });
       if (!onRx) {
         return res.status(400).json({
-          error: `"${medicine.medicineName}" requires a prescription. It must be listed on the prescription before dispensing.`,
+          error: `"${medicine!.medicineName}" requires a prescription. It must be listed on the prescription before dispensing.`,
         });
       }
+    }
+    if (isControlled && isRxExpired(prescription.prescriptionDate, true)) {
+      return res.status(400).json({
+        error: `"${medicine!.medicineName}" is a controlled drug — it may only be dispensed within ${RX_VALIDITY_DAYS_CONTROLLED} days of prescribing.`,
+      });
     }
 
     // B-1: enforce prescribed quantity — cannot dispense more than remains on the Rx line.
     const prescribedMap = await prescribedByMedicine(data.prescriptionId);
     const prescribed = prescribedMap.get(data.medicineId);
+    if (prescribed == null && isControlled) {
+      return res.status(400).json({
+        error: `"${medicine!.medicineName}" is a controlled drug — it cannot be dispensed against a prescription line without a prescribed quantity.`,
+      });
+    }
     if (prescribed != null) {
       const already = (await dispensedByMedicine(data.prescriptionId)).get(data.medicineId) ?? 0;
       const remaining = prescribed - already;
@@ -227,6 +268,7 @@ router.post("/", dispenseCreate, async (req, res, next) => {
           facilityId,
           requestedByMed: new Map([[data.medicineId, data.quantity]]),
           medNameById: new Map([[data.medicineId, medicine?.medicineName ?? "medicine"]]),
+          controlledMedIds: isControlled ? new Set([data.medicineId]) : undefined,
         });
         // Re-verify the batch under the transaction — it may have been
         // quarantined/expired between the pre-check and now.
@@ -309,7 +351,7 @@ router.get("/prescription/:id/plan", dispenseView, async (req, res, next) => {
       include: {
         patient: true,
         medicines: {
-          include: { medicine: { include: { category: { select: { requiresPrescription: true } } } } },
+          include: { medicine: { include: { category: { select: { requiresPrescription: true, controlledDrug: true } } } } },
         },
       },
     });
@@ -319,6 +361,23 @@ router.get("/prescription/:id/plan", dispenseView, async (req, res, next) => {
         error: `Prescription ${prescription.prescriptionId} is ${prescription.status.toLowerCase()} — only active prescriptions can be dispensed.`,
       });
     }
+    // H3: prescription validity window.
+    if (isRxExpired(prescription.prescriptionDate)) {
+      return res.status(400).json({
+        error: `Prescription ${prescription.prescriptionId} has expired — prescriptions are valid for ${RX_VALIDITY_DAYS} days (issued ${prescription.prescriptionDate.toISOString().slice(0, 10)}).`,
+      });
+    }
+
+    // C2: allergy visibility — the patient record plus anything recorded on the
+    // patient's prescriptions over time (allergies were Rx-level before the
+    // Patient.allergies column existed).
+    const allergyRows = await prisma.prescription.findMany({
+      where: { patientId: prescription.patientId, allergies: { not: null } },
+      select: { allergies: true },
+    });
+    const fromPrescriptions = [...new Set(
+      allergyRows.map((r) => (r.allergies ?? "").trim()).filter((a) => a && !/^(nkda|none|nil|no known( drug)? allergies)$/i.test(a))
+    )];
 
     const today = new Date();
     today.setHours(0, 0, 0, 0);
@@ -366,6 +425,9 @@ router.get("/prescription/:id/plan", dispenseView, async (req, res, next) => {
           recommendedBatchId: fulfilled ? null : batches[0]?.id ?? null,
           batches,
           requiresPrescription: pm.medicine.category?.requiresPrescription ?? false,
+          controlled: pm.medicine.category?.controlledDrug ?? false,
+          // C4: legacy open-ended line — dispensing is uncapped; surface loudly.
+          noQuantityWarning: prescribedQuantity == null,
         };
       })
     );
@@ -379,6 +441,14 @@ router.get("/prescription/:id/plan", dispenseView, async (req, res, next) => {
         patient: prescription.patient,
         department: prescription.department,
         doctorName: prescription.doctorName,
+        prescriptionDate: prescription.prescriptionDate,
+        expiresAt: rxExpiresAt(prescription.prescriptionDate),
+        allergies: prescription.allergies ?? null,
+      },
+      // C2: union of allergy sources for the banner.
+      allergies: {
+        patient: prescription.patient.allergies ?? null,
+        fromPrescriptions,
       },
       lines,
     });
@@ -420,13 +490,26 @@ router.post("/batch", dispenseCreate, async (req, res, next) => {
     if (!prescription) {
       return res.status(400).json({ error: "Active prescription required for this patient" });
     }
+    // H3: friendly pre-check (authoritative re-check happens under the row lock).
+    if (isRxExpired(prescription.prescriptionDate)) {
+      return res.status(400).json({
+        error: `Prescription has expired — prescriptions are valid for ${RX_VALIDITY_DAYS} days (issued ${prescription.prescriptionDate.toISOString().slice(0, 10)}).`,
+      });
+    }
 
-    // Enforce requiresPrescription: every Rx-required medicine must appear on the prescription.
+    // Enforce requiresPrescription/controlled: every such medicine must appear on the prescription.
     const medicinesForCheck = await prisma.medicine.findMany({
       where: { id: { in: data.lines.map((l) => l.medicineId) } },
-      select: { id: true, medicineName: true, category: { select: { requiresPrescription: true } } },
+      select: { id: true, medicineName: true, category: { select: { requiresPrescription: true, controlledDrug: true } } },
     });
-    const rxRequiredMeds = medicinesForCheck.filter((m) => m.category?.requiresPrescription);
+    const controlledMedIds = new Set(medicinesForCheck.filter((m) => m.category?.controlledDrug).map((m) => m.id));
+    if (controlledMedIds.size > 0 && isRxExpired(prescription.prescriptionDate, true)) {
+      const names = medicinesForCheck.filter((m) => controlledMedIds.has(m.id)).map((m) => m.medicineName).join(", ");
+      return res.status(400).json({
+        error: `Controlled medicines (${names}) may only be dispensed within ${RX_VALIDITY_DAYS_CONTROLLED} days of prescribing.`,
+      });
+    }
+    const rxRequiredMeds = medicinesForCheck.filter((m) => m.category?.requiresPrescription || m.category?.controlledDrug);
     if (rxRequiredMeds.length > 0) {
       const prescriptionMedIds = new Set(
         (await prisma.prescriptionMedicine.findMany({
@@ -455,6 +538,11 @@ router.post("/batch", dispenseCreate, async (req, res, next) => {
     }
     for (const [medId, requested] of requestedByMed) {
       const prescribed = prescribedMap.get(medId);
+      if (prescribed == null && controlledMedIds.has(medId)) {
+        return res.status(400).json({
+          error: `"${medNameById.get(medId) ?? "This medicine"}" is a controlled drug — it cannot be dispensed against a prescription line without a prescribed quantity.`,
+        });
+      }
       if (prescribed != null) {
         const already = alreadyMap.get(medId) ?? 0;
         const remaining = prescribed - already;
@@ -489,6 +577,7 @@ router.post("/batch", dispenseCreate, async (req, res, next) => {
           facilityId,
           requestedByMed,
           medNameById,
+          controlledMedIds,
         });
 
         const records = [];
@@ -564,21 +653,109 @@ router.post("/batch", dispenseCreate, async (req, res, next) => {
   }
 });
 
+/**
+ * Dispensing log (H1/H4). Filters:
+ *   patientId       — internal cuid OR human-readable patient ID (PAT…)
+ *   prescriptionId  — internal cuid
+ *   medicineId, from, to (ISO dates), today=true
+ *   take/skip       — pagination (take capped at 200, default 50)
+ */
 router.get("/", dispenseView, async (req, res, next) => {
   try {
     const facilityId = getFacilityId(req, req.query.facilityId as string);
+    const { patientId, prescriptionId, medicineId, from, to } = req.query as Record<string, string | undefined>;
     const today = new Date();
     today.setHours(0, 0, 0, 0);
+
+    const dispensedAt: { gte?: Date; lte?: Date } = {};
+    if (req.query.today === "true") dispensedAt.gte = today;
+    if (from && !isNaN(Date.parse(from))) dispensedAt.gte = new Date(from);
+    if (to && !isNaN(Date.parse(to))) {
+      const end = new Date(to);
+      end.setHours(23, 59, 59, 999);
+      dispensedAt.lte = end;
+    }
+
+    const take = Math.min(Math.max(parseInt((req.query.take as string) ?? "50", 10) || 50, 1), 200);
+    const skip = Math.max(parseInt((req.query.skip as string) ?? "0", 10) || 0, 0);
+
     const records = await prisma.dispensingRecord.findMany({
       where: {
         ...(facilityId ? { facilityId } : {}),
-        ...(req.query.today === "true" ? { dispensedAt: { gte: today } } : {}),
+        ...(patientId ? { OR: [{ patientId }, { patient: { patientId } }] } : {}),
+        ...(prescriptionId ? { prescriptionId } : {}),
+        ...(medicineId ? { medicineId } : {}),
+        ...(dispensedAt.gte || dispensedAt.lte ? { dispensedAt } : {}),
       },
-      include: { patient: true, healthcareWorker: true, medicine: true },
+      include: {
+        patient: true,
+        healthcareWorker: true,
+        medicine: { include: { category: { select: { controlledDrug: true } } } },
+        prescription: { select: { prescriptionId: true } },
+        dispensedBy: { select: { firstName: true, lastName: true } },
+      },
       orderBy: { dispensedAt: "desc" },
-      take: 50,
+      take,
+      skip,
     });
     res.json(records);
+  } catch (e) {
+    next(e);
+  }
+});
+
+/**
+ * Controlled Drug Register (C3): every dispensing of a controlled-category
+ * medicine in the period, with patient / prescription / dispenser identity,
+ * plus per-medicine totals and current on-hand for reconciliation.
+ */
+router.get("/controlled-register", dispenseView, async (req, res, next) => {
+  try {
+    const facilityId = getFacilityId(req, req.query.facilityId as string | undefined);
+    if (!facilityId) return res.status(400).json({ error: "Select a facility to view the controlled drug register." });
+
+    const { from, to } = req.query as Record<string, string | undefined>;
+    const gte = from && !isNaN(Date.parse(from)) ? new Date(from) : new Date(Date.now() - 30 * 86400000);
+    let lte: Date | undefined;
+    if (to && !isNaN(Date.parse(to))) {
+      lte = new Date(to);
+      lte.setHours(23, 59, 59, 999);
+    }
+
+    const records = await prisma.dispensingRecord.findMany({
+      where: {
+        facilityId,
+        medicine: { category: { controlledDrug: true } },
+        dispensedAt: { gte, ...(lte ? { lte } : {}) },
+      },
+      include: {
+        patient: { select: { patientId: true, firstName: true, lastName: true } },
+        prescription: { select: { prescriptionId: true, doctorName: true } },
+        medicine: { select: { id: true, medicineName: true } },
+        dispensedBy: { select: { firstName: true, lastName: true } },
+      },
+      orderBy: { dispensedAt: "asc" },
+    });
+
+    // Per-medicine totals + current usable on-hand for end-of-period reconciliation.
+    const medIds = [...new Set(records.map((r) => r.medicineId))];
+    const summary = await Promise.all(
+      medIds.map(async (id) => {
+        const onHand = await prisma.stockBatch.aggregate({
+          where: { facilityId, medicineId: id, status: "ACTIVE", quantity: { gt: 0 } },
+          _sum: { quantity: true },
+        });
+        const dispensedTotal = records.filter((r) => r.medicineId === id).reduce((s, r) => s + r.quantity, 0);
+        return {
+          medicineId: id,
+          medicineName: records.find((r) => r.medicineId === id)!.medicine.medicineName,
+          dispensedTotal,
+          onHand: onHand._sum.quantity ?? 0,
+        };
+      })
+    );
+
+    res.json({ from: gte, to: lte ?? null, records, summary });
   } catch (e) {
     next(e);
   }

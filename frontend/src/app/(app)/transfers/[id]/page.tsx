@@ -10,11 +10,13 @@ import { can } from "@/lib/permissions";
 import { useRequirePermission } from "@/hooks/useRequirePermission";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 
 interface TransferLine {
   id: string;
   medicine: { id: string; medicineName: string } | null;
+  batchId: string;
   batch: { batchNumber: string; expiryDate: string } | null;
   batchNumber: string;
   expiryDate: string;
@@ -22,6 +24,10 @@ interface TransferLine {
   quantityReceived: number | null;
   shortfallFlag: boolean;
 }
+
+interface FacilityOption { id: string; name: string; code: string }
+interface SourceBatch { id: string; batchNumber: string; expiryDate: string; quantity: number; medicine: { id: string; medicineName: string } }
+interface EditLine { batchId: string; quantityTransferred: number }
 
 interface TransferDetail {
   id: string;
@@ -69,6 +75,13 @@ export default function TransferDetailPage() {
   const [receiveQty, setReceiveQty] = useState<Record<string, number>>({});
   const [finalizeShortfall, setFinalizeShortfall] = useState(false);
 
+  // edit form (PENDING transfers only)
+  const [editing, setEditing] = useState(false);
+  const [facilities, setFacilities] = useState<FacilityOption[]>([]);
+  const [srcBatches, setSrcBatches] = useState<SourceBatch[]>([]);
+  const [editTo, setEditTo] = useState("");
+  const [editLines, setEditLines] = useState<EditLine[]>([]);
+
   const load = useCallback(async () => {
     setLoading(true);
     try {
@@ -103,6 +116,36 @@ export default function TransferDetailPage() {
   const showDispatch = status === "AUTHORIZED" && isSender && canEdit;
   const showCancel = (status === "PENDING" || status === "AUTHORIZED") && isSender && canEdit;
   const showReceive = (status === "IN_TRANSIT" || status === "PARTIALLY_RECEIVED") && isReceiver && canApprove;
+  const showEdit = status === "PENDING" && isSender && canEdit;
+
+  const startEdit = () => {
+    setError(""); setSuccess("");
+    setEditTo(transfer.toFacility.id);
+    setEditLines(transfer.lines.map((l) => ({ batchId: l.batchId, quantityTransferred: l.quantityTransferred })));
+    setEditing(true);
+    api<FacilityOption[]>("/auth/facilities").then(setFacilities).catch(() => {});
+    api<SourceBatch[]>(`/stock/batches?facilityId=${transfer.fromFacility.id}`).then(setSrcBatches).catch(() => {});
+  };
+
+  const availableBatches = srcBatches.filter((b) => b.quantity > 0);
+  const updateEditLine = (i: number, patch: Partial<EditLine>) =>
+    setEditLines((ls) => ls.map((l, idx) => (idx === i ? { ...l, ...patch } : l)));
+  const addEditLine = () => setEditLines((ls) => [...ls, { batchId: "", quantityTransferred: 0 }]);
+  const removeEditLine = (i: number) => setEditLines((ls) => ls.filter((_, idx) => idx !== i));
+
+  const saveEdit = () => {
+    if (!editTo) { setError("Destination facility required"); return; }
+    if (editTo === transfer.fromFacility.id) { setError("Destination must differ from the sending facility"); return; }
+    if (!editLines.length || editLines.some((l) => !l.batchId || l.quantityTransferred <= 0)) {
+      setError("Each line needs a batch and a quantity greater than 0"); return;
+    }
+    act("Transfer updated.", () =>
+      api(`/transfers/${transfer.id}`, {
+        method: "PATCH",
+        body: JSON.stringify({ toFacilityId: editTo, lines: editLines }),
+      }).then(() => setEditing(false))
+    );
+  };
 
   const remaining = (l: TransferLine) => Math.max(0, l.quantityTransferred - (l.quantityReceived ?? 0));
 
@@ -170,7 +213,6 @@ export default function TransferDetailPage() {
           <div className="grid gap-3 text-sm sm:grid-cols-2 lg:grid-cols-3">
             <div><p className="text-xs uppercase tracking-wide text-slate-500">From</p><p className="font-medium">{transfer.fromFacility.name} ({transfer.fromFacility.code})</p></div>
             <div><p className="text-xs uppercase tracking-wide text-slate-500">To</p><p className="font-medium">{transfer.toFacility.name} ({transfer.toFacility.code})</p></div>
-            <div><p className="text-xs uppercase tracking-wide text-slate-500">Priority</p><p className="font-medium">{transfer.priority}</p></div>
             <div><p className="text-xs uppercase tracking-wide text-slate-500">Created by</p><p className="font-medium">{personName(transfer.createdBy)} · {fmtDate(transfer.createdAt)}</p></div>
             <div><p className="text-xs uppercase tracking-wide text-slate-500">Authorized by</p><p className="font-medium">{personName(transfer.authorizedBy)} · {fmtDate(transfer.authorizedAt)}</p></div>
             <div><p className="text-xs uppercase tracking-wide text-slate-500">Received by</p><p className="font-medium">{personName(transfer.receivedBy)} · {fmtDate(transfer.receivedAt)}</p></div>
@@ -180,10 +222,11 @@ export default function TransferDetailPage() {
       </Card>
 
       {/* Actions */}
-      {(showAuthorize || showDispatch || showCancel) && (
+      {(showAuthorize || showDispatch || showCancel || showEdit) && !editing && (
         <Card>
           <CardHeader><CardTitle>Actions</CardTitle></CardHeader>
           <CardContent className="flex flex-wrap gap-2">
+            {showEdit && <Button onClick={startEdit} disabled={busy} variant="outline">Edit</Button>}
             {showAuthorize && <Button onClick={authorize} disabled={busy}>Authorize</Button>}
             {showDispatch && <Button onClick={dispatch} disabled={busy} className="bg-cyan-600 text-white hover:bg-cyan-700">Dispatch (deduct &amp; send)</Button>}
             {showCancel && <Button onClick={cancel} disabled={busy} variant="outline" className="text-red-600">Cancel Transfer</Button>}
@@ -191,7 +234,62 @@ export default function TransferDetailPage() {
         </Card>
       )}
 
+      {/* Edit form (PENDING only) */}
+      {editing && (
+        <Card>
+          <CardHeader><CardTitle>Edit Transfer</CardTitle></CardHeader>
+          <CardContent className="space-y-4">
+            <div className="max-w-md">
+              <Label>Destination Facility *</Label>
+              <select className="mt-1 h-10 w-full rounded-lg border px-3 text-sm" value={editTo} onChange={(e) => setEditTo(e.target.value)}>
+                <option value="">Select destination…</option>
+                {facilities.filter((f) => f.id !== transfer.fromFacility.id).map((f) => (
+                  <option key={f.id} value={f.id}>{f.name} ({f.code})</option>
+                ))}
+              </select>
+            </div>
+
+            <div className="space-y-3">
+              <div className="flex items-center justify-between">
+                <p className="text-sm font-medium text-slate-700">Stock Lines</p>
+                <Button type="button" size="sm" variant="outline" onClick={addEditLine}>+ Add Line</Button>
+              </div>
+              {editLines.map((line, i) => {
+                const selected = availableBatches.find((b) => b.id === line.batchId);
+                return (
+                  <div key={i} className="flex items-end gap-3">
+                    <div className="flex-1">
+                      <Label>Batch *</Label>
+                      <select className="mt-1 h-10 w-full rounded-lg border px-3 text-sm" value={line.batchId} onChange={(e) => updateEditLine(i, { batchId: e.target.value })}>
+                        <option value="">Select batch…</option>
+                        {availableBatches.map((b) => (
+                          <option key={b.id} value={b.id}>{b.medicine.medicineName} — {b.batchNumber} (qty {b.quantity}, exp {new Date(b.expiryDate).toLocaleDateString()})</option>
+                        ))}
+                      </select>
+                      {selected && <p className="mt-0.5 text-xs text-slate-400">Available: {selected.quantity}</p>}
+                    </div>
+                    <div className="w-28">
+                      <Label>Qty *</Label>
+                      <Input type="number" min={1} max={selected?.quantity} value={line.quantityTransferred || ""} onChange={(e) => updateEditLine(i, { quantityTransferred: Number(e.target.value) })} />
+                    </div>
+                    {editLines.length > 1 && (
+                      <Button type="button" variant="outline" size="sm" className="mb-0.5 text-red-600" onClick={() => removeEditLine(i)}>Remove</Button>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+
+            <div className="flex gap-2">
+              <Button onClick={saveEdit} disabled={busy}>{busy ? "Saving…" : "Save Changes"}</Button>
+              <Button variant="outline" onClick={() => { setEditing(false); setError(""); }}>Cancel</Button>
+            </div>
+          </CardContent>
+        </Card>
+      )}
+
       {/* Lines + receive form */}
+      {!editing && (
       <Card>
         <CardHeader>
           <CardTitle>{showReceive ? "Receive Stock" : "Lines"}</CardTitle>
@@ -255,6 +353,7 @@ export default function TransferDetailPage() {
           )}
         </CardContent>
       </Card>
+      )}
     </div>
   );
 }

@@ -20,6 +20,7 @@ const createSchema = z.object({
   age: z.number().int().positive(),
   phoneNumber: z.string().optional(),
   address: z.string().optional(),
+  allergies: z.string().optional(),
   facilityId: z.string().optional(),
 });
 

@@ -224,7 +224,11 @@ router.get("/", async (req, res, next) => {
         ...(facilityId ? { facilityId } : {}),
         ...(returnType ? { returnType: returnType as ReturnType } : {}),
       },
-      include: { medicine: true, patient: true },
+      include: {
+        medicine: true,
+        patient: true,
+        processedBy: { select: { firstName: true, lastName: true } },
+      },
       orderBy: { createdAt: "desc" },
       take: 100,
     });

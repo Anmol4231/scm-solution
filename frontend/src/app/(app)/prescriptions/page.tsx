@@ -1,8 +1,8 @@
-﻿"use client";
+"use client";
 
 import { useEffect, useRef, useState } from "react";
 import Link from "next/link";
-import { Plus, Upload, FileText, X, CheckCircle2, Loader2, ScanLine } from "lucide-react";
+import { Plus, Upload, FileText, X, CheckCircle2, Loader2, ScanLine, Trash2, ChevronDown, AlertCircle } from "lucide-react";
 import { api, resolveApiUrl } from "@/lib/api";
 import { useRequirePermission } from "@/hooks/useRequirePermission";
 import { Button } from "@/components/ui/button";
@@ -16,180 +16,35 @@ function apiBaseUrl() {
   return resolveApiUrl().replace(/\/api$/, "");
 }
 
-// ─── OCR ─────────────────────────────────────────────────────────────────────
-interface TesseractGlobal {
-  recognize: (
-    image: File | string,
-    lang: string,
-    opts?: { logger?: (m: { status: string; progress: number }) => void }
-  ) => Promise<{ data: { text: string } }>;
-}
-
-function loadTesseract(): Promise<TesseractGlobal> {
-  return new Promise((resolve, reject) => {
-    const SRC = "https://cdn.jsdelivr.net/npm/tesseract.js@4/dist/tesseract.min.js";
-    const existing = (window as unknown as Record<string, unknown>).Tesseract as TesseractGlobal | undefined;
-    if (existing?.recognize) return resolve(existing);
-    if (document.querySelector(`script[src="${SRC}"]`)) {
-      const wait = setInterval(() => {
-        const T = (window as unknown as Record<string, unknown>).Tesseract as TesseractGlobal | undefined;
-        if (T?.recognize) { clearInterval(wait); resolve(T); }
-      }, 100);
-      setTimeout(() => { clearInterval(wait); reject(new Error("OCR engine timed out")); }, 15000);
-      return;
-    }
-    const s = document.createElement("script");
-    s.src = SRC;
-    s.onload = () => {
-      const T = (window as unknown as Record<string, unknown>).Tesseract as TesseractGlobal | undefined;
-      T?.recognize ? resolve(T) : reject(new Error("OCR engine loaded but unavailable"));
-    };
-    s.onerror = () => reject(new Error("Could not load OCR engine — check your internet connection"));
-    document.head.appendChild(s);
-  });
-}
-
-async function runOcr(file: File, onProgress: (pct: number) => void): Promise<string> {
-  const T = await loadTesseract();
-  const { data } = await T.recognize(file, "eng", {
-    logger: (m) => { if (m.status === "recognizing text") onProgress(Math.round(m.progress * 100)); },
-  });
-  return data.text.trim();
-}
-
-// ─── Prescription text parser ─────────────────────────────────────────────────
 interface MedicineOpt { id: string; medicineName: string }
+interface PatientOpt { id: string; firstName: string; lastName: string; patientId: string }
 
-interface ParseResult {
-  doctorName?: string;
-  department?: string;
-  diagnosisNotes?: string;
-  symptoms?: string;
-  allergies?: string;
-  followUpDate?: string;
-  medicineId?: string;
-  dosage?: string;
-  quantity?: string;
-  filledFields: string[];
+interface RxLine { medicineId: string; dosage: string; quantity: string }
+
+/** Server OCR response (POST /prescriptions/ocr). */
+interface OcrResponse {
+  rawText: string;
+  confidence?: number;
+  doctorName?: string | null;
+  diagnosisNotes?: string | null;
+  department?: string | null;
+  symptoms?: string | null;
+  allergies?: string | null;
+  followUpDate?: string | null;
+  medicines?: {
+    medicineName: string;
+    strength?: string | null;
+    dosage?: string | null;
+    quantity?: number | null;
+    medicineId?: string | null;
+    candidates?: { id: string; medicineName: string }[];
+  }[];
+  fieldsDetected?: string[];
+  warnings?: string[];
+  error?: string;
 }
 
-function parsePrescriptionText(raw: string, medicineList: MedicineOpt[]): ParseResult {
-  const result: ParseResult = { filledFields: [] };
-  const lower = raw.toLowerCase();
-
-  const firstMatch = (patterns: RegExp[]): string | undefined => {
-    for (const p of patterns) {
-      const m = raw.match(p);
-      if (m?.[1]) return m[1].trim().replace(/\s+/g, " ").replace(/[,;]+$/, "");
-    }
-    return undefined;
-  };
-
-  // Doctor
-  const doctor = firstMatch([
-    /Dr\.?\s+([A-Za-z][A-Za-z .'-]{2,40}?)(?:\s*[\n,\r|]|$)/m,
-    /Doctor[:\s]+([A-Za-z][A-Za-z .'-]{2,40}?)(?:\s*[\n,\r|]|$)/mi,
-    /Physician[:\s]+([A-Za-z][A-Za-z .'-]{2,40}?)(?:\s*[\n,\r|]|$)/mi,
-    /Prescribed\s+by[:\s]+([A-Za-z][A-Za-z .'-]{2,40}?)(?:\s*[\n,\r|]|$)/mi,
-  ]);
-  if (doctor) { result.doctorName = doctor; result.filledFields.push("Doctor"); }
-
-  // Department
-  const dept = firstMatch([
-    /Dept\.?\s*[:\-]?\s*([A-Za-z][A-Za-z /()-]{2,40}?)(?:\s*[\n,\r|]|$)/mi,
-    /Department[:\s]+([A-Za-z][A-Za-z /()-]{2,40}?)(?:\s*[\n,\r|]|$)/mi,
-    /Ward[:\s]+([A-Za-z][A-Za-z /()-]{2,30}?)(?:\s*[\n,\r|]|$)/mi,
-    /Clinic[:\s]+([A-Za-z][A-Za-z /()-]{2,30}?)(?:\s*[\n,\r|]|$)/mi,
-  ]);
-  if (dept) {
-    result.department = dept; result.filledFields.push("Department");
-  } else {
-    const hit = ["OPD", "ICU", "Paediatrics", "Pediatrics", "Maternity", "Surgical",
-      "Gynecology", "Obstetrics", "Orthopedics", "Cardiology", "Neurology", "Emergency"].find(
-      k => lower.includes(k.toLowerCase())
-    );
-    if (hit) { result.department = hit; result.filledFields.push("Department"); }
-  }
-
-  // Diagnosis
-  const diag = firstMatch([
-    /Diagno(?:sis|se)[:\s]+([^\n\r]{3,150})/mi,
-    /\bDx[:\s]+([^\n\r]{3,150})/mi,
-    /Impression[:\s]+([^\n\r]{3,150})/mi,
-    /Assessment[:\s]+([^\n\r]{3,150})/mi,
-  ]);
-  if (diag) { result.diagnosisNotes = diag; result.filledFields.push("Diagnosis"); }
-
-  // Symptoms
-  const sympt = firstMatch([
-    /Chief\s+Complaints?[:\s]+([^\n\r]{3,200})/mi,
-    /C\/?O[:\s]+([^\n\r]{3,200})/mi,
-    /Complaints?[:\s]+([^\n\r]{3,200})/mi,
-    /Symptoms?[:\s]+([^\n\r]{3,200})/mi,
-  ]);
-  if (sympt) { result.symptoms = sympt; result.filledFields.push("Symptoms"); }
-
-  // Allergies
-  if (/\bNKDA\b|\bno\s+known\s+(?:drug\s+)?allerg/i.test(raw)) {
-    result.allergies = "NKDA"; result.filledFields.push("Allergies");
-  } else {
-    const allergy = firstMatch([
-      /Allergi(?:es?|c\s+to)[:\s]+([^\n\r]{2,100})/mi,
-      /Drug\s+allergy[:\s]+([^\n\r]{2,100})/mi,
-    ]);
-    if (allergy) { result.allergies = allergy; result.filledFields.push("Allergies"); }
-  }
-
-  // Follow-up date
-  const fuRaw = firstMatch([
-    /(?:Follow[- ]?up|Review|Return)\s*[:\-]?\s*(\d{1,2}[\/\-]\d{1,2}[\/\-]\d{2,4})/mi,
-    /(?:Follow[- ]?up|Review)\s*[:\-]?\s*(\d{4}[\/\-]\d{2}[\/\-]\d{2})/mi,
-  ]);
-  if (fuRaw) {
-    const parts = fuRaw.match(/(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{2,4})/);
-    if (parts) {
-      const year = parts[3].length === 2 ? `20${parts[3]}` : parts[3];
-      const d = new Date(`${year}-${parts[2].padStart(2, "0")}-${parts[1].padStart(2, "0")}`);
-      if (!isNaN(d.getTime())) { result.followUpDate = d.toISOString().slice(0, 10); result.filledFields.push("Follow-up date"); }
-    }
-  }
-
-  // Medicine — longest full-name match wins
-  let bestMed: MedicineOpt | undefined;
-  let bestScore = 0;
-  for (const med of medicineList) {
-    const name = med.medicineName.toLowerCase();
-    if (lower.includes(name) && name.length > bestScore) {
-      bestScore = name.length; bestMed = med;
-    } else {
-      const word = name.split(/\s+/)[0];
-      if (word.length >= 5 && lower.includes(word) && word.length * 0.5 > bestScore) {
-        bestScore = word.length * 0.5; bestMed = med;
-      }
-    }
-  }
-  if (bestMed) { result.medicineId = bestMed.id; result.filledFields.push(`Medicine: ${bestMed.medicineName}`); }
-
-  // Dosage
-  const dosage = firstMatch([
-    /Dosage[:\s]+([^\n\r]{2,50})/mi,
-    /Dose[:\s]+([^\n\r]{2,50})/mi,
-    /(\d+\s*(?:mg|mcg|g|ml|IU)\s*(?:twice\s+daily|once\s+daily|TDS|BD|OD|QID|PRN|daily)?)/i,
-    /((?:once|twice|thrice)\s+(?:a\s+)?(?:daily|day)|TDS|BD|OD|QID|PRN)/i,
-  ]);
-  if (dosage) { result.dosage = dosage; result.filledFields.push("Dosage"); }
-
-  // Quantity
-  const qty = firstMatch([
-    /Qty\.?[:\s]+(\d+)/mi,
-    /Quantity[:\s]+(\d+)/mi,
-    /#\s*(\d+)/,
-    /(\d+)\s*(?:tablets?|tab\.?|caps?\.?|capsules?)/i,
-  ]);
-  if (qty && /^\d+$/.test(qty.trim())) { result.quantity = qty.trim(); result.filledFields.push("Quantity"); }
-
-  return result;
-}
+interface OcrAmbiguity { lineIndex: number; ocrName: string; candidates: { id: string; medicineName: string }[] }
 
 function validatePersonName(v: string, label: string): string {
   const t = v.trim();
@@ -200,37 +55,33 @@ function validatePersonName(v: string, label: string): string {
   return "";
 }
 
-// ─── Types ────────────────────────────────────────────────────────────────────
-interface PatientOpt { id: string; firstName: string; lastName: string; patientId: string }
-
-const EMPTY = {
+const EMPTY_FORM = {
   patientId: "", doctorName: "", department: "", diagnosisNotes: "", symptoms: "",
   followUpDate: "", allergies: "", prescriptionNotes: "",
-  medicineId: "", dosage: "", quantity: "",
 };
+const EMPTY_LINE: RxLine = { medicineId: "", dosage: "", quantity: "" };
 
-// ─── Page ─────────────────────────────────────────────────────────────────────
 export default function PrescriptionsPage() {
   const hasAccess = useRequirePermission("prescriptions");
   const [list, setList] = useState<Record<string, unknown>[]>([]);
   const [patients, setPatients] = useState<PatientOpt[]>([]);
   const [medicines, setMedicines] = useState<MedicineOpt[]>([]);
   const [showForm, setShowForm] = useState(false);
-  const [form, setForm] = useState(EMPTY);
+  const [form, setForm] = useState(EMPTY_FORM);
+  const [lines, setLines] = useState<RxLine[]>([{ ...EMPTY_LINE }]);
   const [formErrors, setFormErrors] = useState<Record<string, string>>({});
   const [error, setError] = useState("");
   const [success, setSuccess] = useState("");
   const [busy, setBusy] = useState(false);
 
-  // Scan state
+  // Scan state — OCR runs server-side (same pipeline as the dispense workflow)
   const [file, setFile] = useState<File | null>(null);
   const [previewUrl, setPreviewUrl] = useState("");
-  const [capturedText, setCapturedText] = useState("");
   const [scanning, setScanning] = useState(false);
-  const [scanPct, setScanPct] = useState(0);
-  const [scanStatus, setScanStatus] = useState(""); // e.g. "Loading OCR engine…" / "Reading…"
   const [scanError, setScanError] = useState("");
-  const [filledFields, setFilledFields] = useState<string[]>([]);
+  const [ocrResult, setOcrResult] = useState<OcrResponse | null>(null);
+  const [ocrAmbiguous, setOcrAmbiguous] = useState<OcrAmbiguity[]>([]);
+  const [rawTextOpen, setRawTextOpen] = useState(false);
   const previewRef = useRef("");
 
   useEffect(() => {
@@ -246,7 +97,7 @@ export default function PrescriptionsPage() {
 
   const onPickFile = (f: File | null) => {
     if (previewRef.current) URL.revokeObjectURL(previewRef.current);
-    setScanError(""); setCapturedText(""); setScanPct(0); setFilledFields([]);
+    setScanError(""); setOcrResult(null); setOcrAmbiguous([]); setRawTextOpen(false);
     if (!f) { setFile(null); setPreviewUrl(""); previewRef.current = ""; return; }
     const url = URL.createObjectURL(f);
     previewRef.current = url;
@@ -256,90 +107,102 @@ export default function PrescriptionsPage() {
 
   const scanAndFill = async () => {
     if (!file || !isImage) return;
-    setScanning(true); setScanError(""); setScanPct(0); setFilledFields([]);
-    setScanStatus("Loading OCR engine…");
+    setScanning(true); setScanError(""); setOcrResult(null); setOcrAmbiguous([]);
     try {
-      const text = await runOcr(file, (pct) => {
-        setScanPct(pct);
-        setScanStatus(`Reading prescription — ${pct}%`);
-      });
-      setCapturedText(text || "");
-      if (text) {
-        const parsed = parsePrescriptionText(text, medicines);
-        if (parsed.filledFields.length > 0) {
-          setForm((prev) => ({
-            ...prev,
-            ...(parsed.doctorName ? { doctorName: parsed.doctorName } : {}),
-            ...(parsed.department ? { department: parsed.department } : {}),
-            ...(parsed.diagnosisNotes ? { diagnosisNotes: parsed.diagnosisNotes } : {}),
-            ...(parsed.symptoms ? { symptoms: parsed.symptoms } : {}),
-            ...(parsed.allergies ? { allergies: parsed.allergies } : {}),
-            ...(parsed.followUpDate ? { followUpDate: parsed.followUpDate } : {}),
-            ...(parsed.medicineId ? { medicineId: parsed.medicineId } : {}),
-            ...(parsed.dosage ? { dosage: parsed.dosage } : {}),
-            ...(parsed.quantity ? { quantity: parsed.quantity } : {}),
-          }));
-          setFilledFields(parsed.filledFields);
-          setFormErrors({});
-        } else {
-          setScanError("No recognisable fields found — please fill the form manually.");
-        }
-      } else {
-        setScanError("No text detected in this image. Ensure the photo is clear and well-lit.");
+      const fd = new FormData();
+      fd.append("file", file);
+      const result = await api<OcrResponse>("/prescriptions/ocr", { method: "POST", body: fd });
+      setOcrResult(result);
+
+      setForm((prev) => ({
+        ...prev,
+        ...(result.doctorName ? { doctorName: result.doctorName } : {}),
+        ...(result.department ? { department: result.department } : {}),
+        ...(result.diagnosisNotes ? { diagnosisNotes: result.diagnosisNotes } : {}),
+        ...(result.symptoms ? { symptoms: result.symptoms } : {}),
+        ...(result.allergies ? { allergies: result.allergies } : {}),
+        ...(result.followUpDate ? { followUpDate: result.followUpDate } : {}),
+      }));
+
+      if (result.medicines?.length) {
+        const mapped: RxLine[] = [];
+        const ambiguous: OcrAmbiguity[] = [];
+        result.medicines.forEach((m, idx) => {
+          mapped.push({
+            medicineId: m.medicineId ?? "",
+            dosage: m.dosage ?? m.strength ?? "",
+            quantity: m.quantity ? String(m.quantity) : "",
+          });
+          if (!m.medicineId) {
+            ambiguous.push({ lineIndex: idx, ocrName: m.medicineName, candidates: m.candidates ?? [] });
+          }
+        });
+        setLines(mapped.length ? mapped : [{ ...EMPTY_LINE }]);
+        setOcrAmbiguous(ambiguous);
       }
+      setFormErrors({});
     } catch (e) {
       setScanError(e instanceof Error ? e.message : "Scan failed — please fill the form manually.");
-      setScanStatus("");
     } finally {
       setScanning(false);
-      setScanStatus("");
     }
+  };
+
+  const selectOcrMedicine = (lineIndex: number, medicineId: string) => {
+    setLines((ls) => ls.map((l, idx) => (idx === lineIndex ? { ...l, medicineId } : l)));
+    setOcrAmbiguous((prev) => prev.filter((x) => x.lineIndex !== lineIndex));
   };
 
   const clearCapture = () => {
     if (previewRef.current) URL.revokeObjectURL(previewRef.current);
     previewRef.current = "";
-    setFile(null); setPreviewUrl(""); setCapturedText(""); setScanError(""); setScanPct(0); setFilledFields([]); setScanStatus("");
+    setFile(null); setPreviewUrl(""); setScanError(""); setOcrResult(null); setOcrAmbiguous([]); setRawTextOpen(false);
   };
 
-  const setField = (key: keyof typeof EMPTY, value: string) => {
+  const setField = (key: keyof typeof EMPTY_FORM, value: string) => {
     setForm((prev) => ({ ...prev, [key]: value }));
     if (formErrors[key]) setFormErrors((prev) => { const n = { ...prev }; delete n[key]; return n; });
   };
 
-  const validate = (): boolean => {
+  const setLine = (i: number, patch: Partial<RxLine>) =>
+    setLines((ls) => ls.map((l, idx) => (idx === i ? { ...l, ...patch } : l)));
+
+  const validate = (): string => {
     const errs: Record<string, string> = {};
     if (!form.patientId) errs.patientId = "Please select a patient";
     const docErr = validatePersonName(form.doctorName, "Doctor name");
     if (docErr) errs.doctorName = docErr;
-    if (errs.patientId || errs.doctorName) { setFormErrors(errs); return false; }
-    return true;
+    setFormErrors(errs);
+    if (Object.keys(errs).length) return "Please fix the highlighted fields.";
+
+    const filled = lines.filter((l) => l.medicineId || l.quantity.trim() || l.dosage.trim());
+    if (!filled.length) return "Add at least one medicine to the prescription.";
+    if (filled.some((l) => !l.medicineId)) return "Please select a medicine from the Medicine Master for every line.";
+    // C4: every line needs a prescribed quantity — open-ended lines would allow unlimited dispensing.
+    if (filled.some((l) => !l.quantity.trim() || Number(l.quantity) <= 0)) return "Every medicine needs a prescribed quantity.";
+    return "";
   };
 
   const submit = async (e: React.FormEvent) => {
     e.preventDefault();
     setError(""); setSuccess("");
-    if (!validate()) return;
+    const v = validate();
+    if (v) return setError(v);
     setBusy(true);
     try {
+      const filled = lines.filter((l) => l.medicineId);
       const fd = new FormData();
-      const notes = [form.prescriptionNotes, capturedText.trim() ? `[Captured from scan]\n${capturedText.trim()}` : ""]
-        .filter(Boolean).join("\n\n");
-      const fields: Record<string, string> = { ...form, prescriptionNotes: notes };
-      Object.entries(fields).forEach(([k, v]) => {
-        if (v && k !== "medicineId" && k !== "dosage" && k !== "quantity") fd.append(k, v);
-      });
-      if (form.medicineId) {
-        fd.append("medicines", JSON.stringify([{
-          medicineId: form.medicineId,
-          dosage: form.dosage || undefined,
-          quantity: form.quantity ? Number(form.quantity) : undefined,
-        }]));
-      }
+      Object.entries(form).forEach(([k, val]) => { if (val) fd.append(k, val); });
+      fd.append("medicines", JSON.stringify(filled.map((l) => ({
+        medicineId: l.medicineId,
+        dosage: l.dosage || undefined,
+        quantity: Number(l.quantity),
+      }))));
       if (file) fd.append("prescription", file);
       await api("/prescriptions", { method: "POST", body: fd });
       setSuccess("Prescription saved" + (file ? " with attached scan." : "."));
-      setForm(EMPTY);
+      setForm(EMPTY_FORM);
+      setLines([{ ...EMPTY_LINE }]);
       setFormErrors({});
       clearCapture();
       setShowForm(false);
@@ -414,11 +277,7 @@ export default function PrescriptionsPage() {
                 {/* Department */}
                 <div>
                   <Label>Department</Label>
-                  <Input
-                    value={form.department}
-                    placeholder="Department"
-                    onChange={(e) => setField("department", e.target.value)}
-                  />
+                  <Input value={form.department} placeholder="Department" onChange={(e) => setField("department", e.target.value)} />
                 </div>
 
                 <div className="sm:col-span-2">
@@ -440,28 +299,62 @@ export default function PrescriptionsPage() {
                   <Input type="date" value={form.followUpDate} onChange={(e) => setField("followUpDate", e.target.value)} />
                 </div>
 
-                {/* Medicine */}
-                <div className="sm:col-span-2">
-                  <Label>Medicine (optional)</Label>
-                  <MedicineCombobox
-                    medicines={medicines}
-                    value={form.medicineId}
-                    onChange={(id) => setField("medicineId", id)}
-                    placeholder="Search or leave blank…"
-                    className="h-11"
-                  />
-                </div>
-                <div>
-                  <Label>Dosage</Label>
-                  <Input value={form.dosage} placeholder="Dosage" onChange={(e) => setField("dosage", e.target.value)} />
-                </div>
-                <div>
-                  <Label>Quantity</Label>
-                  <Input inputMode="numeric" value={form.quantity} onChange={(e) => setField("quantity", e.target.value.replace(/\D/g, ""))} />
-                </div>
                 <div className="sm:col-span-2">
                   <Label>Additional notes</Label>
                   <Input value={form.prescriptionNotes} onChange={(e) => setField("prescriptionNotes", e.target.value)} />
+                </div>
+
+                {/* Medicines — multi-line (H2) */}
+                <div className="sm:col-span-2">
+                  <Label className="mb-1.5 block">Medicines *</Label>
+                  <div className="rounded-lg border">
+                    <table className="w-full text-sm">
+                      <thead className="bg-slate-50 text-left text-xs text-slate-500">
+                        <tr>
+                          <th className="p-2 pl-3">Medicine</th>
+                          <th className="p-2 w-28">Dosage</th>
+                          <th className="p-2 w-20 text-right">Qty *</th>
+                          <th className="p-2 w-10"></th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y">
+                        {lines.map((ln, i) => (
+                          <tr key={i}>
+                            <td className="p-2 pl-3">
+                              <MedicineCombobox
+                                medicines={medicines}
+                                value={ln.medicineId}
+                                onChange={(id) => setLine(i, { medicineId: id })}
+                                className="h-9"
+                              />
+                            </td>
+                            <td className="p-2">
+                              <Input className="h-9" placeholder="Dosage" value={ln.dosage}
+                                onChange={(e) => setLine(i, { dosage: e.target.value })} />
+                            </td>
+                            <td className="p-2">
+                              <Input className="h-9 text-right" inputMode="numeric" placeholder="Qty" value={ln.quantity}
+                                onChange={(e) => setLine(i, { quantity: e.target.value.replace(/\D/g, "") })} />
+                            </td>
+                            <td className="p-2">
+                              {lines.length > 1 && (
+                                <button type="button"
+                                  className="flex h-8 w-8 items-center justify-center rounded text-slate-400 hover:bg-red-50 hover:text-red-500"
+                                  onClick={() => setLines((ls) => ls.filter((_, idx) => idx !== i))}>
+                                  <Trash2 className="h-4 w-4" />
+                                </button>
+                              )}
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                  <button type="button"
+                    className="mt-2 flex items-center gap-1 text-sm text-medflow-600 hover:text-medflow-700"
+                    onClick={() => setLines((ls) => [...ls, { ...EMPTY_LINE }])}>
+                    <Plus className="h-4 w-4" /> Add medicine
+                  </button>
                 </div>
               </div>
 
@@ -496,63 +389,84 @@ export default function PrescriptionsPage() {
                       {isImage && <img src={previewUrl} alt="Prescription preview" className="max-h-52 w-full rounded-lg border object-contain" />}
                       {isPdf && <iframe src={previewUrl} title="Prescription PDF" className="h-52 w-full rounded-lg border" />}
 
-                      {/* File upload confirmation */}
-                      {!scanning && !scanError && filledFields.length === 0 && (
-                        <div className="flex items-center gap-1.5 rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-sm text-slate-600">
-                          <CheckCircle2 className="h-3.5 w-3.5 text-emerald-500" />
-                          File attached: <span className="font-medium truncate max-w-[160px]">{file.name}</span>
-                          <span className="ml-auto text-slate-400">{(file.size / 1024).toFixed(0)} KB</span>
-                        </div>
-                      )}
-
-                      {/* Scan & fill button — only for images */}
                       {isImage && !scanning && (
                         <Button type="button" variant="outline" size="sm" className="w-full gap-2" onClick={scanAndFill}>
                           <ScanLine className="h-4 w-4" />
-                          {filledFields.length > 0 ? "Re-scan & Fill" : "Scan & Auto-fill Form"}
+                          {ocrResult ? "Re-scan & Fill" : "Scan & Auto-fill Form"}
                         </Button>
                       )}
 
-                      {/* Scanning progress */}
                       {scanning && (
-                        <div className="space-y-1">
-                          <div className="flex items-center gap-2 rounded-lg border border-medflow-100 bg-medflow-50 p-2.5 text-sm text-medflow-700">
-                            <Loader2 className="h-4 w-4 animate-spin shrink-0" />
-                            {scanStatus || "Processing…"}
-                          </div>
-                          {scanPct > 0 && (
-                            <div className="h-1.5 w-full overflow-hidden rounded-full bg-medflow-100">
-                              <div className="h-full bg-medflow-500 transition-all" style={{ width: `${scanPct}%` }} />
-                            </div>
-                          )}
+                        <div className="flex items-center gap-2 rounded-lg border border-medflow-100 bg-medflow-50 p-2.5 text-sm text-medflow-700">
+                          <Loader2 className="h-4 w-4 animate-spin shrink-0" />
+                          Running OCR on the server — this may take a few seconds…
                         </div>
                       )}
 
-                      {/* Scan error */}
                       {scanError && (
                         <p className="rounded-lg bg-amber-50 px-3 py-2 text-sm text-amber-700">{scanError}</p>
                       )}
 
-                      {/* Success banner */}
-                      {filledFields.length > 0 && !scanning && (
-                        <div className="rounded-lg border border-emerald-200 bg-emerald-50 p-2.5">
-                          <div className="flex items-center gap-1.5 text-sm font-medium text-emerald-700">
+                      {ocrResult && !scanning && (
+                        <div className="space-y-1.5 rounded-lg border border-emerald-200 bg-emerald-50 p-2.5 text-sm">
+                          <div className="flex items-center gap-1.5 font-medium text-emerald-700">
                             <CheckCircle2 className="h-4 w-4" />
-                            Auto-filled {filledFields.length} field{filledFields.length !== 1 ? "s" : ""} — please review
+                            OCR complete
+                            {ocrResult.confidence !== undefined && (
+                              <span className="ml-auto text-xs font-normal text-emerald-600">{ocrResult.confidence}% confidence</span>
+                            )}
                           </div>
-                          <p className="mt-0.5 text-sm text-emerald-600">{filledFields.join(", ")}</p>
-                        </div>
-                      )}
+                          {(ocrResult.fieldsDetected?.length ?? 0) > 0 ? (
+                            <p className="text-xs text-emerald-700">Fields detected: <strong>{ocrResult.fieldsDetected!.join(", ")}</strong> — please review</p>
+                          ) : (
+                            <p className="text-xs font-medium text-orange-600">No prescription fields detected — fill the form manually.</p>
+                          )}
+                          {(ocrResult.warnings?.length ?? 0) > 0 && (
+                            <ul className="space-y-0.5">
+                              {ocrResult.warnings!.map((w, i) => (
+                                <li key={i} className="text-xs text-amber-700">⚠ {w}</li>
+                              ))}
+                            </ul>
+                          )}
 
-                      {/* Extracted text */}
-                      {capturedText && !scanning && (
-                        <div>
-                          <Label className="text-sm text-slate-500">Extracted text (editable)</Label>
-                          <textarea
-                            className="mt-1 h-20 w-full rounded-lg border px-3 py-2 text-sm text-slate-600"
-                            value={capturedText}
-                            onChange={(e) => setCapturedText(e.target.value)}
-                          />
+                          {/* Ambiguous / unmatched medicine resolution */}
+                          {ocrAmbiguous.length > 0 && (
+                            <div className="space-y-1.5 border-t border-emerald-200 pt-2">
+                              {ocrAmbiguous.map((item) => (
+                                <div key={item.lineIndex}
+                                  className={`rounded border p-2 text-xs ${item.candidates.length ? "border-amber-200 bg-amber-50" : "border-red-200 bg-red-50"}`}>
+                                  <p className={item.candidates.length ? "text-amber-800" : "text-red-700"}>
+                                    <AlertCircle className="mr-1 inline h-3.5 w-3.5" />
+                                    OCR: <strong>&ldquo;{item.ocrName}&rdquo;</strong>
+                                    {item.candidates.length === 0 ? " — not in medicine master, select manually." : " — select the correct match:"}
+                                  </p>
+                                  {item.candidates.length > 0 && (
+                                    <div className="mt-1 flex flex-wrap gap-1">
+                                      {item.candidates.map((c) => (
+                                        <button key={c.id} type="button"
+                                          className="rounded-full border border-amber-300 bg-white px-2 py-0.5 text-xs font-medium hover:bg-amber-100"
+                                          onClick={() => selectOcrMedicine(item.lineIndex, c.id)}>
+                                          {c.medicineName}
+                                        </button>
+                                      ))}
+                                    </div>
+                                  )}
+                                </div>
+                              ))}
+                            </div>
+                          )}
+
+                          <button type="button"
+                            className="flex items-center gap-1 text-xs text-slate-500 hover:text-slate-700"
+                            onClick={() => setRawTextOpen((v) => !v)}>
+                            <ChevronDown className={`h-3.5 w-3.5 transition-transform ${rawTextOpen ? "rotate-180" : ""}`} />
+                            {rawTextOpen ? "Hide" : "Show"} raw OCR text
+                          </button>
+                          {rawTextOpen && (
+                            <pre className="max-h-40 overflow-auto rounded border bg-white p-2 text-xs text-slate-700 whitespace-pre-wrap">
+                              {ocrResult.rawText || "(empty — image may be blank or unreadable)"}
+                            </pre>
+                          )}
                         </div>
                       )}
 
@@ -566,7 +480,7 @@ export default function PrescriptionsPage() {
 
                 <div className="flex gap-2">
                   <Button type="submit" disabled={busy}>{busy ? "Saving…" : "Save Prescription"}</Button>
-                  <Button type="button" variant="outline" onClick={() => { setShowForm(false); setForm(EMPTY); setFormErrors({}); clearCapture(); }}>Cancel</Button>
+                  <Button type="button" variant="outline" onClick={() => { setShowForm(false); setForm(EMPTY_FORM); setLines([{ ...EMPTY_LINE }]); setFormErrors({}); clearCapture(); }}>Cancel</Button>
                 </div>
               </div>
 
@@ -581,6 +495,7 @@ export default function PrescriptionsPage() {
           id: string; prescriptionId: string; patient?: { firstName: string; lastName: string };
           doctorName?: string; department?: string; diagnosisNotes?: string;
           status: string; prescriptionDate: string; uploadedPrescriptionUrl?: string;
+          medicines?: unknown[];
         };
         return (
           <Card key={r.id}>
@@ -591,8 +506,14 @@ export default function PrescriptionsPage() {
                   <p className="text-sm">{r.patient?.firstName} {r.patient?.lastName} — {r.doctorName || "N/A"}</p>
                   <p className="text-sm text-muted-foreground">{[r.department, r.diagnosisNotes].filter(Boolean).join(" · ")}</p>
                 </div>
+                <span className={`rounded-full px-2 py-0.5 text-xs font-semibold ${
+                  r.status === "ACTIVE" ? "bg-emerald-50 text-emerald-700" : r.status === "COMPLETED" ? "bg-blue-50 text-blue-700" : "bg-slate-100 text-slate-500"
+                }`}>{r.status}</span>
               </div>
-              <p className="mt-1 text-sm text-muted-foreground">{r.status} · {new Date(r.prescriptionDate).toLocaleDateString()}</p>
+              <p className="mt-1 text-sm text-muted-foreground">
+                {r.medicines?.length ? `${r.medicines.length} medicine(s) · ` : ""}
+                {new Date(r.prescriptionDate).toLocaleDateString()}
+              </p>
               {r.uploadedPrescriptionUrl && (
                 <a href={`${apiBaseUrl()}${r.uploadedPrescriptionUrl}`} target="_blank" rel="noreferrer" className="mt-2 inline-flex items-center gap-1 text-sm text-medflow-600 hover:underline">
                   <FileText className="h-3.5 w-3.5" /> View attached scan

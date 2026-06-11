@@ -125,7 +125,7 @@ export default function PendingReceiptsPage() {
                     </td>
                     <td className="px-4 py-3 text-slate-500">{o.expectedDeliveryDate ? new Date(o.expectedDeliveryDate).toLocaleDateString() : "—"}</td>
                     <td className="px-4 py-3">
-                      <Link href={`/stock/receipt?orderId=${o.id}`} className="text-sm text-medflow-600 hover:underline">Receive →</Link>
+                      <Link href={`/stock/receipt/${o.id}`} className="text-sm text-medflow-600 hover:underline">Receive →</Link>
                     </td>
                   </tr>
                 ))}

@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { Syringe, Users, ClipboardList } from "lucide-react";
+import { Syringe, Users, ClipboardList, ScrollText } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
 import { cn } from "@/lib/utils";
 
@@ -10,16 +10,21 @@ const TABS: { href: string; label: string; icon: LucideIcon }[] = [
   { href: "/dispense", label: "Dispense", icon: Syringe },
   { href: "/patients", label: "Patients", icon: Users },
   { href: "/prescriptions", label: "Prescriptions", icon: ClipboardList },
+  { href: "/dispense/log", label: "Log & Register", icon: ScrollText },
 ];
 
-/** Shared header for the unified Operations workspace (Dispense · Patients · Prescriptions). */
+/** Shared header for the unified Operations workspace (Dispense · Patients · Prescriptions · Log). */
 export function OperationsTabs() {
   const pathname = usePathname();
+  // Longest prefix wins so /dispense/log doesn't also light up /dispense.
+  const activeHref = TABS
+    .filter((t) => pathname === t.href || pathname.startsWith(t.href + "/"))
+    .sort((a, b) => b.href.length - a.href.length)[0]?.href;
   return (
     <div className="flex gap-1 overflow-x-auto border-b">
       {TABS.map((t) => {
         const Icon = t.icon;
-        const active = pathname === t.href || pathname.startsWith(t.href + "/");
+        const active = t.href === activeHref;
         return (
           <Link
             key={t.href}

@@ -357,6 +357,85 @@ router.post("/new", transferCreate, async (req, res, next) => {
   }
 });
 
+// PATCH /transfers/:id — edit a PENDING transfer (destination + lines). No stock
+// has moved yet at PENDING, so this is a pure record edit. Locked once AUTHORIZED.
+const editTransferSchema = z.object({
+  toFacilityId: z.string().optional(),
+  authorizationNotes: z.string().optional().nullable(),
+  lines: z.array(z.object({
+    batchId: z.string(),
+    quantityTransferred: positiveWholeNumber,
+  })).min(1).optional(),
+});
+
+router.patch("/:id", transferEdit, async (req, res, next) => {
+  try {
+    const transfer = await prisma.transfer.findUnique({ where: { id: req.params.id }, include: { lines: true } });
+    if (!transfer) return res.status(404).json({ error: "Not found" });
+    if (transfer.status !== TransferStatus.PENDING) {
+      return res.status(400).json({ error: "Only PENDING transfers can be edited (it has already been authorized or dispatched)." });
+    }
+
+    const userId = req.user!.userId;
+    const isCrossAdmin = req.user!.role === UserRole.PROVINCIAL_MANAGER || req.user!.role === UserRole.SUPER_ADMIN;
+    if (!isCrossAdmin && req.user!.facilityId !== transfer.fromFacilityId) {
+      return res.status(403).json({ error: "Only the sending facility can edit this transfer" });
+    }
+
+    const data = editTransferSchema.parse(req.body);
+    const toFacilityId = data.toFacilityId ?? transfer.toFacilityId;
+    if (toFacilityId === transfer.fromFacilityId) {
+      return res.status(400).json({ error: "Destination must differ from the sending facility" });
+    }
+
+    // Validate replacement lines against the sending facility's live stock.
+    let newLines: { medicineId: string; batchId: string; batchNumber: string; expiryDate: Date; quantityTransferred: number }[] | null = null;
+    if (data.lines) {
+      const batchIds = data.lines.map((l) => l.batchId);
+      const batches = await prisma.stockBatch.findMany({
+        where: { id: { in: batchIds }, facilityId: transfer.fromFacilityId },
+        include: { medicine: true },
+      });
+      if (batches.length !== new Set(batchIds).size) {
+        return res.status(400).json({ error: "One or more batches not found at the sending facility" });
+      }
+      for (const line of data.lines) {
+        const batch = batches.find((b) => b.id === line.batchId)!;
+        if (batch.quantity < line.quantityTransferred) {
+          return res.status(400).json({ error: `Insufficient stock in batch ${batch.batchNumber} (available ${batch.quantity})` });
+        }
+        assertBatchAvailable(batch, `${batch.medicine.medicineName} (batch ${batch.batchNumber})`);
+      }
+      newLines = data.lines.map((l) => {
+        const batch = batches.find((b) => b.id === l.batchId)!;
+        return { medicineId: batch.medicineId, batchId: batch.id, batchNumber: batch.batchNumber, expiryDate: batch.expiryDate, quantityTransferred: l.quantityTransferred };
+      });
+    }
+
+    const updated = await prisma.$transaction(async (tx) => {
+      if (newLines) {
+        await tx.transferLine.deleteMany({ where: { transferId: transfer.id } });
+        for (const l of newLines) {
+          await tx.transferLine.create({ data: { transferId: transfer.id, ...l } });
+        }
+      }
+      return tx.transfer.update({
+        where: { id: transfer.id },
+        data: {
+          toFacilityId,
+          ...(data.authorizationNotes !== undefined ? { authorizationNotes: data.authorizationNotes } : {}),
+        },
+        include: { lines: { include: { medicine: true, batch: true } }, fromFacility: true, toFacility: true },
+      });
+    });
+
+    await logAudit({ facilityId: transfer.fromFacilityId, userId, action: "TRANSFER_UPDATE", entityType: "Transfer", entityId: transfer.id, details: { code: transfer.transferCode } });
+    res.json(updated);
+  } catch (e) {
+    next(e);
+  }
+});
+
 // POST /transfers/:id/authorize — PENDING → AUTHORIZED
 router.post("/:id/authorize", transferApprove, async (req, res, next) => {
   try {
