@@ -26,11 +26,9 @@ const createSchema = z.object({
 
 router.get("/", patientView, async (req, res, next) => {
   try {
-    const facilityId = getFacilityId(req, req.query.facilityId as string);
     const q = (req.query.q as string) || "";
     const patients = await prisma.patient.findMany({
       where: {
-        ...(facilityId ? { facilityId } : {}),
         OR: q
           ? [
               { patientId: { contains: q, mode: "insensitive" } },
@@ -41,7 +39,7 @@ router.get("/", patientView, async (req, res, next) => {
           : undefined,
       },
       orderBy: { createdAt: "desc" },
-      take: 50,
+      take: 200,
     });
     res.json(patients);
   } catch (e) {
@@ -52,7 +50,7 @@ router.get("/", patientView, async (req, res, next) => {
 router.post("/", patientCreate, async (req, res, next) => {
   try {
     const data = createSchema.parse(req.body);
-    const facilityId = data.facilityId || getFacilityId(req)!;
+    const facilityId = data.facilityId || getFacilityId(req) || undefined;
     // count()+1 is not unique under concurrency — retry on collision with a bumped sequence.
     let patient!: Awaited<ReturnType<typeof prisma.patient.create>>;
     for (let attempt = 0; ; attempt++) {
@@ -73,7 +71,7 @@ router.post("/", patientCreate, async (req, res, next) => {
       }
     }
     await logAudit({
-      facilityId,
+      facilityId: facilityId ?? null,
       userId: req.user!.userId,
       action: "CREATE",
       entityType: "Patient",

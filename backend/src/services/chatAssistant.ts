@@ -460,7 +460,7 @@ async function ruleBasedHandler(
       return {
         facts: patients.length
           ? patients
-              .map((p) => scopedLine(scope, `${p.firstName} ${p.lastName} (${p.patientId})`, p.facility.name, `registered ${formatDate(p.registrationDate)}`))
+              .map((p) => scopedLine(scope, `${p.firstName} ${p.lastName} (${p.patientId})`, p.facility?.name ?? "—", `registered ${formatDate(p.registrationDate)}`))
               .join("\n")
           : "No recent patients found.",
         data: patients,
@@ -485,7 +485,7 @@ async function ruleBasedHandler(
       if (!patients.length) return { facts: `No patients found matching "${q}".` };
       return {
         facts: patients
-          .map((p) => scopedLine(scope, `${p.firstName} ${p.lastName} (${p.patientId})`, p.facility.name, `age ${p.age}, ${p.gender}`))
+          .map((p) => scopedLine(scope, `${p.firstName} ${p.lastName} (${p.patientId})`, p.facility?.name ?? "—", `age ${p.age}, ${p.gender}`))
           .join("\n"),
         data: patients,
       };
