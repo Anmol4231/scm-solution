@@ -2,9 +2,10 @@
 
 import { useEffect, useRef, useState } from "react";
 import Link from "next/link";
-import { Plus, Upload, FileText, X, CheckCircle2, Loader2, ScanLine, Trash2, ChevronDown, AlertCircle } from "lucide-react";
+import { Plus, Upload, FileText, X, CheckCircle2, Loader2, ScanLine, Trash2, ChevronDown, AlertCircle, Building2 } from "lucide-react";
 import { api, resolveApiUrl } from "@/lib/api";
 import { useRequirePermission } from "@/hooks/useRequirePermission";
+import { useAuth } from "@/lib/auth-context";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -63,6 +64,20 @@ const EMPTY_LINE: RxLine = { medicineId: "", dosage: "", quantity: "" };
 
 export default function PrescriptionsPage() {
   const hasAccess = useRequirePermission("prescriptions");
+  const { user } = useAuth();
+
+  /* Facility selection — only needed for cross-facility roles (no JWT facilityId). */
+  const [facilities, setFacilities] = useState<{ id: string; name: string; code: string }[]>([]);
+  const [selectedFacilityId, setSelectedFacilityId] = useState("");
+  /* Effective facility for all API calls on this page. */
+  const effectiveFacilityId = user?.facilityId ?? selectedFacilityId;
+
+  useEffect(() => {
+    if (!user?.facilityId) {
+      api<{ id: string; name: string; code: string }[]>("/auth/facilities").then(setFacilities).catch(() => {});
+    }
+  }, [user?.facilityId]);
+
   const [list, setList] = useState<Record<string, unknown>[]>([]);
   const [patients, setPatients] = useState<PatientOpt[]>([]);
   const [medicines, setMedicines] = useState<MedicineOpt[]>([]);
@@ -169,6 +184,7 @@ export default function PrescriptionsPage() {
 
   const validate = (): string => {
     const errs: Record<string, string> = {};
+    if (!user?.facilityId && !selectedFacilityId) errs.facilityId = "Please select a facility";
     if (!form.patientId) errs.patientId = "Please select a patient";
     const docErr = validatePersonName(form.doctorName, "Doctor name");
     if (docErr) errs.doctorName = docErr;
@@ -193,6 +209,7 @@ export default function PrescriptionsPage() {
       const filled = lines.filter((l) => l.medicineId);
       const fd = new FormData();
       Object.entries(form).forEach(([k, val]) => { if (val) fd.append(k, val); });
+      if (effectiveFacilityId) fd.append("facilityId", effectiveFacilityId);
       fd.append("medicines", JSON.stringify(filled.map((l) => ({
         medicineId: l.medicineId,
         dosage: l.dosage || undefined,
@@ -204,6 +221,7 @@ export default function PrescriptionsPage() {
       setForm(EMPTY_FORM);
       setLines([{ ...EMPTY_LINE }]);
       setFormErrors({});
+      if (!user?.facilityId) setSelectedFacilityId("");
       clearCapture();
       setShowForm(false);
       api("/prescriptions").then(setList);
@@ -237,6 +255,30 @@ export default function PrescriptionsPage() {
 
               {/* ── Left: form fields ── */}
               <div className="grid gap-3 sm:grid-cols-2">
+                {/* Facility selector — only shown for cross-facility roles */}
+                {!user?.facilityId && (
+                  <div className="sm:col-span-2">
+                    <Label className="flex items-center gap-1.5">
+                      <Building2 className="h-3.5 w-3.5 text-medflow-600" />
+                      Facility *
+                    </Label>
+                    <select
+                      className={`h-11 w-full rounded-lg border px-3 text-sm ${formErrors.facilityId ? "border-red-400" : ""}`}
+                      value={selectedFacilityId}
+                      onChange={(e) => {
+                        setSelectedFacilityId(e.target.value);
+                        if (formErrors.facilityId) setFormErrors((p) => { const n = { ...p }; delete n.facilityId; return n; });
+                      }}
+                    >
+                      <option value="">— Select facility —</option>
+                      {facilities.map((f) => (
+                        <option key={f.id} value={f.id}>{f.name} ({f.code})</option>
+                      ))}
+                    </select>
+                    {formErrors.facilityId && <p className="mt-1 text-sm text-red-600">{formErrors.facilityId}</p>}
+                  </div>
+                )}
+
                 {/* Patient */}
                 <div className="sm:col-span-2">
                   <Label>Patient *</Label>
@@ -480,7 +522,7 @@ export default function PrescriptionsPage() {
 
                 <div className="flex gap-2">
                   <Button type="submit" disabled={busy}>{busy ? "Saving…" : "Save Prescription"}</Button>
-                  <Button type="button" variant="outline" onClick={() => { setShowForm(false); setForm(EMPTY_FORM); setLines([{ ...EMPTY_LINE }]); setFormErrors({}); clearCapture(); }}>Cancel</Button>
+                  <Button type="button" variant="outline" onClick={() => { setShowForm(false); setForm(EMPTY_FORM); setLines([{ ...EMPTY_LINE }]); setFormErrors({}); if (!user?.facilityId) setSelectedFacilityId(""); clearCapture(); }}>Cancel</Button>
                 </div>
               </div>
 

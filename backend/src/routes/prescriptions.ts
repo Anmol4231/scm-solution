@@ -229,8 +229,10 @@ router.post("/", rxCreate, upload.single("prescription"), async (req, res, next)
     }
 
     // Cross-facility roles (SUPER_ADMIN, PROVINCIAL_MANAGER) have no fixed facilityId.
-    // For prescription creation (always patient-scoped), fall back to the patient's facility.
-    let facilityId = getFacilityId(req);
+    // Prefer the facility explicitly sent in the request body (set by the dispense UI picker
+    // and the standalone prescriptions form). Fall back to the patient's stored facility for
+    // backwards-compatibility with callers that don't send one.
+    let facilityId = getFacilityId(req, req.body.facilityId as string | undefined);
     if (!facilityId) {
       const pat = await prisma.patient.findUnique({
         where: { id: body.patientId },
