@@ -1,8 +1,8 @@
 "use client";
 
-import { useEffect, useMemo, useState, Suspense } from "react";
+import { useEffect, useMemo, useState, Suspense, Fragment } from "react";
 import { useSearchParams } from "next/navigation";
-import { Check, FileText, Search, UserPlus, ClipboardList, Syringe, Upload, Loader2, Plus, Trash2, AlertCircle, CheckCircle2, ChevronDown, Building2 } from "lucide-react";
+import { Check, FileText, Search, UserPlus, ClipboardList, Syringe, Upload, Loader2, Plus, Trash2, AlertCircle, CheckCircle2, ChevronDown, Building2, ShieldCheck } from "lucide-react";
 import { api } from "@/lib/api";
 import { useRequirePermission } from "@/hooks/useRequirePermission";
 import { useAuth } from "@/lib/auth-context";
@@ -92,6 +92,14 @@ function planLineToDispLine(pl: PlanLine): DispLine {
     remainingQuantity: pl.remainingQuantity ?? null,
     fulfilled: pl.fulfilled ?? false,
   };
+}
+
+function daysUntilExpiry(dateStr: string): number {
+  const d = new Date(dateStr);
+  d.setHours(0, 0, 0, 0);
+  const now = new Date();
+  now.setHours(0, 0, 0, 0);
+  return Math.floor((d.getTime() - now.getTime()) / 86400000);
 }
 
 // ── OCR medicine matching (fallback when the backend returns no match data) ────
@@ -260,6 +268,12 @@ function DispenseWorkflow() {
   const [rxNumber, setRxNumber] = useState("");
   /* C3: pharmacist must acknowledge controlled lines before confirming */
   const [controlledAck, setControlledAck] = useState(false);
+  /* Step 3 safety verification state */
+  const [lineChecks, setLineChecks] = useState<Record<string, boolean>>({});
+  const [rxMatchChecked, setRxMatchChecked] = useState(false);
+  const [allergiesChecked, setAllergiesChecked] = useState(false);
+  const [quantitiesChecked, setQuantitiesChecked] = useState(false);
+  const [rxPrescriptionDate, setRxPrescriptionDate] = useState("");
   /* H5: printable docket shown after a successful dispense */
   const [docket, setDocket] = useState<Docket | null>(null);
 
@@ -329,11 +343,13 @@ function DispenseWorkflow() {
 
   const planFrom = (rxId: string) => {
     setBusy(true); setError("");
-    api<{ lines: PlanLine[]; allergies?: AllergyInfo; prescription?: { prescriptionId: string } }>(`/dispensing/prescription/${rxId}/plan${facId ? `?facilityId=${facId}` : ""}`)
+    api<{ lines: PlanLine[]; allergies?: AllergyInfo; prescription?: { prescriptionId: string; doctorName?: string | null; prescriptionDate?: string } }>(`/dispensing/prescription/${rxId}/plan${facId ? `?facilityId=${facId}` : ""}`)
       .then(({ lines: pl, allergies, prescription }) => {
         setLines(pl.map(planLineToDispLine));
         setAllergyInfo(allergies ?? null);
         setRxNumber(prescription?.prescriptionId ?? "");
+        if (prescription?.doctorName) setRxSummary((prev) => ({ ...prev, doctorName: prescription.doctorName! }));
+        setRxPrescriptionDate(prescription?.prescriptionDate ? new Date(prescription.prescriptionDate).toLocaleDateString() : "");
         setControlledAck(false);
         setPlanLoaded(true);
       })
@@ -489,6 +505,7 @@ function DispenseWorkflow() {
     setOcrState("idle"); setOcrResult(null); setRawTextOpen(false); setOcrAmbiguous([]);
     setRxSummary({ doctorName: "", diagnosisNotes: "" });
     setAllergyInfo(null); setControlledAck(false); setDocket(null);
+    setLineChecks({}); setRxMatchChecked(false); setAllergiesChecked(false); setQuantitiesChecked(false); setRxPrescriptionDate("");
   };
 
   const hasControlledLines = useMemo(() => confirmLines.some((l) => l.controlled), [confirmLines]);
@@ -499,6 +516,12 @@ function DispenseWorkflow() {
     for (const l of confirmLines) {
       const le = lineError(l);
       if (le) return setError(`${l.medicineName}: ${le}`);
+    }
+    if (!confirmLines.every((l) => lineChecks[l.medicineId])) {
+      return setError("Please confirm each medicine line matches the prescription.");
+    }
+    if (!rxMatchChecked || !allergiesChecked || !quantitiesChecked) {
+      return setError("Please complete all safety confirmation checkboxes.");
     }
     if (hasControlledLines && !controlledAck) {
       return setError("Please acknowledge the controlled medicine check before dispensing.");
@@ -770,22 +793,25 @@ function DispenseWorkflow() {
                 </p>
 
                 <div className="overflow-x-auto rounded-lg border">
-                  <table className="w-full min-w-[640px] text-sm">
+                  <table className="w-full min-w-[720px] text-sm">
                     <thead className="bg-slate-50 text-left text-xs text-slate-500">
                       <tr>
                         <th className="p-2 pl-3 w-8"></th>
                         <th className="p-2">Medicine</th>
+                        <th className="p-2 w-24 text-center">Prescribed</th>
                         <th className="p-2">Batch (FEFO)</th>
                         <th className="p-2 w-24 text-right">Qty</th>
-                        <th className="p-2 w-24 text-right">On Hand</th>
+                        <th className="p-2 w-20 text-right">On Hand</th>
                       </tr>
                     </thead>
                     <tbody className="divide-y">
                       {lines.length === 0 && (
-                        <tr><td colSpan={5} className="p-4 text-center text-slate-400">No medicine lines.</td></tr>
+                        <tr><td colSpan={6} className="p-4 text-center text-slate-400">No medicine lines.</td></tr>
                       )}
                       {lines.map((l, i) => {
                         const le = lineError(l);
+                        const selBatch = l.batches.find((b) => b.id === l.batchId);
+                        const batchDays = selBatch ? daysUntilExpiry(selBatch.expiryDate) : 999;
                         return (
                           <tr key={l.medicineId} className={!l.enabled ? "bg-slate-50/60 opacity-50" : ""}>
                             <td className="p-2 pl-3">
@@ -814,24 +840,42 @@ function DispenseWorkflow() {
                                 <span className="ml-1.5 rounded-full bg-emerald-50 px-1.5 py-0.5 text-[10px] font-semibold text-emerald-700">
                                   Fully dispensed
                                 </span>
-                              ) : l.alreadyDispensed > 0 && l.prescribedQuantity != null && (
-                                <span className="ml-1.5 rounded-full bg-blue-50 px-1.5 py-0.5 text-[10px] font-semibold text-blue-700">
-                                  {l.alreadyDispensed}/{l.prescribedQuantity} dispensed · {l.remainingQuantity} left
-                                </span>
-                              )}
+                              ) : null}
                               {!l.fulfilled && l.batches.length === 0 && <span className="ml-2 text-xs text-red-500">Out of stock</span>}
+                            </td>
+                            <td className="p-2 text-center">
+                              {l.prescribedQuantity != null ? (
+                                l.alreadyDispensed > 0 ? (
+                                  <div className="text-xs text-slate-500 leading-tight">
+                                    <div>{l.alreadyDispensed}/{l.prescribedQuantity} disp</div>
+                                    <div className="font-semibold text-slate-700">{l.remainingQuantity} rem</div>
+                                  </div>
+                                ) : (
+                                  <span className="font-medium text-slate-700">{l.prescribedQuantity}</span>
+                                )
+                              ) : (
+                                <span className="text-xs text-slate-400">Open</span>
+                              )}
                             </td>
                             <td className="p-2">
                               {l.batches.length > 0 ? (
-                                <select className="h-8 rounded border px-2 text-xs" value={l.batchId}
-                                  disabled={!l.enabled}
-                                  onChange={(e) => setLine(i, { batchId: e.target.value })}>
-                                  {l.batches.map((b) => (
-                                    <option key={b.id} value={b.id}>
-                                      {b.batchNumber} · exp {new Date(b.expiryDate).toLocaleDateString()} · {b.quantity}
-                                    </option>
-                                  ))}
-                                </select>
+                                <div>
+                                  <select className="h-8 rounded border px-2 text-xs" value={l.batchId}
+                                    disabled={!l.enabled}
+                                    onChange={(e) => setLine(i, { batchId: e.target.value })}>
+                                    {l.batches.map((b) => (
+                                      <option key={b.id} value={b.id}>
+                                        {b.batchNumber} · exp {new Date(b.expiryDate).toLocaleDateString()} · {b.quantity}
+                                      </option>
+                                    ))}
+                                  </select>
+                                  {selBatch && (
+                                    <p className={`mt-0.5 text-[10px] ${batchDays < 30 ? "font-semibold text-red-500" : batchDays < 90 ? "text-amber-600" : "text-slate-400"}`}>
+                                      Exp {new Date(selBatch.expiryDate).toLocaleDateString()} · Stock {selBatch.quantity}
+                                      {batchDays < 90 && <span className="ml-1">⚠ {batchDays < 30 ? "expires very soon" : "expires soon"}</span>}
+                                    </p>
+                                  )}
+                                </div>
                               ) : <span className="text-slate-400">—</span>}
                             </td>
                             <td className="p-2">
@@ -852,7 +896,18 @@ function DispenseWorkflow() {
                 </div>
 
                 <div className="flex gap-2">
-                  <Button onClick={() => setStep(3)} disabled={confirmLines.length === 0}>
+                  <Button
+                    onClick={() => {
+                      const checks: Record<string, boolean> = {};
+                      confirmLines.forEach((l) => { checks[l.medicineId] = false; });
+                      setLineChecks(checks);
+                      setRxMatchChecked(false);
+                      setAllergiesChecked(false);
+                      setQuantitiesChecked(false);
+                      setControlledAck(false);
+                      setStep(3);
+                    }}
+                    disabled={confirmLines.length === 0}>
                     Continue to Confirm
                   </Button>
                   <Button variant="outline"
@@ -1136,85 +1191,171 @@ function DispenseWorkflow() {
         </Card>
       )}
 
-      {/* ── STEP 3: Confirm ── */}
+      {/* ── STEP 3: Safety Review & Confirm ── */}
       {facId && !docket && step === 3 && patient && (
         <Card>
-          <CardContent className="space-y-4 p-4">
-            <p className="font-semibold text-slate-800">Confirm Dispensing</p>
-
-            {/* Summary */}
-            <div className="grid gap-2 rounded-lg bg-slate-50 p-3 text-sm sm:grid-cols-2">
-              <div>
-                <p className="text-xs text-slate-500">Patient</p>
-                <p className="font-medium">{patient.firstName} {patient.lastName} · {patient.patientId}</p>
-              </div>
-              {rxSummary.doctorName && (
-                <div>
-                  <p className="text-xs text-slate-500">Doctor</p>
-                  <p className="font-medium">{rxSummary.doctorName}</p>
-                </div>
-              )}
-              {rxSummary.diagnosisNotes && (
-                <div className="sm:col-span-2">
-                  <p className="text-xs text-slate-500">Diagnosis</p>
-                  <p className="font-medium">{rxSummary.diagnosisNotes}</p>
-                </div>
-              )}
+          <CardContent className="space-y-5 p-4">
+            <div className="flex items-center gap-2">
+              <ShieldCheck className="h-5 w-5 text-medflow-600" />
+              <p className="font-semibold text-slate-800">Safety Review &amp; Confirm Dispensing</p>
             </div>
 
-            {/* Medicines — batch + expiry shown so the final check is informed (M2) */}
+            {/* Patient + Prescription cards */}
+            <div className="grid gap-3 sm:grid-cols-2">
+              <div className="rounded-lg border bg-slate-50/60 p-3 text-sm">
+                <p className="mb-1 text-[10px] font-semibold uppercase tracking-wide text-slate-400">Patient</p>
+                <p className="font-semibold">{patient.firstName} {patient.lastName}</p>
+                <p className="text-slate-500">{patient.patientId}{patient.age ? ` · ${patient.gender}, ${patient.age}y` : ""}</p>
+                {patient.phoneNumber && <p className="mt-0.5 text-xs text-slate-400">{patient.phoneNumber}</p>}
+              </div>
+              <div className="rounded-lg border bg-slate-50/60 p-3 text-sm">
+                <p className="mb-1 text-[10px] font-semibold uppercase tracking-wide text-slate-400">Prescription</p>
+                {rxNumber && <p className="font-medium">{rxNumber}</p>}
+                {rxSummary.doctorName && <p className="text-slate-600">Dr. {rxSummary.doctorName}</p>}
+                {rxSummary.diagnosisNotes && <p className="text-xs text-slate-500">{rxSummary.diagnosisNotes}</p>}
+                {rxPrescriptionDate && <p className="mt-0.5 text-xs text-slate-400">Issued {rxPrescriptionDate}</p>}
+              </div>
+            </div>
+
+            {/* Warnings section */}
+            {(allergyTexts.length > 0 || hasControlledLines || confirmLines.some((l) => { const b = l.batches.find((x) => x.id === l.batchId); return b && daysUntilExpiry(b.expiryDate) < 90; })) && (
+              <div className="space-y-2">
+                {allergyTexts.length > 0 && (
+                  <div className="flex items-start gap-2 rounded-lg border border-red-300 bg-red-50 px-3 py-2 text-sm text-red-800">
+                    <AlertCircle className="mt-0.5 h-4 w-4 shrink-0" />
+                    <span>
+                      <strong>Allergy alert:</strong> {allergyTexts.join("; ")}
+                      <span className="ml-1 text-xs text-red-600">— verify before dispensing</span>
+                    </span>
+                  </div>
+                )}
+                {hasControlledLines && (
+                  <div className="flex items-start gap-2 rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-800">
+                    <AlertCircle className="mt-0.5 h-4 w-4 shrink-0" />
+                    <span><strong>Controlled medicine(s)</strong> in this dispensing — verify against the controlled drug register.</span>
+                  </div>
+                )}
+                {confirmLines.some((l) => { const b = l.batches.find((x) => x.id === l.batchId); return b && daysUntilExpiry(b.expiryDate) < 90; }) && (
+                  <div className="flex items-start gap-2 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-800">
+                    <AlertCircle className="mt-0.5 h-4 w-4 shrink-0" />
+                    <span>One or more selected batches expire within <strong>90 days</strong> — confirm patient counselling.</span>
+                  </div>
+                )}
+              </div>
+            )}
+
+            {/* Medicines table with per-line match confirmation */}
             <div className="overflow-x-auto rounded-lg border">
-              <table className="w-full min-w-[640px] text-sm">
+              <table className="w-full min-w-[680px] text-sm">
                 <thead className="bg-slate-50 text-left text-xs text-slate-500">
                   <tr>
                     <th className="p-2 pl-3">Medicine</th>
-                    <th className="p-2 w-16 text-right">Qty</th>
-                    <th className="p-2">Dosage</th>
+                    <th className="p-2 w-20 text-right">Prescribed</th>
+                    <th className="p-2 w-20 text-right">Dispensing</th>
                     <th className="p-2">Batch</th>
                     <th className="p-2">Expiry</th>
-                    <th className="p-2 w-24 text-right">On Hand</th>
+                    <th className="p-2 w-20 text-right">Batch Stock</th>
                   </tr>
                 </thead>
-                <tbody className="divide-y">
+                <tbody>
                   {confirmLines.map((l) => {
                     const b = l.batches.find((x) => x.id === l.batchId);
+                    const days = b ? daysUntilExpiry(b.expiryDate) : 999;
+                    const expiryClass = days < 30 ? "font-semibold text-red-600" : days < 90 ? "text-amber-600" : "text-slate-600";
                     return (
-                      <tr key={l.medicineId}>
-                        <td className="p-2 pl-3 font-medium">
-                          {l.medicineName}
-                          {l.controlled && (
-                            <span className="ml-1.5 rounded-full bg-red-50 px-1.5 py-0.5 text-[10px] font-semibold text-red-700">Controlled</span>
-                          )}
-                        </td>
-                        <td className="p-2 text-right font-semibold">{l.quantity}</td>
-                        <td className="p-2 text-slate-600">{[l.dosage, l.duration].filter(Boolean).join(" · ") || "—"}</td>
-                        <td className="p-2 text-slate-600">{b?.batchNumber ?? "—"}</td>
-                        <td className="p-2 text-slate-600">{b ? new Date(b.expiryDate).toLocaleDateString() : "—"}</td>
-                        <td className={`p-2 text-right font-medium ${Number(l.quantity) > l.onHand ? "text-red-600" : "text-emerald-600"}`}>
-                          {l.onHand}
-                        </td>
-                      </tr>
+                      <Fragment key={l.medicineId}>
+                        <tr className="border-t">
+                          <td className="p-2 pl-3 font-medium">
+                            {l.medicineName}
+                            {l.controlled && (
+                              <span className="ml-1.5 rounded-full bg-red-50 px-1.5 py-0.5 text-[10px] font-semibold text-red-700">Controlled</span>
+                            )}
+                            {l.requiresPrescription && (
+                              <span className="ml-1.5 inline-flex items-center gap-0.5 rounded-full bg-amber-50 px-1.5 py-0.5 text-[10px] font-semibold text-amber-700">
+                                <FileText className="h-3 w-3" /> Rx
+                              </span>
+                            )}
+                          </td>
+                          <td className="p-2 text-right text-slate-500">{l.prescribedQuantity ?? "—"}</td>
+                          <td className="p-2 text-right font-semibold text-slate-800">{l.quantity}</td>
+                          <td className="p-2 text-slate-600">{b?.batchNumber ?? "—"}</td>
+                          <td className={`p-2 ${expiryClass}`}>
+                            {b ? new Date(b.expiryDate).toLocaleDateString() : "—"}
+                            {days < 90 && <span className="ml-1 text-[10px]">⚠</span>}
+                          </td>
+                          <td className="p-2 text-right text-slate-600">{b?.quantity ?? "—"}</td>
+                        </tr>
+                        <tr className="border-b bg-slate-50/40">
+                          <td colSpan={6} className="px-3 pb-2 pt-1">
+                            <label className="flex cursor-pointer items-center gap-2 text-xs">
+                              <input
+                                type="checkbox"
+                                className="h-3.5 w-3.5 accent-medflow-600"
+                                checked={!!lineChecks[l.medicineId]}
+                                onChange={(e) => setLineChecks((prev) => ({ ...prev, [l.medicineId]: e.target.checked }))}
+                              />
+                              <span className={lineChecks[l.medicineId] ? "text-emerald-700" : "text-slate-600"}>
+                                I confirm <strong>{l.medicineName}</strong>
+                                {b ? <> (Batch <strong>{b.batchNumber}</strong>)</> : null}
+                                {" "}matches the prescription
+                              </span>
+                            </label>
+                          </td>
+                        </tr>
+                      </Fragment>
                     );
                   })}
                 </tbody>
               </table>
             </div>
 
-            {/* C3: controlled medicine acknowledgment */}
-            {hasControlledLines && (
-              <label className="flex cursor-pointer items-start gap-2 rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-800">
-                <input type="checkbox" className="mt-0.5 h-4 w-4 accent-red-600"
-                  checked={controlledAck} onChange={(e) => setControlledAck(e.target.checked)} />
+            {/* Global pharmacist safety checkboxes */}
+            <div className="space-y-2.5 rounded-lg border border-slate-200 bg-slate-50 p-3 text-sm">
+              <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Pharmacist safety confirmation</p>
+              <label className="flex cursor-pointer items-start gap-2">
+                <input type="checkbox" className="mt-0.5 h-4 w-4 accent-medflow-600"
+                  checked={rxMatchChecked} onChange={(e) => setRxMatchChecked(e.target.checked)} />
+                <span>Prescription matches all selected medicines and quantities</span>
+              </label>
+              <label className="flex cursor-pointer items-start gap-2">
+                <input type="checkbox" className="mt-0.5 h-4 w-4 accent-medflow-600"
+                  checked={allergiesChecked} onChange={(e) => setAllergiesChecked(e.target.checked)} />
                 <span>
-                  This dispensing includes <strong>controlled medicine(s)</strong>. I have verified the prescription,
-                  prescriber, patient identity, and quantity against the controlled drug requirements.
+                  Patient allergies reviewed
+                  {allergyTexts.length > 0
+                    ? <span className="ml-1 font-medium text-red-600">({allergyTexts.join("; ")})</span>
+                    : <span className="ml-1 text-slate-400">(no known allergies on record)</span>}
                 </span>
               </label>
+              <label className="flex cursor-pointer items-start gap-2">
+                <input type="checkbox" className="mt-0.5 h-4 w-4 accent-medflow-600"
+                  checked={quantitiesChecked} onChange={(e) => setQuantitiesChecked(e.target.checked)} />
+                <span>Quantities verified against the prescription</span>
+              </label>
+              {hasControlledLines && (
+                <label className="flex cursor-pointer items-start gap-2 text-red-800">
+                  <input type="checkbox" className="mt-0.5 h-4 w-4 accent-red-600"
+                    checked={controlledAck} onChange={(e) => setControlledAck(e.target.checked)} />
+                  <span>Controlled medicine(s) verified — prescription, prescriber, patient identity, and quantity confirmed against controlled drug requirements</span>
+                </label>
+              )}
+            </div>
+
+            {!confirmLines.every((l) => lineChecks[l.medicineId]) && (
+              <p className="text-xs text-amber-600">⚠ Confirm each medicine line above before proceeding.</p>
             )}
 
             <div className="flex gap-2">
-              <Button onClick={dispense} disabled={busy || (hasControlledLines && !controlledAck)}
-                className="bg-emerald-600 text-white hover:bg-emerald-700">
+              <Button
+                onClick={dispense}
+                disabled={
+                  busy ||
+                  !confirmLines.every((l) => !!lineChecks[l.medicineId]) ||
+                  !rxMatchChecked || !allergiesChecked || !quantitiesChecked ||
+                  (hasControlledLines && !controlledAck)
+                }
+                className="bg-emerald-600 text-white hover:bg-emerald-700"
+              >
                 {busy ? "Dispensing…" : "Confirm & Dispense"}
               </Button>
               <Button variant="outline" onClick={() => setStep(2)}>← Back</Button>
