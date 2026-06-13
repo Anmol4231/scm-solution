@@ -283,10 +283,10 @@ model Patient {
   id               String   @id @default(cuid())
   patientId        String   @unique
   firstName        String
-  lastName         String
-  gender           String
-  age              Int
-  phoneNumber      String?
+  lastName         String?
+  gender           String?
+  age              Int?
+  phoneNumber      String
   address          String?
   allergies        String?
   facilityId       String?

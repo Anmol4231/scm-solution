@@ -351,7 +351,7 @@ router.get("/prescription/:id/plan", dispenseView, async (req, res, next) => {
       include: {
         patient: true,
         medicines: {
-          include: { medicine: { include: { category: { select: { requiresPrescription: true, controlledDrug: true } } } } },
+          include: { medicine: { include: { category: { select: { requiresPrescription: true, controlledDrug: true, name: true } } } } },
         },
       },
     });
@@ -426,6 +426,8 @@ router.get("/prescription/:id/plan", dispenseView, async (req, res, next) => {
           batches,
           requiresPrescription: pm.medicine.category?.requiresPrescription ?? false,
           controlled: pm.medicine.category?.controlledDrug ?? false,
+          categoryName: pm.medicine.category?.name ?? "",
+          strength: pm.medicine.strength ?? "",
           // C4: legacy open-ended line — dispensing is uncapped; surface loudly.
           noQuantityWarning: prescribedQuantity == null,
         };
@@ -444,6 +446,7 @@ router.get("/prescription/:id/plan", dispenseView, async (req, res, next) => {
         prescriptionDate: prescription.prescriptionDate,
         expiresAt: rxExpiresAt(prescription.prescriptionDate),
         allergies: prescription.allergies ?? null,
+        uploadedPrescriptionUrl: prescription.uploadedPrescriptionUrl ?? null,
       },
       // C2: union of allergy sources for the banner.
       allergies: {
@@ -656,14 +659,22 @@ router.post("/batch", dispenseCreate, async (req, res, next) => {
 /**
  * Dispensing log (H1/H4). Filters:
  *   patientId       — internal cuid OR human-readable patient ID (PAT…)
+ *   patientName     — partial match on firstName or lastName
  *   prescriptionId  — internal cuid
- *   medicineId, from, to (ISO dates), today=true
+ *   prescriptionNumber — human-readable prescriptionId (RX…)
+ *   medicineId, batchNumber, dispensedById
+ *   from, to (ISO dates), today=true, controlledOnly=true
+ *   sortBy, sortDir — sorting (dispensedAt, quantity; asc/desc)
  *   take/skip       — pagination (take capped at 200, default 50)
  */
 router.get("/", dispenseView, async (req, res, next) => {
   try {
     const facilityId = getFacilityId(req, req.query.facilityId as string);
-    const { patientId, prescriptionId, medicineId, from, to } = req.query as Record<string, string | undefined>;
+    const { patientId, patientName, prescriptionId, prescriptionNumber, medicineId, medicineName, batchNumber, dispensedById, pharmacist } =
+      req.query as Record<string, string | undefined>;
+    const from = req.query.from as string | undefined;
+    const to = req.query.to as string | undefined;
+    const controlledOnly = req.query.controlledOnly === "true";
     const today = new Date();
     today.setHours(0, 0, 0, 0);
 
@@ -679,26 +690,196 @@ router.get("/", dispenseView, async (req, res, next) => {
     const take = Math.min(Math.max(parseInt((req.query.take as string) ?? "50", 10) || 50, 1), 200);
     const skip = Math.max(parseInt((req.query.skip as string) ?? "0", 10) || 0, 0);
 
-    const records = await prisma.dispensingRecord.findMany({
-      where: {
-        ...(facilityId ? { facilityId } : {}),
-        ...(patientId ? { OR: [{ patientId }, { patient: { patientId } }] } : {}),
-        ...(prescriptionId ? { prescriptionId } : {}),
-        ...(medicineId ? { medicineId } : {}),
-        ...(dispensedAt.gte || dispensedAt.lte ? { dispensedAt } : {}),
-      },
-      include: {
-        patient: true,
-        healthcareWorker: true,
-        medicine: { include: { category: { select: { controlledDrug: true } } } },
-        prescription: { select: { prescriptionId: true } },
-        dispensedBy: { select: { firstName: true, lastName: true } },
-      },
-      orderBy: { dispensedAt: "desc" },
-      take,
-      skip,
+    const sortBy = (req.query.sortBy as string) ?? "dispensedAt";
+    const sortDir: "asc" | "desc" = req.query.sortDir === "asc" ? "asc" : "desc";
+    const validSortFields = ["dispensedAt", "quantity"] as const;
+    const orderByField = validSortFields.includes(sortBy as any) ? sortBy : "dispensedAt";
+
+    const where: Prisma.DispensingRecordWhereInput = {
+      ...(facilityId ? { facilityId } : {}),
+      ...(patientId ? { OR: [{ patientId }, { patient: { patientId } }] } : {}),
+      ...(patientName
+        ? {
+            patient: {
+              OR: [
+                { firstName: { contains: patientName, mode: "insensitive" } },
+                { lastName: { contains: patientName, mode: "insensitive" } },
+              ],
+            },
+          }
+        : {}),
+      ...(prescriptionId ? { prescriptionId } : {}),
+      ...(prescriptionNumber ? { prescription: { prescriptionId: { contains: prescriptionNumber, mode: "insensitive" } } } : {}),
+      ...(medicineId ? { medicineId } : {}),
+      ...(batchNumber ? { batchNumber: { contains: batchNumber, mode: "insensitive" } } : {}),
+      ...(dispensedById ? { dispensedById } : {}),
+      ...(pharmacist
+        ? {
+            dispensedBy: {
+              OR: [
+                { firstName: { contains: pharmacist, mode: "insensitive" } },
+                { lastName: { contains: pharmacist, mode: "insensitive" } },
+              ],
+            },
+          }
+        : {}),
+      ...((medicineName || controlledOnly)
+        ? {
+            medicine: {
+              ...(medicineName ? { medicineName: { contains: medicineName, mode: "insensitive" } } : {}),
+              ...(controlledOnly ? { category: { controlledDrug: true } } : {}),
+            },
+          }
+        : {}),
+      ...(dispensedAt.gte || dispensedAt.lte ? { dispensedAt } : {}),
+    };
+
+    const [records, total] = await Promise.all([
+      prisma.dispensingRecord.findMany({
+        where,
+        include: {
+          patient: { select: { id: true, patientId: true, firstName: true, lastName: true } },
+          healthcareWorker: true,
+          medicine: { include: { category: { select: { controlledDrug: true } } } },
+          prescription: { select: { prescriptionId: true } },
+          dispensedBy: { select: { firstName: true, lastName: true } },
+          facility: { select: { name: true, code: true } },
+        },
+        orderBy: { [orderByField]: sortDir },
+        take,
+        skip,
+      }),
+      prisma.dispensingRecord.count({ where }),
+    ]);
+    res.json({ records, total });
+  } catch (e) {
+    next(e);
+  }
+});
+
+/** Summary stats for the Dispensed Reports screen — today's counts scoped to a facility (or global for cross-facility roles). */
+router.get("/summary", dispenseView, async (req, res, next) => {
+  try {
+    const facilityId = getFacilityId(req, req.query.facilityId as string);
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    const todayFilter = { gte: today };
+    const facFilter = facilityId ? { facilityId } : {};
+
+    const [totalToday, controlledToday, medicinesDispensedToday, uniquePatientGroups, returnsToday] = await Promise.all([
+      prisma.dispensingRecord.count({ where: { ...facFilter, dispensedAt: todayFilter } }),
+      prisma.dispensingRecord.count({ where: { ...facFilter, dispensedAt: todayFilter, medicine: { category: { controlledDrug: true } } } }),
+      prisma.dispensingRecord.aggregate({ where: { ...facFilter, dispensedAt: todayFilter }, _sum: { quantity: true } }),
+      prisma.dispensingRecord.groupBy({ by: ["patientId"], where: { ...facFilter, dispensedAt: todayFilter } }),
+      prisma.medicineReturn.count({ where: { ...facFilter, createdAt: todayFilter } }).catch(() => 0),
+    ]);
+
+    res.json({
+      totalDispensingsToday: totalToday,
+      patientsTodayCount: uniquePatientGroups.length,
+      controlledDispensingsToday: controlledToday,
+      medicinesDispensedToday: medicinesDispensedToday._sum.quantity ?? 0,
+      returnsToday,
     });
-    res.json(records);
+  } catch (e) {
+    next(e);
+  }
+});
+
+/**
+ * Prescription-grouped dispensing report. One record per prescription that had
+ * dispensing events matching the filters. Each record carries all dispensing
+ * lines (medicine, qty, batch, expiry, dispenser) for the modal detail view.
+ *
+ * Filters: from, to, patientId, patientName, prescriptionNumber, medicineName,
+ *          batchNumber, pharmacist, facilityId
+ * Pagination: take (max 100), skip
+ */
+router.get("/by-prescription", dispenseView, async (req, res, next) => {
+  try {
+    const facilityId = getFacilityId(req, req.query.facilityId as string);
+    const { patientId, patientName, prescriptionNumber, medicineName, batchNumber, pharmacist } =
+      req.query as Record<string, string | undefined>;
+    const from = req.query.from as string | undefined;
+    const to = req.query.to as string | undefined;
+
+    const dispensedAt: { gte?: Date; lte?: Date } = {};
+    if (from && !isNaN(Date.parse(from))) dispensedAt.gte = new Date(from);
+    if (to && !isNaN(Date.parse(to))) {
+      const end = new Date(to); end.setHours(23, 59, 59, 999); dispensedAt.lte = end;
+    }
+
+    const take = Math.min(Math.max(parseInt((req.query.take as string) ?? "50", 10) || 50, 1), 100);
+    const skip = Math.max(parseInt((req.query.skip as string) ?? "0", 10) || 0, 0);
+    const sortDir: "asc" | "desc" = req.query.sortDir === "asc" ? "asc" : "desc";
+
+    const recordWhere: Prisma.DispensingRecordWhereInput = {
+      ...(facilityId ? { facilityId } : {}),
+      ...(dispensedAt.gte || dispensedAt.lte ? { dispensedAt } : {}),
+      ...(patientId ? { OR: [{ patientId }, { patient: { patientId } }] } : {}),
+      ...(patientName
+        ? { patient: { OR: [{ firstName: { contains: patientName, mode: "insensitive" } }, { lastName: { contains: patientName, mode: "insensitive" } }] } }
+        : {}),
+      ...(batchNumber ? { batchNumber: { contains: batchNumber, mode: "insensitive" } } : {}),
+      ...(medicineName ? { medicine: { medicineName: { contains: medicineName, mode: "insensitive" } } } : {}),
+      ...(pharmacist
+        ? { dispensedBy: { OR: [{ firstName: { contains: pharmacist, mode: "insensitive" } }, { lastName: { contains: pharmacist, mode: "insensitive" } }] } }
+        : {}),
+    };
+
+    const prescriptionWhere: Prisma.PrescriptionWhereInput = {
+      dispensingRecords: { some: recordWhere },
+      ...(prescriptionNumber ? { prescriptionId: { contains: prescriptionNumber, mode: "insensitive" } } : {}),
+    };
+
+    const [prescriptions, total] = await Promise.all([
+      prisma.prescription.findMany({
+        where: prescriptionWhere,
+        include: {
+          patient: { select: { id: true, patientId: true, firstName: true, lastName: true } },
+          facility: { select: { name: true, code: true } },
+          dispensingRecords: {
+            where: recordWhere,
+            include: {
+              medicine: { select: { medicineName: true } },
+              dispensedBy: { select: { firstName: true, lastName: true } },
+            },
+            orderBy: { dispensedAt: "asc" },
+          },
+        },
+        orderBy: { prescriptionDate: sortDir },
+        take,
+        skip,
+      }),
+      prisma.prescription.count({ where: prescriptionWhere }),
+    ]);
+
+    const records = prescriptions.map((rx) => {
+      const lines = rx.dispensingRecords;
+      const latestAt = lines.reduce<Date | null>((max, r) => (!max || r.dispensedAt > max ? r.dispensedAt : max), null);
+      const totalQuantity = lines.reduce((s, r) => s + r.quantity, 0);
+      const dispenserNames = [...new Set(lines.map((r) => r.dispensedBy ? `${r.dispensedBy.firstName} ${r.dispensedBy.lastName}` : "").filter(Boolean))];
+      return {
+        prescriptionDbId: rx.id,
+        prescriptionId: rx.prescriptionId,
+        dispensedAt: latestAt ?? rx.prescriptionDate,
+        patient: rx.patient,
+        doctorName: rx.doctorName ?? null,
+        facility: rx.facility,
+        dispensedBy: dispenserNames.length === 1 ? dispenserNames[0] : dispenserNames.length > 1 ? "Multiple" : null,
+        totalQuantity,
+        lines: lines.map((r) => ({
+          medicineName: r.medicine.medicineName,
+          quantity: r.quantity,
+          batchNumber: r.batchNumber,
+          expiryDate: r.expiryDate.toISOString(),
+          dispensedAt: r.dispensedAt.toISOString(),
+          dispensedBy: r.dispensedBy ? `${r.dispensedBy.firstName} ${r.dispensedBy.lastName}` : "—",
+        })),
+      };
+    });
+
+    res.json({ records, total });
   } catch (e) {
     next(e);
   }

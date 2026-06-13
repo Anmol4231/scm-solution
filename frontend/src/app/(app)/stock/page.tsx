@@ -29,7 +29,7 @@ interface HubItem {
 const HUB_ITEMS: HubItem[] = [
   {
     href: "/stock/in-hand",
-    label: "Stock Report",
+    label: "Stock on Hand",
     description: "Real-time inventory across all batches",
     icon: BarChart3,
     color: "text-medflow-600 bg-medflow-50",

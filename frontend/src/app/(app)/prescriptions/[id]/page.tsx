@@ -23,7 +23,6 @@ interface RxMedicineLine {
   dosage?: string | null;
   form?: string | null;
   quantity?: number | null;
-  duration?: string | null;
   notes?: string | null;
 }
 
@@ -61,6 +60,12 @@ const STATUS_STYLE: Record<RxDetail["status"], string> = {
   ACTIVE: "bg-emerald-50 text-emerald-700",
   COMPLETED: "bg-blue-50 text-blue-700",
   CANCELLED: "bg-slate-100 text-slate-500",
+};
+
+const STATUS_LABEL: Record<RxDetail["status"], string> = {
+  ACTIVE: "Active",
+  COMPLETED: "Completed",
+  CANCELLED: "Cancelled",
 };
 
 export default function PrescriptionDetailPage() {
@@ -147,7 +152,7 @@ export default function PrescriptionDetailPage() {
         <div>
           <div className="flex items-center gap-2">
             <h1 className="text-xl font-bold">{rx.prescriptionId}</h1>
-            <span className={`rounded-full px-2 py-0.5 text-xs font-semibold ${STATUS_STYLE[rx.status]}`}>{rx.status}</span>
+            <span className={`rounded-full px-2 py-0.5 text-xs font-semibold ${STATUS_STYLE[rx.status]}`}>{STATUS_LABEL[rx.status]}</span>
             {rx.priority && rx.priority !== "ROUTINE" && (
               <span className="rounded-full bg-red-50 px-2 py-0.5 text-xs font-semibold text-red-700">{rx.priority}</span>
             )}
@@ -230,7 +235,6 @@ export default function PrescriptionDetailPage() {
                   <tr>
                     <th className="p-2 pl-3">Medicine</th>
                     <th className="p-2">Dosage</th>
-                    <th className="p-2">Duration</th>
                     <th className="p-2 text-right">Prescribed</th>
                     <th className="p-2 text-right">Dispensed</th>
                     <th className="p-2 text-right">Remaining</th>
@@ -245,8 +249,7 @@ export default function PrescriptionDetailPage() {
                       <tr key={m.id}>
                         <td className="p-2 pl-3 font-medium">{m.medicine.medicineName}</td>
                         <td className="p-2 text-slate-600">{m.dosage || "—"}</td>
-                        <td className="p-2 text-slate-600">{m.duration || "—"}</td>
-                        <td className="p-2 text-right">{m.quantity ?? <span className="text-orange-600" title="No prescribed quantity — dispensing is uncapped">open</span>}</td>
+                        <td className="p-2 text-right">{m.quantity ?? <span className="text-orange-600" title="No prescribed quantity set — dispensing is not limited">No limit</span>}</td>
                         <td className="p-2 text-right">{dispensed}</td>
                         <td className={`p-2 text-right font-medium ${remaining === 0 ? "text-emerald-600" : ""}`}>{remaining ?? "—"}</td>
                       </tr>

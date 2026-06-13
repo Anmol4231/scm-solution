@@ -89,17 +89,94 @@ router.get("/sample-template", rxView, (_req, res) => {
 router.get("/", rxView, async (req, res, next) => {
   try {
     const facilityId = getFacilityId(req, req.query.facilityId as string);
-    const patientId = req.query.patientId as string | undefined;
+    const patientId   = req.query.patientId   as string | undefined;
+    const rxIdQ       = req.query.prescriptionId as string | undefined;
+    const patientQ    = req.query.patient     as string | undefined;
+    const doctorQ     = req.query.doctor      as string | undefined;
+    const status      = req.query.status      as string | undefined;
+    const dateFrom    = req.query.dateFrom    as string | undefined;
+    const dateTo      = req.query.dateTo      as string | undefined;
+    const medicineQ   = req.query.medicine    as string | undefined;
+    const controlledOnly = req.query.controlledOnly === "true";
+
+    // Build the medicine sub-filter once to avoid duplicate key issues
+    const medicineSubFilter =
+      medicineQ || controlledOnly
+        ? {
+            some: {
+              medicine: {
+                ...(medicineQ ? { medicineName: { contains: medicineQ, mode: "insensitive" as const } } : {}),
+                ...(controlledOnly ? { category: { controlledDrug: true } } : {}),
+              },
+            },
+          }
+        : undefined;
+
+    const where: Prisma.PrescriptionWhereInput = {
+      ...(facilityId ? { facilityId } : {}),
+      ...(patientId  ? { patientId }  : {}),
+      ...(rxIdQ      ? { prescriptionId: { contains: rxIdQ, mode: "insensitive" as const } } : {}),
+      ...(doctorQ    ? { doctorName:    { contains: doctorQ, mode: "insensitive" as const } } : {}),
+      ...(status     ? { status: status as Prisma.EnumPrescriptionStatusFilter } : {}),
+      ...(dateFrom || dateTo ? {
+        prescriptionDate: {
+          ...(dateFrom ? { gte: new Date(dateFrom) } : {}),
+          ...(dateTo   ? { lte: new Date(dateTo + "T23:59:59.999Z") } : {}),
+        },
+      } : {}),
+      ...(patientQ ? {
+        patient: {
+          OR: [
+            { firstName: { contains: patientQ, mode: "insensitive" as const } },
+            { lastName:  { contains: patientQ, mode: "insensitive" as const } },
+            { patientId: { contains: patientQ, mode: "insensitive" as const } },
+          ],
+        },
+      } : {}),
+      ...(medicineSubFilter ? { medicines: medicineSubFilter } : {}),
+    };
+
     const prescriptions = await prisma.prescription.findMany({
-      where: { ...(facilityId ? { facilityId } : {}), ...(patientId ? { patientId } : {}) },
+      where,
       include: {
-        patient: true,
-        medicines: { include: { medicine: true } },
+        patient:  { select: { id: true, patientId: true, firstName: true, lastName: true } },
+        facility: { select: { id: true, name: true } },
+        medicines: {
+          include: {
+            medicine: {
+              select: {
+                id: true, medicineName: true,
+                category: { select: { controlledDrug: true } },
+              },
+            },
+          },
+        },
+        dispensingRecords: { select: { medicineId: true, quantity: true } },
       },
       orderBy: { prescriptionDate: "desc" },
-      take: 50,
+      take: 100,
     });
-    res.json(prescriptions);
+
+    const result = prescriptions.map((rx) => {
+      const prescribedTotal = rx.medicines.reduce((s, m) => s + (m.quantity ?? 0), 0);
+      const dispensedTotal  = rx.dispensingRecords.reduce((s, d) => s + d.quantity, 0);
+      const hasControlled   = rx.medicines.some((m) => m.medicine.category?.controlledDrug);
+      return {
+        id:               rx.id,
+        prescriptionId:   rx.prescriptionId,
+        status:           rx.status,
+        prescriptionDate: rx.prescriptionDate,
+        doctorName:       rx.doctorName,
+        patient:          rx.patient,
+        facility:         rx.facility,
+        medicineCount:    rx.medicines.length,
+        prescribedTotal,
+        dispensedTotal,
+        hasControlled,
+      };
+    });
+
+    res.json(result);
   } catch (e) {
     next(e);
   }

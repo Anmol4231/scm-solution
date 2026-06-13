@@ -15,10 +15,10 @@ const patientCreate = requirePermission("patients", "create");
 
 const createSchema = z.object({
   firstName: z.string().min(1),
-  lastName: z.string().min(1),
-  gender: z.string(),
-  age: z.number().int().positive(),
-  phoneNumber: z.string().optional(),
+  lastName: z.string().optional(),
+  gender: z.string().optional(),
+  age: z.number().int().positive().optional(),
+  phoneNumber: z.string().min(1),
   address: z.string().optional(),
   allergies: z.string().optional(),
   facilityId: z.string().optional(),
