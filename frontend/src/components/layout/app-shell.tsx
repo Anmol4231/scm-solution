@@ -158,18 +158,21 @@ export function AppShell({ children }: { children: React.ReactNode }) {
             <button className="md:hidden" onClick={() => setOpen(!open)} aria-label="Menu">
               {open ? <X className="h-6 w-6" /> : <Menu className="h-6 w-6" />}
             </button>
-            <Link href="/dashboard" className="font-bold text-medflow-700">
-              SCM Solution
-            </Link>
-            <span
-              className={cn(
-                "hidden rounded-full px-2 py-0.5 text-[10px] font-semibold sm:inline",
-                isOnline ? "bg-emerald-100 text-emerald-700" : "bg-red-100 text-red-700"
-              )}
-              title={isOnline ? "Online" : "Offline Mode"}
+            <Link
+              href="/dashboard"
+              className="flex shrink-0 items-center gap-2"
+              aria-label="MediTrack home"
             >
-              {isOnline ? "🟢 Online" : "🔴 Offline"}
-            </span>
+              <img
+                src="/icons/meditrack-emblem.png"
+                alt=""
+                className="h-9 w-9 object-contain"
+              />
+              <span className="text-xl font-extrabold tracking-tight">
+                <span className="text-[#1a3a6e]">Medi</span>
+                <span className="text-green-600">Track</span>
+              </span>
+            </Link>
           </div>
           <div className="hidden max-w-sm flex-1 md:block lg:max-w-md">
             <GlobalSearch />

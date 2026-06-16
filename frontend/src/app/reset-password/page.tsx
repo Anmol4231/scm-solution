@@ -7,7 +7,7 @@ import { api } from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Card, CardContent, CardHeader } from "@/components/ui/card";
 
 function ResetForm() {
   const searchParams = useSearchParams();
@@ -82,7 +82,11 @@ export default function ResetPasswordPage() {
     <div className="flex min-h-screen items-center justify-center bg-gradient-to-b from-medflow-50 to-white p-4">
       <Card className="w-full max-w-md">
         <CardHeader className="text-center">
-          <CardTitle className="text-2xl text-medflow-700">SCM Solution</CardTitle>
+          <img
+            src="/icons/meditrack-logo.png"
+            alt="MediTrack"
+            className="mx-auto mb-2 h-auto w-full max-w-[260px]"
+          />
           <p className="text-sm text-muted-foreground">Set a new password</p>
         </CardHeader>
         <CardContent>

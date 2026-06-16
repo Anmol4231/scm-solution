@@ -2,7 +2,7 @@
 
 import { useState } from "react";
 import { useRouter } from "next/navigation";
-import { AlertTriangle, Eye, EyeOff, Lock, LogIn } from "lucide-react";
+import { AlertTriangle, Eye, EyeOff, Lock } from "lucide-react";
 import { useAuth } from "@/lib/auth-context";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -48,17 +48,15 @@ export default function LoginPage() {
   const isLocked = messageType === "locked";
 
   return (
-    <div className="flex min-h-screen items-center justify-center bg-gradient-to-br from-slate-100 via-slate-50 to-medflow-50 p-4">
-      <div className="w-full max-w-sm">
-        {/* Logo / Brand */}
-        <div className="mb-8 text-center">
-          <div className="mx-auto mb-3 flex h-12 w-12 items-center justify-center rounded-xl bg-medflow-600 shadow-md">
-            <LogIn className="h-6 w-6 text-white" />
-          </div>
-          <h1 className="text-2xl font-bold tracking-tight text-slate-900">SCM Solution</h1>
-          <p className="mt-1 text-sm text-slate-500">Hospital supply chain &amp; medicine management</p>
-        </div>
+    <div className="flex min-h-screen flex-col items-center justify-center bg-gradient-to-br from-slate-100 via-slate-50 to-medflow-50 p-4">
+      {/* Logo / Brand */}
+      <img
+        src="/icons/meditrack-logo.png"
+        alt="MediTrack — Track. Manage. Deliver. Care."
+        className="mb-8 h-auto w-full max-w-[400px]"
+      />
 
+      <div className="w-full max-w-sm">
         {/* Card */}
         <div className="rounded-2xl border border-slate-200 bg-white p-7 shadow-sm">
           <h2 className="mb-5 text-base font-semibold text-slate-700">Sign in to your account</h2>

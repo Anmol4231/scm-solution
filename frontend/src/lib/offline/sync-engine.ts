@@ -118,7 +118,7 @@ export async function processSyncQueue(): Promise<{ synced: number; failed: numb
 }
 
 export function offlineBlockedMessage(path: string): string {
-  if (path.startsWith("/chat")) return "SCM Assistant requires an internet connection.";
+  if (path.startsWith("/chat")) return "MediTrack Assistant requires an internet connection.";
   if (path.startsWith("/admin/map")) return "Facility map is available online only.";
   return "This action requires an internet connection.";
 }

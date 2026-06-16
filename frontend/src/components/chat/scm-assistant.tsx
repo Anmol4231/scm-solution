@@ -33,13 +33,13 @@ const QUICK_ACTIONS = [
 ];
 
 const DEFAULT_ASSISTANT: AssistantProfile = {
-  name: "SCM Assistant",
+  name: "MediTrack Assistant",
   subtitle: "Healthcare Inventory & Workflow Assistant",
   avatar: "healthcare-assistant",
 };
 
 const WELCOME_FALLBACK =
-  "Hello 👋 I'm SCM Assistant. I can help with inventory, stock levels, expiry alerts, patients, reports, transfers, and workflow guidance.";
+  "Hello 👋 I'm MediTrack Assistant. I can help with inventory, stock levels, expiry alerts, patients, reports, transfers, and workflow guidance.";
 
 function safeText(value: unknown, fallback: string): string {
   if (value === null || value === undefined) return fallback;

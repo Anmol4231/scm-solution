@@ -1,5 +1,17 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" fill="none">
-  <rect width="512" height="512" rx="96" fill="#0284c7"/>
-  <path fill="#fff" d="M256 120c-52 0-94 38-94 85 0 35 22 65 54 80l-20 95h120l-20-95c32-15 54-45 54-80 0-47-42-85-94-85zm0 40c28 0 50 20 50 45s-22 45-50 45-50-20-50-45 22-45 50-45z"/>
-  <rect x="196" y="340" width="120" height="52" rx="12" fill="#fff" opacity=".9"/>
+  <!-- Dark navy background rounded square -->
+  <rect width="512" height="512" rx="100" fill="#1a3a6e"/>
+  <!-- Blue medical supply box -->
+  <rect x="152" y="180" width="208" height="196" rx="22" fill="#2d6cc0"/>
+  <!-- White cross on box -->
+  <rect x="231" y="202" width="50" height="152" rx="10" fill="white"/>
+  <rect x="172" y="251" width="168" height="52" rx="10" fill="white"/>
+  <!-- Location pin top-right -->
+  <circle cx="352" cy="138" r="26" fill="#22c55e"/>
+  <circle cx="352" cy="138" r="12" fill="#1a3a6e"/>
+  <polygon points="352,158 342,172 362,172" fill="#22c55e"/>
+  <!-- Dotted arc from box to pin -->
+  <path d="M220 200 Q280 120 340 155" stroke="white" stroke-width="8" fill="none" stroke-dasharray="14 10" stroke-linecap="round"/>
+  <!-- Green hand / swoosh arc at bottom -->
+  <path d="M90 390 Q256 490 422 390" stroke="#22c55e" stroke-width="26" fill="none" stroke-linecap="round"/>
 </svg>

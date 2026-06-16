@@ -1,7 +1,7 @@
 {
-  "name": "SCM Solution",
-  "short_name": "SCM",
-  "description": "Healthcare supply chain — inventory, dispensing, and facility operations",
+  "name": "MediTrack",
+  "short_name": "MediTrack",
+  "description": "Track. Manage. Deliver. Care. — medicine inventory, dispensing, and facility operations",
   "start_url": "/dashboard",
   "scope": "/",
   "display": "standalone",
