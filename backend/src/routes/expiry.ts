@@ -274,6 +274,49 @@ router.post("/quarantine", expiryEdit, async (req, res, next) => {
   }
 });
 
+// GET /authorized-witnesses — users whose role has expiry.approve permission,
+// scoped to the requested facility (or all for cross-facility callers).
+router.get("/authorized-witnesses", expiryView, async (req, res, next) => {
+  try {
+    const facilityId = getFacilityId(req, req.query.facilityId as string);
+
+    const allRoles = await prisma.role.findMany({
+      where: { isActive: true },
+      select: { id: true, permissions: true, scopeAllFacilities: true },
+    });
+
+    const authorizedRoleIds = allRoles
+      .filter((r) => {
+        const m = r.permissions as Record<string, string[]> | null;
+        return Array.isArray(m?.expiry) && m.expiry.includes("approve");
+      })
+      .map((r) => r.id);
+
+    const users = await prisma.user.findMany({
+      where: {
+        isActive: true,
+        roleId: { in: authorizedRoleIds },
+        ...(facilityId
+          ? {
+              OR: [
+                { facilityId },
+                {
+                  roleMaster: { scopeAllFacilities: true },
+                },
+              ],
+            }
+          : {}),
+      },
+      select: { id: true, firstName: true, lastName: true },
+      orderBy: [{ firstName: "asc" }, { lastName: "asc" }],
+    });
+
+    res.json(users.map((u) => ({ id: u.id, name: `${u.firstName} ${u.lastName}` })));
+  } catch (e) {
+    next(e);
+  }
+});
+
 router.get("/disposal-history", expiryView, async (req, res, next) => {
   try {
     const facilityId = getFacilityId(req, req.query.facilityId as string);
@@ -282,14 +325,41 @@ router.get("/disposal-history", expiryView, async (req, res, next) => {
       orderBy: { createdAt: "desc" },
       take: 100,
     });
-    // Augment with medicine names
+
+    if (records.length === 0) return res.json([]);
+
+    // Batch-fetch related data in parallel
     const medicineIds = [...new Set(records.map((r) => r.medicineId))];
-    const medicines = await prisma.medicine.findMany({
-      where: { id: { in: medicineIds } },
-      select: { id: true, medicineName: true },
-    });
+    const facilityIds = [...new Set(records.map((r) => r.facilityId))];
+    const userIds = [...new Set(records.map((r) => r.processedById))];
+
+    const [medicines, facilities, users] = await Promise.all([
+      prisma.medicine.findMany({
+        where: { id: { in: medicineIds } },
+        select: { id: true, medicineName: true },
+      }),
+      prisma.facility.findMany({
+        where: { id: { in: facilityIds } },
+        select: { id: true, name: true },
+      }),
+      prisma.user.findMany({
+        where: { id: { in: userIds } },
+        select: { id: true, firstName: true, lastName: true },
+      }),
+    ]);
+
     const medMap = Object.fromEntries(medicines.map((m) => [m.id, m.medicineName]));
-    res.json(records.map((r) => ({ ...r, medicineName: medMap[r.medicineId] ?? "Unknown" })));
+    const facMap = Object.fromEntries(facilities.map((f) => [f.id, f.name]));
+    const userMap = Object.fromEntries(users.map((u) => [u.id, `${u.firstName} ${u.lastName}`]));
+
+    res.json(
+      records.map((r) => ({
+        ...r,
+        medicineName: medMap[r.medicineId] ?? "Unknown",
+        facilityName: facMap[r.facilityId] ?? "Unknown",
+        processedByName: userMap[r.processedById] ?? "Unknown",
+      }))
+    );
   } catch (e) {
     next(e);
   }

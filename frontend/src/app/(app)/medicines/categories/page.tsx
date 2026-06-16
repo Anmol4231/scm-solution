@@ -2,7 +2,7 @@
 
 import { useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
-import { Pencil, Plus, ScrollText, Search, Tags, Thermometer, Trash2, FileText, Shield } from "lucide-react";
+import { Pencil, Plus, ScrollText, Search, Tags, Thermometer, Trash2, FileText } from "lucide-react";
 import { api } from "@/lib/api";
 import { useAuth } from "@/lib/auth-context";
 import { isMasterDataAdminRole } from "@/lib/roles";
@@ -41,7 +41,7 @@ const EMPTY_CAT: CatForm = {
 
 // ─── Filter state ────────────────────────────────────────────────────────────
 
-type FilterKey = "all" | "coldStorage" | "controlledDrug" | "requiresPrescription";
+type FilterKey = "all" | "coldStorage" | "requiresPrescription";
 
 // ─── CategoryCard ─────────────────────────────────────────────────────────────
 
@@ -101,21 +101,16 @@ function CategoryCard({
         {c.description && (
           <p className="mt-2 line-clamp-2 text-sm text-slate-500">{c.description}</p>
         )}
-        {(c.coldStorage || c.controlledDrug || c.requiresPrescription) && (
+        {(c.coldStorage || c.requiresPrescription) && (
           <div className="mt-3 flex flex-wrap gap-1.5">
             {c.coldStorage && (
               <span className="inline-flex items-center gap-1 rounded-full bg-blue-50 px-2 py-0.5 text-[10px] font-medium text-blue-700">
                 <Thermometer className="h-3 w-3" /> Cold Storage
               </span>
             )}
-            {c.controlledDrug && (
-              <span className="inline-flex items-center gap-1 rounded-full bg-red-50 px-2 py-0.5 text-[10px] font-medium text-red-700">
-                <Shield className="h-3 w-3" /> Controlled
-              </span>
-            )}
             {c.requiresPrescription && (
               <span className="inline-flex items-center gap-1 rounded-full bg-amber-50 px-2 py-0.5 text-[10px] font-medium text-amber-700">
-                <FileText className="h-3 w-3" /> Rx Required
+                <FileText className="h-3 w-3" /> Prescription Required
               </span>
             )}
           </div>
@@ -185,7 +180,6 @@ export default function CategoriesPage() {
     const q = query.trim().toLowerCase();
     if (q) list = list.filter((c) => c.name.toLowerCase().includes(q) || (c.description ?? "").toLowerCase().includes(q));
     if (activeFilter === "coldStorage") list = list.filter((c) => c.coldStorage);
-    if (activeFilter === "controlledDrug") list = list.filter((c) => c.controlledDrug);
     if (activeFilter === "requiresPrescription") list = list.filter((c) => c.requiresPrescription);
     return list;
   }, [categories, query, activeFilter]);
@@ -255,8 +249,7 @@ export default function CategoriesPage() {
   const FILTER_OPTIONS: { key: FilterKey; label: string }[] = [
     { key: "all", label: "All" },
     { key: "coldStorage", label: "Cold Storage" },
-    { key: "controlledDrug", label: "Controlled Drug" },
-    { key: "requiresPrescription", label: "Rx Required" },
+    { key: "requiresPrescription", label: "Prescription Required" },
   ];
 
   if (!hasAccess) return null;
@@ -322,13 +315,7 @@ export default function CategoriesPage() {
                   description="Medicines in this category require refrigeration or cold chain."
                 />
                 <ToggleField
-                  label="Controlled Drug"
-                  value={form.controlledDrug}
-                  onChange={(v) => setForm({ ...form, controlledDrug: v })}
-                  description="Medicines are subject to controlled substance regulations."
-                />
-                <ToggleField
-                  label="Requires Prescription"
+                  label="Prescription Required"
                   value={form.requiresPrescription}
                   onChange={(v) => setForm({ ...form, requiresPrescription: v })}
                   description="Dispensing requires a valid prescription."

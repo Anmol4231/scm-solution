@@ -3,7 +3,7 @@
 import { Fragment, useEffect, useState } from "react";
 import { useParams } from "next/navigation";
 import Link from "next/link";
-import { PackageCheck } from "lucide-react";
+import { PackageCheck, Printer } from "lucide-react";
 import { api } from "@/lib/api";
 import { useAuth } from "@/lib/auth-context";
 import { useRequirePermission } from "@/hooks/useRequirePermission";
@@ -59,6 +59,21 @@ interface StockOrder {
 
 type ReceiveFormLine = { batchNumber: string; expiryDate: string; quantityReceived: number; notes: string };
 type EditFormLine = { lineId: string; quantityReceived: number; batchNumber: string; expiryDate: string; notes: string };
+
+interface AuditLineChange {
+  lineId: string;
+  medicine: string;
+  previous: { quantityReceived: number; batchNumber: string; expiryDate: string };
+  current: { quantityReceived: number; batchNumber: string; expiryDate: string };
+}
+
+interface AuditEntry {
+  id: string;
+  action: string;
+  createdAt: string;
+  user?: { id: string; firstName: string; lastName: string } | null;
+  details?: { reasonForChange?: string; changes?: AuditLineChange[] } | null;
+}
 
 function displayStatus(s: string) {
   if (s === "CONFIRMED" || s === "IN_TRANSIT") return "SUBMITTED";
@@ -117,6 +132,9 @@ export default function OrderReceivingPage() {
     notes: "",
     lines: [],
   });
+  const [receiptHistory, setReceiptHistory] = useState<Record<string, AuditEntry[]>>({});
+  const [showingHistoryId, setShowingHistoryId] = useState<string | null>(null);
+  const [loadingHistoryId, setLoadingHistoryId] = useState<string | null>(null);
 
   const load = async () => {
     try {
@@ -227,6 +245,66 @@ export default function OrderReceivingPage() {
       await load();
     } catch (e) {
       setError(e instanceof Error ? e.message : "Failed to update receipt");
+    }
+  };
+
+  const printReceipt = (receipt: Receipt) => {
+    const totalItems = receipt.lines.reduce((s, l) => s + l.quantityReceived, 0);
+    const editNote = receipt.lastEditedBy
+      ? `<div class="edit-note">Edited by ${receipt.lastEditedBy.firstName} ${receipt.lastEditedBy.lastName}${receipt.lastEditedAt ? ` on ${new Date(receipt.lastEditedAt).toLocaleString()}` : ""}${receipt.lastEditReason ? ` — ${receipt.lastEditReason}` : ""}</div>`
+      : "";
+    const rows = receipt.lines
+      .map(
+        (l) =>
+          `<tr><td>${l.medicine.medicineName}</td><td style="text-align:right;font-weight:700">${l.quantityReceived}</td><td>${l.batchNumber}</td><td>${l.expiryDate ? new Date(l.expiryDate).toLocaleDateString() : ""}</td><td>${l.notes ?? ""}</td></tr>`
+      )
+      .join("");
+    const html = `<!DOCTYPE html><html><head><title>Receipt ${receipt.receiptCode}</title><style>
+      body{font-family:Arial,sans-serif;padding:28px;color:#111;font-size:13px}
+      h1{font-size:18px;margin-bottom:2px}
+      .sub{color:#555;margin-bottom:16px}
+      .meta{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:18px}
+      .meta label{font-weight:700;font-size:10px;text-transform:uppercase;color:#666;display:block}
+      table{width:100%;border-collapse:collapse}
+      th{background:#f3f4f6;text-align:left;padding:7px 8px;border-bottom:2px solid #d1d5db;font-size:11px;text-transform:uppercase}
+      td{padding:7px 8px;border-bottom:1px solid #e5e7eb}
+      .total{font-weight:700;text-align:right;margin-top:14px}
+      .edit-note{background:#fffbeb;border:1px solid #fbbf24;padding:7px 12px;border-radius:4px;margin-bottom:14px;font-size:12px}
+      .footer{margin-top:36px;font-size:10px;color:#9ca3af}
+      @media print{body{padding:12px}}
+    </style></head><body>
+      <h1>Stock Receipt — ${receipt.receiptCode}</h1>
+      <p class="sub">Order: ${order!.orderCode} &nbsp;|&nbsp; ${order!.facility?.name ?? ""} &nbsp;|&nbsp; Supplier: ${order!.vendor?.name ?? ""}</p>
+      <div class="meta">
+        <div><label>Receipt Number</label>${receipt.receiptCode}</div>
+        <div><label>Date Received</label>${new Date(receipt.createdAt).toLocaleString()}</div>
+        <div><label>Received By</label>${receipt.receivedBy.firstName} ${receipt.receivedBy.lastName}</div>
+        <div><label>Total Quantity</label>${totalItems}</div>
+      </div>
+      ${editNote}
+      <table><thead><tr><th>Medicine</th><th style="text-align:right">Qty</th><th>Batch No.</th><th>Expiry Date</th><th>Notes</th></tr></thead>
+      <tbody>${rows}</tbody></table>
+      <p class="total">Total: ${totalItems} units</p>
+      <div class="footer">Printed ${new Date().toLocaleString()} &nbsp;|&nbsp; MedFlow SCM</div>
+      <script>window.onload=()=>window.print();</script>
+    </body></html>`;
+    const win = window.open("", "_blank");
+    if (win) { win.document.write(html); win.document.close(); }
+  };
+
+  const toggleReceiptHistory = async (receiptId: string) => {
+    if (showingHistoryId === receiptId) { setShowingHistoryId(null); return; }
+    if (receiptHistory[receiptId]) { setShowingHistoryId(receiptId); return; }
+    try {
+      setLoadingHistoryId(receiptId);
+      const data = await api<AuditEntry[]>(`/orders/${orderId}/receipts/${receiptId}/history`);
+      setReceiptHistory((h) => ({ ...h, [receiptId]: data }));
+      setShowingHistoryId(receiptId);
+    } catch {
+      setReceiptHistory((h) => ({ ...h, [receiptId]: [] }));
+      setShowingHistoryId(receiptId);
+    } finally {
+      setLoadingHistoryId(null);
     }
   };
 
@@ -447,6 +525,15 @@ export default function OrderReceivingPage() {
                               >
                                 {isViewing ? "Hide" : "View"}
                               </Button>
+                              <Button
+                                size="sm"
+                                variant="ghost"
+                                className="text-slate-600 hover:text-slate-800"
+                                onClick={() => printReceipt(receipt)}
+                                title="Print receipt"
+                              >
+                                <Printer className="h-3.5 w-3.5 mr-1" /> Print
+                              </Button>
                               {canEditReceipt && order.status !== "CANCELLED" && (
                                 <Button
                                   size="sm"
@@ -472,17 +559,106 @@ export default function OrderReceivingPage() {
                           <tr>
                             <td colSpan={5} className="bg-slate-50/60 p-4">
                               {receipt.lastEditedBy && (
-                                <p className="mb-3 text-sm text-amber-700">
-                                  Last edited by{" "}
-                                  <strong>
-                                    {receipt.lastEditedBy.firstName} {receipt.lastEditedBy.lastName}
-                                  </strong>
-                                  {receipt.lastEditedAt && (
-                                    <> on <strong>{formatDateTime(receipt.lastEditedAt)}</strong></>
-                                  )}
-                                  {receipt.lastEditReason && <> — <em>{receipt.lastEditReason}</em></>}
-                                </p>
+                                <div className="mb-3 flex flex-wrap items-center justify-between gap-2 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-800">
+                                  <span>
+                                    Last edited by{" "}
+                                    <strong>
+                                      {receipt.lastEditedBy.firstName} {receipt.lastEditedBy.lastName}
+                                    </strong>
+                                    {receipt.lastEditedAt && (
+                                      <> on <strong>{formatDateTime(receipt.lastEditedAt)}</strong></>
+                                    )}
+                                    {receipt.lastEditReason && <> — <em>{receipt.lastEditReason}</em></>}
+                                  </span>
+                                  <Button
+                                    size="sm"
+                                    variant="outline"
+                                    className="h-7 border-amber-300 text-amber-800 hover:bg-amber-100"
+                                    onClick={() => toggleReceiptHistory(receipt.id)}
+                                    disabled={loadingHistoryId === receipt.id}
+                                  >
+                                    {loadingHistoryId === receipt.id
+                                      ? "Loading…"
+                                      : showingHistoryId === receipt.id
+                                      ? "Hide Edit History"
+                                      : "View Edit History"}
+                                  </Button>
+                                </div>
                               )}
+
+                              {/* Edit history */}
+                              {showingHistoryId === receipt.id && receiptHistory[receipt.id] && (
+                                <div className="mb-3 space-y-3">
+                                  {receiptHistory[receipt.id].length === 0 ? (
+                                    <p className="text-sm text-slate-500">No edit history found.</p>
+                                  ) : (
+                                    receiptHistory[receipt.id].map((entry) => (
+                                      <div key={entry.id} className="rounded border border-slate-200 bg-white p-3 text-sm">
+                                        <div className="mb-2 flex flex-wrap items-center gap-2 text-slate-600">
+                                          <span className="font-medium text-slate-800">
+                                            {entry.user ? `${entry.user.firstName} ${entry.user.lastName}` : "Unknown"}
+                                          </span>
+                                          <span className="text-slate-400">—</span>
+                                          <span>{formatDateTime(entry.createdAt)}</span>
+                                          {entry.details?.reasonForChange && (
+                                            <span className="rounded bg-slate-100 px-1.5 py-0.5 text-xs text-slate-600">
+                                              {entry.details.reasonForChange}
+                                            </span>
+                                          )}
+                                        </div>
+                                        {entry.details?.changes && entry.details.changes.length > 0 && (
+                                          <div className="overflow-x-auto rounded border bg-slate-50">
+                                            <table className="w-full min-w-[520px] text-xs">
+                                              <thead>
+                                                <tr className="border-b bg-slate-100 text-slate-500">
+                                                  <th className="p-1.5 text-left font-medium">Medicine</th>
+                                                  <th className="p-1.5 text-right font-medium">Qty Before</th>
+                                                  <th className="p-1.5 text-right font-medium">Qty After</th>
+                                                  <th className="p-1.5 text-left font-medium">Batch Before</th>
+                                                  <th className="p-1.5 text-left font-medium">Batch After</th>
+                                                  <th className="p-1.5 text-left font-medium">Expiry Before</th>
+                                                  <th className="p-1.5 text-left font-medium">Expiry After</th>
+                                                </tr>
+                                              </thead>
+                                              <tbody className="divide-y">
+                                                {entry.details.changes.map((ch) => {
+                                                  const qtyChanged = ch.previous.quantityReceived !== ch.current.quantityReceived;
+                                                  const batchChanged = ch.previous.batchNumber !== ch.current.batchNumber;
+                                                  const expiryChanged = ch.previous.expiryDate !== ch.current.expiryDate;
+                                                  return (
+                                                    <tr key={ch.lineId}>
+                                                      <td className="p-1.5 font-medium">{ch.medicine}</td>
+                                                      <td className={`p-1.5 text-right ${qtyChanged ? "text-red-600 line-through" : "text-slate-500"}`}>
+                                                        {ch.previous.quantityReceived}
+                                                      </td>
+                                                      <td className={`p-1.5 text-right font-semibold ${qtyChanged ? "text-green-700" : "text-slate-500"}`}>
+                                                        {ch.current.quantityReceived}
+                                                      </td>
+                                                      <td className={`p-1.5 ${batchChanged ? "text-red-600 line-through" : "text-slate-500"}`}>
+                                                        {ch.previous.batchNumber}
+                                                      </td>
+                                                      <td className={`p-1.5 font-medium ${batchChanged ? "text-green-700" : "text-slate-500"}`}>
+                                                        {ch.current.batchNumber}
+                                                      </td>
+                                                      <td className={`p-1.5 ${expiryChanged ? "text-red-600 line-through" : "text-slate-500"}`}>
+                                                        {formatDate(ch.previous.expiryDate)}
+                                                      </td>
+                                                      <td className={`p-1.5 font-medium ${expiryChanged ? "text-green-700" : "text-slate-500"}`}>
+                                                        {formatDate(ch.current.expiryDate)}
+                                                      </td>
+                                                    </tr>
+                                                  );
+                                                })}
+                                              </tbody>
+                                            </table>
+                                          </div>
+                                        )}
+                                      </div>
+                                    ))
+                                  )}
+                                </div>
+                              )}
+
                               <div className="overflow-x-auto rounded border bg-white">
                                 <table className="w-full text-sm">
                                   <thead className="bg-slate-50 text-sm text-slate-500">

@@ -14,11 +14,8 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { MedicineCombobox } from "@/components/ui/medicine-combobox";
 import { formatDateTime } from "@/lib/datetime";
 
-type FormType = "patient" | "ams";
-
 interface Facility { id: string; name: string; code: string; facilityType: string }
 interface Medicine { id: string; medicineName: string }
-interface DispenseRecord { id: string; medicineId: string; batchNumber: string; quantity: number; dispensedAt: string; medicine: { medicineName: string } }
 interface ReturnRecord {
   id: string;
   returnType: string;
@@ -34,9 +31,9 @@ interface ReturnRecord {
 const STORE_TYPES = ["AMS_CENTRAL", "MEDICAL_STORE", "WAREHOUSE", "REGIONAL_STORE"];
 
 const TYPE_LABEL: Record<string, string> = {
-  PATIENT_RETURN: "Patient",
+  PATIENT_RETURN: "Patient Return",
   FACILITY_TO_AMS: "→ AMS",
-  INTER_FACILITY: "Inter-Facility",
+  INTER_FACILITY: "Transfer Return",
 };
 const TYPE_COLOR: Record<string, string> = {
   PATIENT_RETURN: "bg-blue-100 text-blue-700",
@@ -44,7 +41,6 @@ const TYPE_COLOR: Record<string, string> = {
   INTER_FACILITY: "bg-teal-100 text-teal-700",
 };
 
-const emptyPatient = { patientId: "", dispensingRecordId: "", medicineId: "", quantity: 0, condition: "UNOPENED", returnReason: "No longer needed", batchNumber: "" };
 const emptyAms = { receivingFacilityId: "", medicineId: "", batchNumber: "", expiryDate: "", quantity: 0, returnReason: "Near expiry" };
 
 export default function ReturnsPage() {
@@ -56,16 +52,13 @@ export default function ReturnsPage() {
   const [returns, setReturns] = useState<ReturnRecord[]>([]);
   const [medicines, setMedicines] = useState<Medicine[]>([]);
   const [allFacilities, setAllFacilities] = useState<Facility[]>([]);
-  const [dispenseRecords, setDispenseRecords] = useState<DispenseRecord[]>([]);
   const [facilityFilter, setFacilityFilter] = useState("");
 
   const [showForm, setShowForm] = useState(false);
-  const [formType, setFormType] = useState<FormType>("patient");
   const [msg, setMsg] = useState("");
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
 
-  const [patient, setPatient] = useState(emptyPatient);
   const [ams, setAms] = useState(emptyAms);
 
   const load = () => {
@@ -82,27 +75,22 @@ export default function ReturnsPage() {
 
   if (!hasAccess) return null;
 
-  const loadDispenseRecords = (patientId: string) => {
-    if (!patientId) return;
-    api<DispenseRecord[]>(`/dispensing?patientId=${patientId}`).then(setDispenseRecords).catch(() => {});
-  };
-
   const amsFacilities = allFacilities.filter((f) => STORE_TYPES.includes(f.facilityType));
 
-  const resetForms = () => {
-    setPatient(emptyPatient); setAms(emptyAms); setDispenseRecords([]);
-  };
-
-  const submit = async (endpoint: string, body: object) => {
+  const submit = async (e: React.FormEvent) => {
+    e.preventDefault();
     setError(""); setMsg(""); setBusy(true);
     try {
-      await api(endpoint, { method: "POST", body: JSON.stringify(body) });
-      setMsg("Return processed successfully.");
+      await api("/returns/facility", {
+        method: "POST",
+        body: JSON.stringify({ returnType: "FACILITY_TO_AMS", ...ams, quantity: +ams.quantity }),
+      });
+      setMsg("Return to AMS processed successfully.");
       setShowForm(false);
-      resetForms();
+      setAms(emptyAms);
       load();
-    } catch (e: unknown) {
-      setError(e instanceof Error ? e.message : "Failed to process return");
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : "Failed to process return");
     } finally {
       setBusy(false);
     }
@@ -115,7 +103,7 @@ export default function ReturnsPage() {
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div>
           <Link href="/stock" className="text-sm text-medflow-600 hover:underline">← Stock Management</Link>
-          <h1 className="mt-1 text-2xl font-bold">Returns</h1>
+          <h1 className="mt-1 text-2xl font-bold">Returns to AMS</h1>
           <p className="text-sm text-slate-500">
             {isAdmin
               ? facilityFilter ? allFacilities.find((f) => f.id === facilityFilter)?.name : "All Facilities"
@@ -131,110 +119,51 @@ export default function ReturnsPage() {
           )}
           {canCreate && (
             <Button size="lg" onClick={() => { setShowForm((s) => !s); setError(""); setMsg(""); }}>
-              {showForm ? "Close" : "+ New Return"}
+              {showForm ? "Close" : "+ Return to AMS"}
             </Button>
           )}
         </div>
       </div>
 
+
       {msg && <p className="rounded-lg bg-green-50 p-3 text-sm text-green-700">{msg}</p>}
       {error && <p className="rounded-lg bg-red-50 p-3 text-sm text-red-700">{error}</p>}
 
-      {/* New Return form */}
+      {/* New Return to AMS form */}
       {showForm && canCreate && (
         <Card>
-          <CardHeader><CardTitle>New Return</CardTitle></CardHeader>
-          <CardContent className="space-y-4">
-            <div className="flex flex-wrap gap-2">
-              {([["patient", "Patient Return"], ["ams", "Facility → AMS"]] as const).map(([t, label]) => (
-                <button key={t} type="button" onClick={() => setFormType(t)}
-                  className={`rounded-full px-3 py-1 text-sm font-medium ${formType === t ? "bg-medflow-600 text-white" : "bg-slate-100 text-slate-600 hover:bg-slate-200"}`}>
-                  {label}
-                </button>
-              ))}
-            </div>
-
-            {/* Patient Return */}
-            {formType === "patient" && (
-              <form onSubmit={(e) => { e.preventDefault(); submit("/returns/patient", { ...patient, quantity: +patient.quantity }); }} className="space-y-3">
-                <div>
-                  <Label>Patient ID</Label>
-                  <Input value={patient.patientId} onChange={(e) => { setPatient({ ...patient, patientId: e.target.value }); loadDispenseRecords(e.target.value); }} required />
-                </div>
-                {dispenseRecords.length > 0 && (
-                  <div>
-                    <Label>Original Dispensing Record (optional)</Label>
-                    <select className="mt-1 h-10 w-full rounded-lg border px-3 text-sm" value={patient.dispensingRecordId} onChange={(e) => {
-                      const rec = dispenseRecords.find((r) => r.id === e.target.value);
-                      setPatient({ ...patient, dispensingRecordId: e.target.value, medicineId: rec?.medicineId ?? patient.medicineId, batchNumber: rec?.batchNumber ?? patient.batchNumber, quantity: rec?.quantity ?? patient.quantity });
-                    }}>
-                      <option value="">Select dispensing record…</option>
-                      {dispenseRecords.map((r) => <option key={r.id} value={r.id}>{r.medicine.medicineName} — {r.quantity} units — {new Date(r.dispensedAt).toLocaleDateString()}</option>)}
-                    </select>
-                  </div>
-                )}
-                <div>
-                  <Label>Medicine</Label>
-                  <MedicineCombobox medicines={medicines} value={patient.medicineId} onChange={(id) => setPatient({ ...patient, medicineId: id })} className="mt-1" />
-                </div>
-                <div className="grid grid-cols-2 gap-3">
-                  <div><Label>Quantity</Label><Input type="number" min={1} value={patient.quantity || ""} onChange={(e) => setPatient({ ...patient, quantity: +e.target.value })} required /></div>
-                  <div><Label>Batch Number</Label><Input value={patient.batchNumber} onChange={(e) => setPatient({ ...patient, batchNumber: e.target.value })} /></div>
-                </div>
-                <div>
-                  <Label>Condition</Label>
-                  <select className="mt-1 h-10 w-full rounded-lg border px-3 text-sm" value={patient.condition} onChange={(e) => setPatient({ ...patient, condition: e.target.value })}>
-                    <option value="UNOPENED">Unopened</option>
-                    <option value="OPENED_UNDAMAGED">Opened but undamaged</option>
-                    <option value="DAMAGED_CONTAMINATED">Damaged / Contaminated</option>
-                  </select>
-                </div>
-                <div>
-                  <Label>Reason</Label>
-                  <select className="mt-1 h-10 w-full rounded-lg border px-3 text-sm" value={patient.returnReason} onChange={(e) => setPatient({ ...patient, returnReason: e.target.value })}>
-                    <option>No longer needed</option>
-                    <option>Wrong medication dispensed</option>
-                    <option>Patient refused medication</option>
-                    <option>Other</option>
-                  </select>
-                </div>
-                <Button type="submit" disabled={busy}>Process Patient Return</Button>
-              </form>
-            )}
-
-            {/* Facility → AMS Return */}
-            {formType === "ams" && (
-              <form onSubmit={(e) => { e.preventDefault(); submit("/returns/facility", { returnType: "FACILITY_TO_AMS", ...ams, quantity: +ams.quantity }); }} className="space-y-3">
-                <div>
-                  <Label>Receiving AMS / Medical Store *</Label>
-                  <select className="mt-1 h-10 w-full rounded-lg border px-3 text-sm" value={ams.receivingFacilityId} onChange={(e) => setAms({ ...ams, receivingFacilityId: e.target.value })} required>
-                    <option value="">Select AMS…</option>
-                    {amsFacilities.map((f) => <option key={f.id} value={f.id}>{f.name} ({f.facilityType})</option>)}
-                  </select>
-                </div>
-                <div>
-                  <Label>Medicine *</Label>
-                  <MedicineCombobox medicines={medicines} value={ams.medicineId} onChange={(id) => setAms({ ...ams, medicineId: id })} className="mt-1" />
-                </div>
-                <div className="grid grid-cols-2 gap-3">
-                  <div><Label>Batch Number *</Label><Input value={ams.batchNumber} onChange={(e) => setAms({ ...ams, batchNumber: e.target.value })} required /></div>
-                  <div><Label>Expiry Date *</Label><Input type="date" value={ams.expiryDate} onChange={(e) => setAms({ ...ams, expiryDate: e.target.value })} required /></div>
-                  <div><Label>Quantity *</Label><Input type="number" min={1} value={ams.quantity || ""} onChange={(e) => setAms({ ...ams, quantity: +e.target.value })} required /></div>
-                </div>
-                <div>
-                  <Label>Return Reason *</Label>
-                  <select className="mt-1 h-10 w-full rounded-lg border px-3 text-sm" value={ams.returnReason} onChange={(e) => setAms({ ...ams, returnReason: e.target.value })}>
-                    <option>Near expiry</option>
-                    <option>Surplus stock</option>
-                    <option>Product recall</option>
-                    <option>Damaged</option>
-                    <option>Other</option>
-                  </select>
-                </div>
-                <p className="text-sm text-slate-500">Stock will be immediately decremented from your facility and credited to the AMS.</p>
-                <Button type="submit" disabled={busy}>Process Return to AMS</Button>
-              </form>
-            )}
+          <CardHeader><CardTitle>Return to AMS</CardTitle></CardHeader>
+          <CardContent>
+            <form onSubmit={submit} className="space-y-3">
+              <div>
+                <Label>Receiving AMS / Medical Store *</Label>
+                <select className="mt-1 h-10 w-full rounded-lg border px-3 text-sm" value={ams.receivingFacilityId} onChange={(e) => setAms({ ...ams, receivingFacilityId: e.target.value })} required>
+                  <option value="">Select AMS…</option>
+                  {amsFacilities.map((f) => <option key={f.id} value={f.id}>{f.name} ({f.facilityType})</option>)}
+                </select>
+              </div>
+              <div>
+                <Label>Medicine *</Label>
+                <MedicineCombobox medicines={medicines} value={ams.medicineId} onChange={(id) => setAms({ ...ams, medicineId: id })} className="mt-1" />
+              </div>
+              <div className="grid grid-cols-2 gap-3">
+                <div><Label>Batch Number *</Label><Input value={ams.batchNumber} onChange={(e) => setAms({ ...ams, batchNumber: e.target.value })} required /></div>
+                <div><Label>Expiry Date *</Label><Input type="date" value={ams.expiryDate} onChange={(e) => setAms({ ...ams, expiryDate: e.target.value })} required /></div>
+                <div><Label>Quantity *</Label><Input type="number" min={1} value={ams.quantity || ""} onChange={(e) => setAms({ ...ams, quantity: +e.target.value })} required /></div>
+              </div>
+              <div>
+                <Label>Return Reason *</Label>
+                <select className="mt-1 h-10 w-full rounded-lg border px-3 text-sm" value={ams.returnReason} onChange={(e) => setAms({ ...ams, returnReason: e.target.value })}>
+                  <option>Near expiry</option>
+                  <option>Surplus stock</option>
+                  <option>Product recall</option>
+                  <option>Damaged</option>
+                  <option>Other</option>
+                </select>
+              </div>
+              <p className="text-sm text-slate-500">Stock will be immediately decremented from your facility and credited to the AMS.</p>
+              <Button type="submit" disabled={busy}>Process Return to AMS</Button>
+            </form>
           </CardContent>
         </Card>
       )}

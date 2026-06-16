@@ -857,6 +857,28 @@ router.patch("/:id/receipts/:receiptId", receiveEdit, async (req, res, next) => 
   }
 });
 
+router.get("/:id/receipts/:receiptId/history", ordersOrReceiveView, async (req, res, next) => {
+  try {
+    const facilityWhere = orderFacilityWhere(req, req.query.facilityId as string | undefined);
+    const order = await prisma.stockOrder.findFirst({
+      where: { id: req.params.id, ...facilityWhere, deletedAt: null },
+    });
+    if (!order) return res.status(404).json({ error: "Order not found" });
+    const receipt = await prisma.stockReceipt.findFirst({
+      where: { id: req.params.receiptId, orderId: order.id },
+    });
+    if (!receipt) return res.status(404).json({ error: "Receipt not found" });
+    const history = await prisma.auditLog.findMany({
+      where: { entityType: "StockReceipt", entityId: receipt.id },
+      include: { user: { select: { id: true, firstName: true, lastName: true } } },
+      orderBy: { createdAt: "desc" },
+    });
+    res.json(history);
+  } catch (e) {
+    next(e);
+  }
+});
+
 router.post("/:id/cancel", ordersEdit, async (req, res, next) => {
   try {
     const facilityWhere = orderFacilityWhere(req, req.query.facilityId as string | undefined);

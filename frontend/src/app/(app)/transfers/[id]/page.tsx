@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { Fragment, useCallback, useEffect, useState } from "react";
 import { useParams } from "next/navigation";
 import Link from "next/link";
 import { api } from "@/lib/api";
@@ -10,8 +10,8 @@ import { can } from "@/lib/permissions";
 import { useRequirePermission } from "@/hooks/useRequirePermission";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { formatDateTime, formatDate } from "@/lib/datetime";
 
 interface TransferLine {
   id: string;
@@ -23,40 +23,32 @@ interface TransferLine {
   quantityTransferred: number;
   quantityReceived: number | null;
   shortfallFlag: boolean;
+  mismatchReason: string | null;
+  remarks: string | null;
 }
-
-interface FacilityOption { id: string; name: string; code: string }
-interface SourceBatch { id: string; batchNumber: string; expiryDate: string; quantity: number; medicine: { id: string; medicineName: string } }
-interface EditLine { batchId: string; quantityTransferred: number }
 
 interface TransferDetail {
   id: string;
   transferCode: string;
   status: string;
-  priority: string;
   authorizationNotes: string | null;
   createdAt: string;
-  authorizedAt: string | null;
   dispatchedAt: string | null;
   receivedAt: string | null;
   fromFacility: { id: string; name: string; code: string };
   toFacility: { id: string; name: string; code: string };
   lines: TransferLine[];
   createdBy: { firstName: string; lastName: string } | null;
-  authorizedBy: { firstName: string; lastName: string } | null;
   receivedBy: { firstName: string; lastName: string } | null;
 }
 
 const STATUS_COLORS: Record<string, string> = {
-  PENDING: "bg-amber-100 text-amber-700",
-  AUTHORIZED: "bg-blue-100 text-blue-700",
   IN_TRANSIT: "bg-cyan-100 text-cyan-700",
-  RECEIVED: "bg-emerald-100 text-emerald-700",
   PARTIALLY_RECEIVED: "bg-orange-100 text-orange-700",
-  CANCELLED: "bg-red-100 text-red-600",
+  RECEIVED: "bg-green-100 text-green-700",
+  CANCELLED: "bg-slate-100 text-slate-600",
 };
 
-const fmtDate = (d?: string | null) => (d ? new Date(d).toLocaleString() : "—");
 const personName = (p?: { firstName: string; lastName: string } | null) => (p ? `${p.firstName} ${p.lastName}` : "—");
 
 export default function TransferDetailPage() {
@@ -74,13 +66,8 @@ export default function TransferDetailPage() {
   // receive form: lineId -> quantity to receive now
   const [receiveQty, setReceiveQty] = useState<Record<string, number>>({});
   const [finalizeShortfall, setFinalizeShortfall] = useState(false);
-
-  // edit form (PENDING transfers only)
-  const [editing, setEditing] = useState(false);
-  const [facilities, setFacilities] = useState<FacilityOption[]>([]);
-  const [srcBatches, setSrcBatches] = useState<SourceBatch[]>([]);
-  const [editTo, setEditTo] = useState("");
-  const [editLines, setEditLines] = useState<EditLine[]>([]);
+  const [mismatchReason, setMismatchReason] = useState<Record<string, string>>({});
+  const [remarks, setRemarks] = useState<Record<string, string>>({});
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -112,40 +99,10 @@ export default function TransferDetailPage() {
   const canEdit = can(user?.permissions, "transfers", "edit");
 
   const status = transfer.status;
-  const showAuthorize = status === "PENDING" && isSender && canApprove;
-  const showDispatch = status === "AUTHORIZED" && isSender && canEdit;
-  const showCancel = (status === "PENDING" || status === "AUTHORIZED") && isSender && canEdit;
-  const showReceive = (status === "IN_TRANSIT" || status === "PARTIALLY_RECEIVED") && isReceiver && canApprove;
-  const showEdit = status === "PENDING" && isSender && canEdit;
-
-  const startEdit = () => {
-    setError(""); setSuccess("");
-    setEditTo(transfer.toFacility.id);
-    setEditLines(transfer.lines.map((l) => ({ batchId: l.batchId, quantityTransferred: l.quantityTransferred })));
-    setEditing(true);
-    api<FacilityOption[]>("/auth/facilities").then(setFacilities).catch(() => {});
-    api<SourceBatch[]>(`/stock/batches?facilityId=${transfer.fromFacility.id}`).then(setSrcBatches).catch(() => {});
-  };
-
-  const availableBatches = srcBatches.filter((b) => b.quantity > 0);
-  const updateEditLine = (i: number, patch: Partial<EditLine>) =>
-    setEditLines((ls) => ls.map((l, idx) => (idx === i ? { ...l, ...patch } : l)));
-  const addEditLine = () => setEditLines((ls) => [...ls, { batchId: "", quantityTransferred: 0 }]);
-  const removeEditLine = (i: number) => setEditLines((ls) => ls.filter((_, idx) => idx !== i));
-
-  const saveEdit = () => {
-    if (!editTo) { setError("Destination facility required"); return; }
-    if (editTo === transfer.fromFacility.id) { setError("Destination must differ from the sending facility"); return; }
-    if (!editLines.length || editLines.some((l) => !l.batchId || l.quantityTransferred <= 0)) {
-      setError("Each line needs a batch and a quantity greater than 0"); return;
-    }
-    act("Transfer updated.", () =>
-      api(`/transfers/${transfer.id}`, {
-        method: "PATCH",
-        body: JSON.stringify({ toFacilityId: editTo, lines: editLines }),
-      }).then(() => setEditing(false))
-    );
-  };
+  const receivable = status === "IN_TRANSIT" || status === "PARTIALLY_RECEIVED";
+  const showReceive = receivable && isReceiver && canApprove;
+  const anyReceived = transfer.lines.some((l) => (l.quantityReceived ?? 0) > 0);
+  const showCancel = status === "IN_TRANSIT" && !anyReceived && isSender && canEdit;
 
   const remaining = (l: TransferLine) => Math.max(0, l.quantityTransferred - (l.quantityReceived ?? 0));
 
@@ -162,22 +119,48 @@ export default function TransferDetailPage() {
     }
   };
 
-  const authorize = () => act("Transfer authorized.", () => api(`/transfers/${transfer.id}/authorize`, { method: "POST" }));
-  const dispatch = () => act("Transfer dispatched — stock deducted from source.", () => api(`/transfers/${transfer.id}/dispatch`, { method: "POST" }));
-  const cancel = () => act("Transfer cancelled.", () => api(`/transfers/${transfer.id}/cancel`, { method: "POST" }));
+  const cancel = () => {
+    if (!window.confirm("Recall this transfer? The stock will be returned to the sending facility.")) return;
+    act("Transfer cancelled — stock returned to the source facility.", () => api(`/transfers/${transfer.id}/cancel`, { method: "POST" }));
+  };
 
   const submitReceive = () => {
-    const lines = transfer.lines
-      .map((l) => ({ lineId: l.id, quantityReceived: Number(receiveQty[l.id] ?? 0) }))
-      .filter((l) => l.quantityReceived > 0);
+    // When finalizing shortfall, include ALL lines (even qty=0) so backend can validate
+    // mismatch reason for lines that were never received.
+    const lines = finalizeShortfall
+      ? transfer.lines.map((l) => ({
+          lineId: l.id,
+          quantityReceived: Number(receiveQty[l.id] ?? 0),
+          mismatchReason: mismatchReason[l.id] || undefined,
+          remarks: remarks[l.id] || undefined,
+        }))
+      : transfer.lines
+          .map((l) => ({ lineId: l.id, quantityReceived: Number(receiveQty[l.id] ?? 0) }))
+          .filter((l) => l.quantityReceived > 0);
+
     if (lines.length === 0 && !finalizeShortfall) {
       setError("Enter a quantity to receive on at least one line, or tick 'close with shortfall'.");
       return;
     }
-    // over-receipt guard mirrors the backend (which is authoritative)
     for (const l of transfer.lines) {
       const q = Number(receiveQty[l.id] ?? 0);
       if (q > remaining(l)) { setError(`Cannot receive ${q} for ${l.medicine?.medicineName ?? "line"} — only ${remaining(l)} remaining.`); return; }
+    }
+    // Client-side mismatch validation when closing with shortfall
+    if (finalizeShortfall) {
+      for (const l of transfer.lines) {
+        const newTotal = (l.quantityReceived ?? 0) + Number(receiveQty[l.id] ?? 0);
+        if (newTotal < l.quantityTransferred) {
+          if (!mismatchReason[l.id]) {
+            setError(`Select a mismatch reason for ${l.medicine?.medicineName ?? l.batchNumber} (batch ${l.batchNumber}).`);
+            return;
+          }
+          if (!remarks[l.id]?.trim()) {
+            setError(`Remarks are required when received quantity differs from issued quantity for batch ${l.batchNumber}.`);
+            return;
+          }
+        }
+      }
     }
     act(
       finalizeShortfall ? "Receipt recorded; transfer closed with documented shortfall." : "Receipt recorded.",
@@ -192,167 +175,254 @@ export default function TransferDetailPage() {
   const totalReceived = transfer.lines.reduce((s, l) => s + (l.quantityReceived ?? 0), 0);
 
   return (
-    <div className="space-y-5">
+    <div className="space-y-6">
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div>
           <Link href="/transfers" className="text-sm text-medflow-600 hover:underline">← Transfers</Link>
           <h1 className="mt-1 flex items-center gap-2 text-2xl font-bold">
             {transfer.transferCode}
-            <span className={`rounded-full px-2 py-0.5 text-sm font-medium ${STATUS_COLORS[status] ?? ""}`}>{status.replace(/_/g, " ")}</span>
+            <span className={`rounded-full px-2 py-0.5 text-sm font-medium ${STATUS_COLORS[status] ?? "bg-slate-100 text-slate-700"}`}>{status.replace(/_/g, " ")}</span>
           </h1>
         </div>
+        {showCancel && (
+          <Button variant="outline" className="text-red-600" disabled={busy} onClick={cancel}>Recall / Cancel</Button>
+        )}
       </div>
 
       {success && <p className="rounded-lg bg-green-50 p-3 text-sm text-green-700">{success}</p>}
       {error && <p className="rounded-lg bg-red-50 p-3 text-sm text-red-700">{error}</p>}
 
-      {/* Summary */}
+      {/* Transfer details */}
       <Card>
-        <CardHeader><CardTitle>Transfer Summary</CardTitle></CardHeader>
+        <CardHeader><CardTitle>Transfer Details</CardTitle></CardHeader>
         <CardContent>
           <div className="grid gap-3 text-sm sm:grid-cols-2 lg:grid-cols-3">
-            <div><p className="text-xs uppercase tracking-wide text-slate-500">From</p><p className="font-medium">{transfer.fromFacility.name} ({transfer.fromFacility.code})</p></div>
-            <div><p className="text-xs uppercase tracking-wide text-slate-500">To</p><p className="font-medium">{transfer.toFacility.name} ({transfer.toFacility.code})</p></div>
-            <div><p className="text-xs uppercase tracking-wide text-slate-500">Created by</p><p className="font-medium">{personName(transfer.createdBy)} · {fmtDate(transfer.createdAt)}</p></div>
-            <div><p className="text-xs uppercase tracking-wide text-slate-500">Authorized by</p><p className="font-medium">{personName(transfer.authorizedBy)} · {fmtDate(transfer.authorizedAt)}</p></div>
-            <div><p className="text-xs uppercase tracking-wide text-slate-500">Received by</p><p className="font-medium">{personName(transfer.receivedBy)} · {fmtDate(transfer.receivedAt)}</p></div>
+            <div><p className="text-sm font-medium uppercase tracking-wide text-slate-500">From</p><p className="font-medium">{transfer.fromFacility.name} ({transfer.fromFacility.code})</p></div>
+            <div><p className="text-sm font-medium uppercase tracking-wide text-slate-500">To Facility</p><p className="font-medium">{transfer.toFacility.name} ({transfer.toFacility.code})</p></div>
+            <div><p className="text-sm font-medium uppercase tracking-wide text-slate-500">Status</p>
+              <span className={`inline-block rounded-full px-2 py-0.5 text-sm font-medium ${STATUS_COLORS[status] ?? "bg-slate-100 text-slate-700"}`}>{status.replace(/_/g, " ")}</span>
+            </div>
+            <div><p className="text-sm font-medium uppercase tracking-wide text-slate-500">Sent by</p><p className="font-medium">{personName(transfer.createdBy)}</p></div>
+            <div><p className="text-sm font-medium uppercase tracking-wide text-slate-500">Date of Issue</p><p className="font-medium">{formatDateTime(transfer.dispatchedAt ?? transfer.createdAt)}</p></div>
+            <div><p className="text-sm font-medium uppercase tracking-wide text-slate-500">Date Received</p><p className="font-medium">{transfer.receivedAt ? formatDateTime(transfer.receivedAt) : "—"}</p></div>
+            <div><p className="text-sm font-medium uppercase tracking-wide text-slate-500">Received by</p><p className="font-medium">{personName(transfer.receivedBy)}</p></div>
           </div>
           {transfer.authorizationNotes && <p className="mt-3 border-t pt-3 text-sm text-slate-600">Notes: {transfer.authorizationNotes}</p>}
         </CardContent>
       </Card>
 
-      {/* Actions */}
-      {(showAuthorize || showDispatch || showCancel || showEdit) && !editing && (
-        <Card>
-          <CardHeader><CardTitle>Actions</CardTitle></CardHeader>
-          <CardContent className="flex flex-wrap gap-2">
-            {showEdit && <Button onClick={startEdit} disabled={busy} variant="outline">Edit</Button>}
-            {showAuthorize && <Button onClick={authorize} disabled={busy}>Authorize</Button>}
-            {showDispatch && <Button onClick={dispatch} disabled={busy} className="bg-cyan-600 text-white hover:bg-cyan-700">Dispatch (deduct &amp; send)</Button>}
-            {showCancel && <Button onClick={cancel} disabled={busy} variant="outline" className="text-red-600">Cancel Transfer</Button>}
-          </CardContent>
-        </Card>
-      )}
-
-      {/* Edit form (PENDING only) */}
-      {editing && (
-        <Card>
-          <CardHeader><CardTitle>Edit Transfer</CardTitle></CardHeader>
-          <CardContent className="space-y-4">
-            <div className="max-w-md">
-              <Label>Destination Facility *</Label>
-              <select className="mt-1 h-10 w-full rounded-lg border px-3 text-sm" value={editTo} onChange={(e) => setEditTo(e.target.value)}>
-                <option value="">Select destination…</option>
-                {facilities.filter((f) => f.id !== transfer.fromFacility.id).map((f) => (
-                  <option key={f.id} value={f.id}>{f.name} ({f.code})</option>
-                ))}
-              </select>
-            </div>
-
-            <div className="space-y-3">
-              <div className="flex items-center justify-between">
-                <p className="text-sm font-medium text-slate-700">Stock Lines</p>
-                <Button type="button" size="sm" variant="outline" onClick={addEditLine}>+ Add Line</Button>
-              </div>
-              {editLines.map((line, i) => {
-                const selected = availableBatches.find((b) => b.id === line.batchId);
-                return (
-                  <div key={i} className="flex items-end gap-3">
-                    <div className="flex-1">
-                      <Label>Batch *</Label>
-                      <select className="mt-1 h-10 w-full rounded-lg border px-3 text-sm" value={line.batchId} onChange={(e) => updateEditLine(i, { batchId: e.target.value })}>
-                        <option value="">Select batch…</option>
-                        {availableBatches.map((b) => (
-                          <option key={b.id} value={b.id}>{b.medicine.medicineName} — {b.batchNumber} (qty {b.quantity}, exp {new Date(b.expiryDate).toLocaleDateString()})</option>
-                        ))}
-                      </select>
-                      {selected && <p className="mt-0.5 text-xs text-slate-400">Available: {selected.quantity}</p>}
-                    </div>
-                    <div className="w-28">
-                      <Label>Qty *</Label>
-                      <Input type="number" min={1} max={selected?.quantity} value={line.quantityTransferred || ""} onChange={(e) => updateEditLine(i, { quantityTransferred: Number(e.target.value) })} />
-                    </div>
-                    {editLines.length > 1 && (
-                      <Button type="button" variant="outline" size="sm" className="mb-0.5 text-red-600" onClick={() => removeEditLine(i)}>Remove</Button>
-                    )}
-                  </div>
-                );
-              })}
-            </div>
-
-            <div className="flex gap-2">
-              <Button onClick={saveEdit} disabled={busy}>{busy ? "Saving…" : "Save Changes"}</Button>
-              <Button variant="outline" onClick={() => { setEditing(false); setError(""); }}>Cancel</Button>
-            </div>
-          </CardContent>
-        </Card>
-      )}
-
-      {/* Lines + receive form */}
-      {!editing && (
+      {/* Medicine lines (Sent / Received / Remaining / Variance) */}
       <Card>
-        <CardHeader>
-          <CardTitle>{showReceive ? "Receive Stock" : "Lines"}</CardTitle>
-          {showReceive && <p className="text-sm text-slate-500">Enter quantities to receive — partial receipts are allowed and accumulate until the transfer is fully received.</p>}
-        </CardHeader>
+        <CardHeader><CardTitle>Medicine Lines</CardTitle></CardHeader>
         <CardContent className="p-0">
           <div className="overflow-x-auto">
-            <table className="w-full text-sm">
-              <thead className="border-b bg-slate-50 text-left text-slate-500">
+            <table className="w-full min-w-[620px] text-sm">
+              <thead className="border-b bg-slate-50 text-left text-sm text-slate-500">
                 <tr>
                   <th className="p-3">Medicine</th>
                   <th className="p-3">Batch</th>
-                  <th className="p-3 text-right">Transferred</th>
-                  <th className="p-3 text-right">Received</th>
+                  <th className="p-3 text-right">Issued Qty</th>
+                  <th className="p-3 text-right">Received Qty</th>
+                  <th className="p-3 text-right">Variance</th>
                   <th className="p-3 text-right">Remaining</th>
-                  {showReceive && <th className="p-3 text-right w-32">Receive Now</th>}
                 </tr>
               </thead>
               <tbody className="divide-y">
                 {transfer.lines.map((l) => {
                   const rem = remaining(l);
+                  const received = l.quantityReceived ?? 0;
+                  const variance = received - l.quantityTransferred;
                   return (
                     <tr key={l.id}>
                       <td className="p-3 font-medium">{l.medicine?.medicineName ?? "—"}</td>
-                      <td className="p-3 text-slate-600">{l.batch?.batchNumber ?? l.batchNumber} · exp {l.expiryDate ? new Date(l.expiryDate).toLocaleDateString() : "—"}</td>
+                      <td className="p-3 text-slate-600">{l.batch?.batchNumber ?? l.batchNumber} · exp {l.expiryDate ? formatDate(l.expiryDate) : "—"}</td>
                       <td className="p-3 text-right">{l.quantityTransferred}</td>
-                      <td className="p-3 text-right text-slate-500">{l.quantityReceived ?? 0}{l.shortfallFlag && <span className="ml-1 text-xs text-orange-600">(short)</span>}</td>
+                      <td className="p-3 text-right text-slate-600">{received}</td>
+                      <td className={`p-3 text-right font-medium ${variance < 0 ? "text-orange-600" : variance > 0 ? "text-blue-600" : "text-green-600"}`}>
+                        {variance === 0 ? "—" : variance > 0 ? `+${variance}` : `${variance}`}
+                        {l.shortfallFlag && <span className="ml-1 text-xs text-orange-600">(short)</span>}
+                      </td>
                       <td className={`p-3 text-right font-medium ${rem > 0 ? "text-orange-600" : "text-green-600"}`}>{rem}</td>
-                      {showReceive && (
-                        <td className="p-3">
-                          {rem === 0 ? (
-                            <span className="block text-right text-green-600">Complete</span>
-                          ) : (
-                            <Input type="number" min={0} max={rem} className="text-right"
-                              value={receiveQty[l.id] ?? 0}
-                              onChange={(e) => setReceiveQty((q) => ({ ...q, [l.id]: Math.max(0, Math.min(rem, Number(e.target.value))) }))} />
-                          )}
-                        </td>
-                      )}
                     </tr>
                   );
                 })}
               </tbody>
             </table>
           </div>
-
-          <div className="flex items-center justify-between gap-3 border-t p-3 text-sm">
-            <span className="text-slate-500">Total received {totalReceived} / {totalTransferred}</span>
-          </div>
-
-          {showReceive && (
-            <div className="space-y-3 border-t p-4">
-              <label className="flex items-center gap-2 text-sm text-slate-600">
-                <input type="checkbox" className="h-4 w-4 accent-medflow-600" checked={finalizeShortfall} onChange={(e) => setFinalizeShortfall(e.target.checked)} />
-                Close transfer now and record any undelivered remainder as a documented loss (use when no further delivery is expected).
-              </label>
-              <Button onClick={submitReceive} disabled={busy} className="bg-emerald-600 text-white hover:bg-emerald-700">
-                {busy ? "Saving…" : finalizeShortfall ? "Receive & Close" : "Confirm Receipt"}
-              </Button>
+          {/* Mismatch notes for finalized lines */}
+          {transfer.lines.some((l) => l.mismatchReason || l.remarks) && (
+            <div className="border-t p-3 space-y-1.5">
+              {transfer.lines.filter((l) => l.mismatchReason || l.remarks).map((l) => (
+                <div key={l.id} className="rounded bg-orange-50 px-3 py-2 text-sm">
+                  <span className="font-medium text-orange-800">{l.medicine?.medicineName ?? l.batchNumber}</span>
+                  {l.mismatchReason && <span className="ml-2 text-orange-700">Reason: {l.mismatchReason}</span>}
+                  {l.remarks && <span className="ml-2 text-slate-600">— {l.remarks}</span>}
+                </div>
+              ))}
             </div>
           )}
+          <div className="border-t p-3 text-sm text-slate-500">Total received {totalReceived} / {totalTransferred}</div>
         </CardContent>
       </Card>
+
+      {/* Receipt — highlighted once any stock has been received */}
+      {anyReceived && (
+        <Card className="border-green-300">
+          <CardHeader className="rounded-t-xl bg-green-50">
+            <CardTitle className="flex items-center gap-2 text-green-800">
+              <span className="inline-block h-2 w-2 rounded-full bg-green-600" />
+              Receipt
+              {status === "PARTIALLY_RECEIVED" && <span className="rounded-full bg-orange-100 px-2 py-0.5 text-xs font-medium text-orange-700">Partial</span>}
+              {status === "RECEIVED" && <span className="rounded-full bg-green-100 px-2 py-0.5 text-xs font-medium text-green-700">Complete</span>}
+            </CardTitle>
+          </CardHeader>
+          <CardContent className="space-y-3 pt-4">
+            <div className="flex flex-wrap gap-x-6 gap-y-1 text-sm">
+              <span className="text-slate-600">Received by: <strong>{personName(transfer.receivedBy)}</strong></span>
+              {transfer.receivedAt && (
+                <>
+                  <span className="text-slate-600">Date Received: <strong>{formatDateTime(transfer.receivedAt)}</strong></span>
+                  <span className="text-slate-600">Date of Issue: <strong>{formatDateTime(transfer.dispatchedAt ?? transfer.createdAt)}</strong></span>
+                  <span className="text-slate-600">To Facility: <strong>{transfer.toFacility.name}</strong></span>
+                </>
+              )}
+            </div>
+            <div className="overflow-x-auto rounded-lg border">
+              <table className="w-full min-w-[520px] text-sm">
+                <thead className="bg-slate-50/60 text-sm text-slate-500">
+                  <tr>
+                    <th className="p-2 text-left">Medicine</th>
+                    <th className="p-2 text-left">Batch</th>
+                    <th className="p-2 text-right">Issued Qty</th>
+                    <th className="p-2 text-right">Qty Received</th>
+                    <th className="p-2 text-right">Variance</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y">
+                  {transfer.lines.filter((l) => (l.quantityReceived ?? 0) > 0).map((l) => {
+                    const variance = (l.quantityReceived ?? 0) - l.quantityTransferred;
+                    return (
+                      <tr key={l.id}>
+                        <td className="p-2 font-medium">{l.medicine?.medicineName ?? "—"}</td>
+                        <td className="p-2 text-slate-500">{l.batch?.batchNumber ?? l.batchNumber}</td>
+                        <td className="p-2 text-right">{l.quantityTransferred}</td>
+                        <td className="p-2 text-right font-semibold">{l.quantityReceived ?? 0}</td>
+                        <td className={`p-2 text-right font-medium ${variance < 0 ? "text-orange-600" : variance > 0 ? "text-blue-600" : "text-green-600"}`}>
+                          {variance === 0 ? "—" : variance > 0 ? `+${variance}` : `${variance}`}
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+            {transfer.lines.some((l) => l.mismatchReason) && (
+              <div className="space-y-1.5 rounded-lg border border-orange-200 bg-orange-50 p-3">
+                <p className="text-xs font-semibold uppercase tracking-wide text-orange-700">Mismatch Notes</p>
+                {transfer.lines.filter((l) => l.mismatchReason).map((l) => (
+                  <div key={l.id} className="text-sm text-slate-700">
+                    <span className="font-medium">{l.medicine?.medicineName ?? l.batchNumber}</span>
+                    <span className="ml-2 text-orange-700">({l.mismatchReason})</span>
+                    {l.remarks && <span className="ml-2 text-slate-600">— {l.remarks}</span>}
+                  </div>
+                ))}
+              </div>
+            )}
+          </CardContent>
+        </Card>
+      )}
+
+      {/* Receive form (destination only, while in transit) */}
+      {showReceive && (
+        <Card>
+          <CardHeader>
+            <CardTitle>Record Receipt</CardTitle>
+            <p className="text-sm text-slate-500">Enter the quantities you received — partial receipts are allowed and accumulate until the transfer is fully received.</p>
+          </CardHeader>
+          <CardContent className="space-y-4">
+            <div className="overflow-x-auto rounded-lg border">
+              <table className="w-full min-w-[520px] text-sm">
+                <thead className="bg-slate-50 text-left text-sm text-slate-500">
+                  <tr>
+                    <th className="p-3">Medicine</th>
+                    <th className="p-3">Batch</th>
+                    <th className="p-3 text-right">Issued</th>
+                    <th className="p-3 text-right">Remaining</th>
+                    <th className="p-3 text-right w-36">Receive Now</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y">
+                  {transfer.lines.map((l) => {
+                    const rem = remaining(l);
+                    const receiveNow = Number(receiveQty[l.id] ?? 0);
+                    const projectedTotal = (l.quantityReceived ?? 0) + receiveNow;
+                    const willHaveShortfall = finalizeShortfall && projectedTotal < l.quantityTransferred;
+                    return (
+                      <Fragment key={l.id}>
+                        <tr>
+                          <td className="p-3 font-medium">{l.medicine?.medicineName ?? "—"}</td>
+                          <td className="p-3 text-slate-600">{l.batch?.batchNumber ?? l.batchNumber}</td>
+                          <td className="p-3 text-right text-slate-500">{l.quantityTransferred}</td>
+                          <td className={`p-3 text-right font-medium ${rem > 0 ? "text-orange-600" : "text-green-600"}`}>{rem}</td>
+                          <td className="p-3">
+                            {rem === 0 ? (
+                              <span className="block text-right text-green-600">Complete</span>
+                            ) : (
+                              <Input type="number" min={0} max={rem} className="text-right"
+                                value={receiveQty[l.id] ?? 0}
+                                onChange={(e) => setReceiveQty((q) => ({ ...q, [l.id]: Math.max(0, Math.min(rem, Number(e.target.value))) }))} />
+                            )}
+                          </td>
+                        </tr>
+                        {willHaveShortfall && (
+                          <tr className="bg-orange-50">
+                            <td colSpan={5} className="px-3 pb-3 pt-1">
+                              <div className="grid gap-2 sm:grid-cols-2">
+                                <div>
+                                  <label className="mb-1 block text-xs font-medium text-orange-700">Mismatch Reason *</label>
+                                  <select
+                                    className="h-9 w-full rounded border border-orange-300 bg-white px-2 text-sm"
+                                    value={mismatchReason[l.id] ?? ""}
+                                    onChange={(e) => setMismatchReason((r) => ({ ...r, [l.id]: e.target.value }))}
+                                  >
+                                    <option value="">Select reason…</option>
+                                    <option>Damaged</option>
+                                    <option>Missing in Transit</option>
+                                    <option>Expired</option>
+                                    <option>Counting Error</option>
+                                    <option>Other</option>
+                                  </select>
+                                </div>
+                                <div>
+                                  <label className="mb-1 block text-xs font-medium text-orange-700">Remarks *</label>
+                                  <Input
+                                    placeholder="Required — describe the discrepancy"
+                                    value={remarks[l.id] ?? ""}
+                                    onChange={(e) => setRemarks((r) => ({ ...r, [l.id]: e.target.value }))}
+                                    className="border-orange-300"
+                                  />
+                                </div>
+                              </div>
+                              <p className="mt-1 text-xs text-orange-600">Remarks are required when received quantity differs from issued quantity.</p>
+                            </td>
+                          </tr>
+                        )}
+                      </Fragment>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+
+            <label className="flex items-center gap-2 text-sm text-slate-600">
+              <input type="checkbox" className="h-4 w-4 accent-medflow-600" checked={finalizeShortfall} onChange={(e) => setFinalizeShortfall(e.target.checked)} />
+              Close transfer now and record any undelivered remainder as a documented loss (use when no further delivery is expected).
+            </label>
+            <Button onClick={submitReceive} disabled={busy} className="bg-emerald-600 text-white hover:bg-emerald-700">
+              {busy ? "Saving…" : finalizeShortfall ? "Receive & Close" : "Confirm Receipt"}
+            </Button>
+          </CardContent>
+        </Card>
       )}
     </div>
   );

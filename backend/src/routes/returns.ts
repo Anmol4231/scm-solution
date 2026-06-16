@@ -219,10 +219,12 @@ router.get("/", async (req, res, next) => {
   try {
     const facilityId = getFacilityId(req, req.query.facilityId as string);
     const returnType = req.query.returnType as string | undefined;
+    const patientId = req.query.patientId as string | undefined;
     const returns = await prisma.medicineReturn.findMany({
       where: {
         ...(facilityId ? { facilityId } : {}),
         ...(returnType ? { returnType: returnType as ReturnType } : {}),
+        ...(patientId ? { patientId } : {}),
       },
       include: {
         medicine: true,

@@ -58,7 +58,7 @@ export default function ReceiveTransferPage() {
       <div>
         <Link href="/transfers" className="text-sm text-medflow-600 hover:underline">← Transfers</Link>
         <h1 className="mt-1 text-2xl font-bold">Receive Transfers</h1>
-        <p className="text-sm text-slate-500">Incoming transfers awaiting receipt. Open one to confirm received quantities (partial receipts supported).</p>
+        <p className="text-sm text-slate-500">Incoming transfers in transit to your facility. Open one to record what you received — partial receipts are supported.</p>
       </div>
 
       <Card>

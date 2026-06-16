@@ -19,7 +19,7 @@ function apiBaseUrl() {
 interface RxMedicineLine {
   id: string;
   medicineId: string;
-  medicine: { medicineName: string };
+  medicine: { medicineName: string; strengths?: { strength: string }[] };
   dosage?: string | null;
   form?: string | null;
   quantity?: number | null;
@@ -34,6 +34,7 @@ interface RxDispenseRecord {
   batchNumber: string;
   expiryDate: string;
   dispensedAt: string;
+  dispensedBy?: { firstName: string; lastName: string } | null;
 }
 
 interface RxDetail {
@@ -248,7 +249,7 @@ export default function PrescriptionDetailPage() {
                     return (
                       <tr key={m.id}>
                         <td className="p-2 pl-3 font-medium">{m.medicine.medicineName}</td>
-                        <td className="p-2 text-slate-600">{m.dosage || "—"}</td>
+                        <td className="p-2 text-slate-600">{m.dosage || m.medicine.strengths?.map((s) => s.strength).filter(Boolean).join(" / ") || "—"}</td>
                         <td className="p-2 text-right">{m.quantity ?? <span className="text-orange-600" title="No prescribed quantity set — dispensing is not limited">No limit</span>}</td>
                         <td className="p-2 text-right">{dispensed}</td>
                         <td className={`p-2 text-right font-medium ${remaining === 0 ? "text-emerald-600" : ""}`}>{remaining ?? "—"}</td>
@@ -278,6 +279,7 @@ export default function PrescriptionDetailPage() {
                     <th className="p-2">Batch</th>
                     <th className="p-2">Expiry</th>
                     <th className="p-2">Dispensed at</th>
+                    <th className="p-2">Dispensed by</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y">
@@ -288,6 +290,7 @@ export default function PrescriptionDetailPage() {
                       <td className="p-2 text-slate-600">{d.batchNumber}</td>
                       <td className="p-2 text-slate-600">{new Date(d.expiryDate).toLocaleDateString()}</td>
                       <td className="p-2 text-slate-600">{new Date(d.dispensedAt).toLocaleString()}</td>
+                      <td className="p-2 text-slate-600">{d.dispensedBy ? `${d.dispensedBy.firstName} ${d.dispensedBy.lastName}` : "—"}</td>
                     </tr>
                   ))}
                 </tbody>

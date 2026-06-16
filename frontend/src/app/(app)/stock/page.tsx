@@ -12,6 +12,7 @@ import {
   AlertTriangle,
   History,
   BarChart3,
+  Lock,
   type LucideIcon,
 } from "lucide-react";
 import { useAuth } from "@/lib/auth-context";
@@ -29,7 +30,7 @@ interface HubItem {
 const HUB_ITEMS: HubItem[] = [
   {
     href: "/stock/in-hand",
-    label: "Stock on Hand",
+    label: "Stock in Hand",
     description: "Real-time inventory across all batches",
     icon: BarChart3,
     color: "text-medflow-600 bg-medflow-50",
@@ -107,8 +108,6 @@ export default function StockManagementPage() {
 
   if (!hasAnyAccess) return null;
 
-  const visibleItems = HUB_ITEMS.filter((item) => can(user!.permissions, item.module, "view"));
-
   return (
     <div className="space-y-5">
       <div>
@@ -118,21 +117,41 @@ export default function StockManagementPage() {
         </p>
       </div>
 
-      <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
-        {visibleItems.map((item) => {
+      {/* All actions are shown; ones you cannot access are disabled (greyed out). */}
+      <div className="grid auto-rows-fr gap-3 sm:grid-cols-2 lg:grid-cols-4">
+        {HUB_ITEMS.map((item) => {
           const Icon = item.icon;
-          return (
-            <Link key={item.href} href={item.href}>
-              <div className="group flex h-full flex-col gap-3 rounded-xl border bg-white p-4 transition hover:border-medflow-300 hover:shadow-sm">
-                <span className={`w-fit rounded-lg p-2.5 ${item.color}`}>
-                  <Icon className="h-5 w-5" />
-                </span>
-                <div>
-                  <p className="font-semibold text-slate-800 group-hover:text-medflow-700">{item.label}</p>
-                  <p className="mt-0.5 text-sm text-slate-500">{item.description}</p>
-                </div>
+          const allowed = can(user!.permissions, item.module, "view");
+
+          const card = (
+            <div
+              className={`group relative flex h-full flex-col gap-3 rounded-xl border p-4 transition ${
+                allowed
+                  ? "bg-white hover:border-medflow-300 hover:shadow-sm"
+                  : "cursor-not-allowed border-dashed bg-slate-50 opacity-60"
+              }`}
+            >
+              <span className={`w-fit rounded-lg p-2.5 ${allowed ? item.color : "bg-slate-200 text-slate-400"}`}>
+                <Icon className="h-5 w-5" />
+              </span>
+              <div>
+                <p className={`font-semibold ${allowed ? "text-slate-800 group-hover:text-medflow-700" : "text-slate-500"}`}>
+                  {item.label}
+                </p>
+                <p className="mt-0.5 text-sm text-slate-500">{item.description}</p>
               </div>
-            </Link>
+              {!allowed && (
+                <span className="absolute right-3 top-3 inline-flex items-center gap-1 text-xs font-medium text-slate-400">
+                  <Lock className="h-3.5 w-3.5" /> No access
+                </span>
+              )}
+            </div>
+          );
+
+          return allowed ? (
+            <Link key={item.href} href={item.href}>{card}</Link>
+          ) : (
+            <div key={item.href} aria-disabled title="You don't have access to this action">{card}</div>
           );
         })}
       </div>

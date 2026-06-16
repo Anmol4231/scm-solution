@@ -3,9 +3,9 @@
 import { useEffect, useMemo, useRef, useState, Suspense } from "react";
 import { useSearchParams } from "next/navigation";
 import {
-  Check, FileText, Search, UserPlus, Syringe, Upload, Loader2,
+  FileText, Search, UserPlus, Syringe, Upload, Loader2,
   Plus, Trash2, AlertCircle, CheckCircle2, ChevronDown, Building2, ShieldCheck,
-  X, Maximize2, Minimize2, ClipboardList,
+  X, Maximize2, Minimize2, ClipboardList, Printer,
 } from "lucide-react";
 import { api, resolveApiUrl } from "@/lib/api";
 import { useRequirePermission } from "@/hooks/useRequirePermission";
@@ -21,26 +21,39 @@ import { levenshtein } from "@/lib/medicine-search";
 
 interface Patient { id: string; patientId: string; firstName: string; lastName: string; gender?: string; age?: number; phoneNumber?: string | null; allergies?: string | null }
 interface Medicine { id: string; medicineName: string; strengths?: { strength: string }[] }
+
+type AvailStatus = "AVAILABLE" | "LOW_STOCK" | "OUT_OF_STOCK" | "EXPIRED_ONLY";
+interface Availability { medicineId: string; availableQty: number; expiredQty: number; threshold: number; status: AvailStatus }
+
+/** Inline real-time availability indicator shown next to each selected medicine. */
+function AvailabilityBadge({ a }: { a?: Availability | null }) {
+  if (a === undefined) return null; // not yet known (no medicine picked, or loading)
+  if (a === null) return <span className="inline-flex items-center gap-1 text-xs text-slate-400">Checking…</span>;
+  const styles: Record<AvailStatus, { cls: string; icon: string; label: string }> = {
+    AVAILABLE:    { cls: "bg-emerald-50 text-emerald-700", icon: "✓", label: `Available · ${a.availableQty}` },
+    LOW_STOCK:    { cls: "bg-amber-50 text-amber-700",     icon: "⚠", label: `Low Stock · ${a.availableQty}` },
+    OUT_OF_STOCK: { cls: "bg-red-50 text-red-700",         icon: "✕", label: "Out of Stock" },
+    EXPIRED_ONLY: { cls: "bg-red-50 text-red-700",         icon: "✕", label: `Only Expired Stock · ${a.expiredQty}` },
+  };
+  const s = styles[a.status];
+  return <span className={`inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-xs font-medium ${s.cls}`}>{s.icon} {s.label}</span>;
+}
 interface PlanBatch { id: string; batchNumber: string; expiryDate: string; quantity: number }
 interface PlanLine {
-  medicineId: string; medicineName: string; dosage: string; form: string; duration: string;
+  medicineId: string; medicineName: string; dosage: string; form: string;
   requestedQuantity: number | null; onHand: number; recommendedBatchId: string | null; batches: PlanBatch[];
   requiresPrescription: boolean; controlled?: boolean; noQuantityWarning?: boolean;
   prescribedQuantity: number | null; alreadyDispensed: number; remainingQuantity: number | null; fulfilled: boolean;
   categoryName: string; strength: string;
 }
 interface DispLine {
-  medicineId: string; medicineName: string; dosage: string; form: string; duration: string;
+  medicineId: string; medicineName: string; dosage: string; form: string;
   batchId: string; quantity: string; onHand: number; batches: PlanBatch[];
   enabled: boolean; requiresPrescription: boolean; controlled: boolean; noQuantityWarning: boolean;
   prescribedQuantity: number | null; alreadyDispensed: number; remainingQuantity: number | null; fulfilled: boolean;
   categoryName: string; strength: string;
 }
 interface AllergyInfo { patient: string | null; fromPrescriptions: string[] }
-interface Docket {
-  patient: Patient; prescriptionId: string; doctorName: string; dispensedAt: string;
-  lines: { medicineName: string; quantity: number; batchNumber: string; expiryDate: string; dosage: string; duration: string }[];
-}
 interface ActiveRx {
   id: string; prescriptionId: string; doctorName?: string | null;
   prescriptionDate: string; medicineCount: number; prescribedTotal: number; dispensedTotal: number;
@@ -49,7 +62,7 @@ interface ActiveRx {
 function planLineToDispLine(pl: PlanLine): DispLine {
   return {
     medicineId: pl.medicineId, medicineName: pl.medicineName, dosage: pl.dosage,
-    form: pl.form, duration: pl.duration, batchId: pl.recommendedBatchId ?? "",
+    form: pl.form, batchId: pl.recommendedBatchId ?? "",
     quantity: String(pl.requestedQuantity ?? (pl.onHand > 0 ? 1 : 0)), onHand: pl.onHand,
     batches: pl.batches, enabled: !!pl.recommendedBatchId && !pl.fulfilled,
     requiresPrescription: pl.requiresPrescription, controlled: pl.controlled ?? false,
@@ -136,6 +149,10 @@ function DispenseWorkflow() {
   const [newRxLines, setNewRxLines] = useState<{ medicineId: string; dosage: string; quantity: string }[]>([{ medicineId: "", dosage: "", quantity: "" }]);
   const [file, setFile] = useState<File | null>(null);
 
+  /* ── Real-time availability for the medicine-entry screen (pre-plan) ── */
+  const [availabilityMap, setAvailabilityMap] = useState<Record<string, Availability>>({});
+  const availKnownRef = useRef<Set<string>>(new Set()); // medicineIds already fetched/in-flight for the current facility
+
   type OcrState = "idle" | "scanning" | "done" | "failed";
   interface OcrResult { rawText: string; confidence?: number; doctorName?: string | null; diagnosisNotes?: string | null; medicines?: { medicineName: string; strength?: string | null; dosage?: string | null; quantity?: number | null; medicineId?: string | null; matchedName?: string | null; matchConfidence?: number; candidates?: { id: string; medicineName: string }[] }[]; fieldsDetected?: string[]; warnings?: string[]; error?: string; details?: string }
   const [ocrState, setOcrState] = useState<OcrState>("idle");
@@ -150,12 +167,6 @@ function DispenseWorkflow() {
   const [lines, setLines] = useState<DispLine[]>([]);
   const [allergyInfo, setAllergyInfo] = useState<AllergyInfo | null>(null);
   const [rxNumber, setRxNumber] = useState("");
-  const [controlledAck, setControlledAck] = useState(false);
-
-  /* ── Safety review ── */
-  const [confirmedMedicineLines, setConfirmedMedicineLines] = useState<Record<string, boolean>>({});
-  const [rxMatchChecked, setRxMatchChecked] = useState(false);
-  const [quantitiesChecked, setQuantitiesChecked] = useState(false);
   const [rxPrescriptionDate, setRxPrescriptionDate] = useState("");
 
   /* ── Rx image preview ── */
@@ -167,8 +178,11 @@ function DispenseWorkflow() {
   const [isFullscreen, setIsFullscreen] = useState(false);
   const imageContainerRef = useRef<HTMLDivElement>(null);
 
-  /* ── Docket ── */
-  const [docket, setDocket] = useState<Docket | null>(null);
+  /* ── Post-dispense state ── */
+  const [dispensed, setDispensed] = useState(false);
+  interface DispenseSlipLine { medicineName: string; batchNumber: string; quantity: number }
+  interface DispenseSlip { facilityName: string; patientName: string; patientId: string; prescriptionRef: string; dispensedAt: string; dispensedBy: string; lines: DispenseSlipLine[] }
+  const [dispenseSlip, setDispenseSlip] = useState<DispenseSlip | null>(null);
 
   useEffect(() => {
     const handler = () => setIsFullscreen(!!document.fullscreenElement);
@@ -178,6 +192,47 @@ function DispenseWorkflow() {
 
   useEffect(() => { setRxImageLoaded(false); setRxImageError(false); }, [rxImageUrl]);
   useEffect(() => { api<Medicine[]>("/medicines").then(setMedicines).catch(() => {}); }, []);
+
+  // Availability is per-facility: clear the cache whenever the facility changes.
+  useEffect(() => { availKnownRef.current = new Set(); setAvailabilityMap({}); }, [facId]);
+
+  // Distinct medicines currently chosen on the entry form.
+  const selectedMedIds = useMemo(
+    () => Array.from(new Set(newRxLines.map((l) => l.medicineId).filter(Boolean))),
+    [newRxLines]
+  );
+
+  // One debounced BULK availability request for any newly-selected medicines
+  // (already-known ones stay cached). Never a request-per-row.
+  useEffect(() => {
+    if (!facId) return;
+    const missing = selectedMedIds.filter((id) => !availKnownRef.current.has(id));
+    if (missing.length === 0) return;
+    const t = setTimeout(() => {
+      missing.forEach((id) => availKnownRef.current.add(id));
+      api<{ items: Availability[] }>(`/dispensing/availability?facilityId=${facId}&medicineIds=${missing.join(",")}`)
+        .then(({ items }) =>
+          setAvailabilityMap((prev) => {
+            const next = { ...prev };
+            for (const it of items) next[it.medicineId] = it;
+            return next;
+          })
+        )
+        .catch(() => { missing.forEach((id) => availKnownRef.current.delete(id)); }); // allow retry on failure
+    }, 250);
+    return () => clearTimeout(t);
+  }, [selectedMedIds, facId]);
+
+  // Per-line requested-vs-available check (only blocks when availability is known).
+  const lineOverAvailable = (l: { medicineId: string; quantity: string }) => {
+    const a = l.medicineId ? availabilityMap[l.medicineId] : undefined;
+    return !!a && Number(l.quantity) > 0 && Number(l.quantity) > a.availableQty;
+  };
+  const availabilityBlocked = useMemo(
+    () => newRxLines.some(lineOverAvailable),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [newRxLines, availabilityMap]
+  );
 
   useEffect(() => {
     if (registerMode) return;
@@ -215,8 +270,7 @@ function DispenseWorkflow() {
         if (prescription?.doctorName) setRxSummary((prev) => ({ ...prev, doctorName: prescription.doctorName! }));
         setRxPrescriptionDate(prescription?.prescriptionDate ? new Date(prescription.prescriptionDate).toLocaleDateString() : "");
         setRxImageUrl(prescription?.uploadedPrescriptionUrl ?? null);
-        setControlledAck(false); setPlanLoaded(true);
-        setConfirmedMedicineLines({}); setRxMatchChecked(false); setQuantitiesChecked(false);
+        setPlanLoaded(true);
       })
       .catch((e) => setError(e instanceof Error ? e.message : "Failed to load dispensing plan"))
       .finally(() => setBusy(false));
@@ -279,26 +333,63 @@ function DispenseWorkflow() {
     setOcrAmbiguous((prev) => prev.filter((x) => x.lineIndex !== lineIndex));
   };
 
-  const createRxThenPlan = async () => {
+  const continueToDispense = async () => {
     setError("");
     const filledLines = newRxLines.filter((l) => l.medicineId || l.quantity.trim());
-    if (!filledLines.length) return setError("Add at least one medicine to the prescription.");
+    if (!filledLines.length) return setError("Add at least one medicine.");
     if (filledLines.find((l) => !l.medicineId)) return setError("Please select a medicine from the Medicine Master.");
-    if (filledLines.find((l) => !l.quantity.trim() || Number(l.quantity) <= 0)) return setError("Every medicine on the prescription needs a prescribed quantity.");
+    if (filledLines.find((l) => !l.quantity.trim() || Number(l.quantity) <= 0)) return setError("Every medicine needs a quantity.");
+    const over = filledLines.find(lineOverAvailable);
+    if (over) {
+      const a = availabilityMap[over.medicineId]!;
+      const med = medicines.find((m) => m.id === over.medicineId);
+      return setError(
+        a.availableQty === 0
+          ? `${med?.medicineName ?? "Medicine"} is not available to dispense at this facility (requested ${over.quantity}).`
+          : `${med?.medicineName ?? "Medicine"}: requested ${over.quantity} exceeds available ${a.availableQty}. Reduce the quantity to continue.`
+      );
+    }
     setBusy(true);
     try {
-      const fd = new FormData();
-      fd.append("patientId", patient!.id);
-      if (facId) fd.append("facilityId", facId);
-      if (newRx.doctorName) fd.append("doctorName", newRx.doctorName);
-      if (newRx.diagnosisNotes) fd.append("diagnosisNotes", newRx.diagnosisNotes);
-      fd.append("medicines", JSON.stringify(filledLines.map((l) => ({ medicineId: l.medicineId, dosage: l.dosage, quantity: Number(l.quantity) }))));
-      if (file) fd.append("prescription", file);
-      const created = await api<{ id: string }>("/prescriptions", { method: "POST", body: fd });
-      setSelectedRxId(created.id);
-      setRxSummary({ doctorName: newRx.doctorName, diagnosisNotes: newRx.diagnosisNotes });
-      planFrom(created.id);
-    } catch (e) { setError(e instanceof Error ? e.message : "Failed to create prescription"); }
+      if (file) {
+        // Image uploaded — create a Prescription record so it appears in the Prescription Log.
+        const fd = new FormData();
+        fd.append("patientId", patient!.id);
+        if (facId) fd.append("facilityId", facId);
+        if (newRx.doctorName) fd.append("doctorName", newRx.doctorName);
+        if (newRx.diagnosisNotes) fd.append("diagnosisNotes", newRx.diagnosisNotes);
+        fd.append("medicines", JSON.stringify(filledLines.map((l) => ({ medicineId: l.medicineId, dosage: l.dosage, quantity: Number(l.quantity) }))));
+        fd.append("prescription", file);
+        const created = await api<{ id: string }>("/prescriptions", { method: "POST", body: fd });
+        setSelectedRxId(created.id);
+        setRxSummary({ doctorName: newRx.doctorName, diagnosisNotes: newRx.diagnosisNotes });
+        planFrom(created.id);
+      } else {
+        // No image — direct dispense plan (no Prescription DB record).
+        // Only general-sale medicines may be dispensed this way; Rx-required/controlled
+        // medicines need an uploaded prescription to appear in the Prescription Log.
+        const result = await api<{
+          lines: PlanLine[];
+          allergies?: AllergyInfo;
+          prescription: null;
+        }>("/dispensing/direct-plan", {
+          method: "POST",
+          body: JSON.stringify({
+            patientId: patient!.id,
+            facilityId: facId || undefined,
+            lines: filledLines.map((l) => ({ medicineId: l.medicineId, quantity: Number(l.quantity), dosage: l.dosage || undefined })),
+          }),
+        });
+        setLines(result.lines.map(planLineToDispLine));
+        setAllergyInfo(result.allergies ?? null);
+        setRxNumber("");
+        setRxSummary({ doctorName: newRx.doctorName, diagnosisNotes: newRx.diagnosisNotes });
+        setRxPrescriptionDate("");
+        setRxImageUrl(null);
+        // selectedRxId stays empty — batch dispense will send no prescriptionId
+        setPlanLoaded(true);
+      }
+    } catch (e) { setError(e instanceof Error ? e.message : "Failed to load dispensing plan"); }
     finally { setBusy(false); }
   };
 
@@ -319,15 +410,13 @@ function DispenseWorkflow() {
     setSelectedRxId(""); setLines([]); setPlanLoaded(false); setActiveRxs([]); setRxSection("select");
     setNewRxLines([{ medicineId: "", dosage: "", quantity: "" }]); setNewRx({ doctorName: "", diagnosisNotes: "" }); setFile(null);
     setOcrState("idle"); setOcrResult(null); setRawTextOpen(false); setOcrAmbiguous([]);
-    setRxSummary({ doctorName: "", diagnosisNotes: "" }); setAllergyInfo(null); setControlledAck(false); setDocket(null);
-    setConfirmedMedicineLines({}); setRxMatchChecked(false); setQuantitiesChecked(false); setRxPrescriptionDate("");
+    setRxSummary({ doctorName: "", diagnosisNotes: "" }); setAllergyInfo(null); setDispensed(false);
+    setRxPrescriptionDate("");
     setRxImageUrl(null); setPreviewModalOpen(false); setImageScale(1); setError(""); setSuccess("");
-    setRegisterMode(false);
+    setRegisterMode(false); setDispenseSlip(null);
   };
 
   const hasControlledLines = useMemo(() => confirmLines.some((l) => l.controlled), [confirmLines]);
-  const confirmedCount = useMemo(() => confirmLines.filter((l) => !!confirmedMedicineLines[l.medicineId]).length, [confirmLines, confirmedMedicineLines]);
-  const allLinesConfirmed = confirmedCount === confirmLines.length && confirmLines.length > 0;
 
   const toggleFullscreen = () => {
     const el = imageContainerRef.current;
@@ -340,17 +429,27 @@ function DispenseWorkflow() {
     setError(""); setSuccess("");
     if (!confirmLines.length) return setError("No dispensable lines selected");
     for (const l of confirmLines) { const le = lineError(l); if (le) return setError(`${l.medicineName}: ${le}`); }
-    if (!allLinesConfirmed) return setError("Please review the prescription and confirm every medicine line.");
-    if (!rxImageUrl && (!rxMatchChecked || !quantitiesChecked)) return setError("Please complete all safety confirmation checkboxes.");
-    if (hasControlledLines && !controlledAck) return setError("Please acknowledge the controlled medicine check before dispensing.");
     setBusy(true);
     try {
       const res = await api<{ count: number }>("/dispensing/batch", {
         method: "POST",
-        body: JSON.stringify({ patientId: patient!.id, prescriptionId: selectedRxId, facilityId: facId || undefined, lines: confirmLines.map((l) => ({ medicineId: l.medicineId, batchId: l.batchId, quantity: Number(l.quantity), dosage: l.dosage || undefined, form: l.form || undefined, duration: l.duration || undefined })) }),
+        body: JSON.stringify({ patientId: patient!.id, prescriptionId: selectedRxId || undefined, facilityId: facId || undefined, lines: confirmLines.map((l) => ({ medicineId: l.medicineId, batchId: l.batchId, quantity: Number(l.quantity), dosage: l.dosage || undefined, form: l.form || undefined })) }),
       });
-      setDocket({ patient: patient!, prescriptionId: rxNumber, doctorName: rxSummary.doctorName, dispensedAt: new Date().toISOString(), lines: confirmLines.map((l) => { const b = l.batches.find((x) => x.id === l.batchId); return { medicineName: l.medicineName, quantity: Number(l.quantity), batchNumber: b?.batchNumber ?? "", expiryDate: b?.expiryDate ?? "", dosage: l.dosage, duration: l.duration }; }) });
+      setDispensed(true);
       setSuccess(`Dispensed ${res.count} medicine line(s) to ${patient!.firstName} ${patient!.lastName}.`);
+      setDispenseSlip({
+        facilityName: facName,
+        patientName: `${patient!.firstName} ${patient!.lastName}`,
+        patientId: patient!.patientId,
+        prescriptionRef: rxNumber || selectedRxId || "—",
+        dispensedAt: new Date().toISOString(),
+        dispensedBy: user ? `${user.firstName} ${user.lastName}` : "—",
+        lines: confirmLines.map((l) => ({
+          medicineName: l.medicineName,
+          batchNumber: l.batches.find((b) => b.id === l.batchId)?.batchNumber ?? l.batchId,
+          quantity: Number(l.quantity),
+        })),
+      });
     } catch (e) { setError(e instanceof Error ? e.message : "Dispensing failed"); }
     finally { setBusy(false); }
   };
@@ -372,39 +471,63 @@ function DispenseWorkflow() {
     <div className="mx-auto max-w-4xl space-y-4">
 
       {/* ═══════════════════════════════════════════════
-          DOCKET (post-dispense)
+          POST-DISPENSE CONFIRMATION
       ═══════════════════════════════════════════════ */}
-      {docket && (
-        <Card>
-          <CardContent className="space-y-4 p-4">
-            <div className="print-docket space-y-3">
-              <div className="flex items-start justify-between">
-                <div>
-                  <p className="text-base font-semibold">Dispensing Docket</p>
-                  <p className="text-sm text-slate-500">{docket.prescriptionId && <>Rx {docket.prescriptionId} · </>}{new Date(docket.dispensedAt).toLocaleString()}</p>
-                </div>
-                {facName && <p className="text-sm font-medium text-slate-600">{facName}</p>}
+      {dispensed && (
+        <>
+          <Card>
+            <CardContent className="flex flex-col items-center gap-3 p-8 text-center">
+              <CheckCircle2 className="h-10 w-10 text-emerald-500" />
+              <div>
+                <p className="text-base font-semibold text-slate-800">{success || "Dispensing complete."}</p>
+                {facName && <p className="mt-0.5 text-sm text-slate-500">{facName}</p>}
               </div>
-              <div className="rounded-lg bg-slate-50 p-3 text-sm">
-                <p className="font-medium">{docket.patient.firstName} {docket.patient.lastName} · {docket.patient.patientId}</p>
-                {docket.patient.age ? <p className="text-slate-500">{docket.patient.gender}, {docket.patient.age}y</p> : null}
-                {docket.doctorName && <p className="text-slate-500">Prescriber: Dr. {docket.doctorName}</p>}
+              <div className="flex gap-2">
+                <Button onClick={resetWorkflow} variant="outline">New dispensing</Button>
+                {dispenseSlip && (
+                  <Button
+                    onClick={() => {
+                      const slip = dispenseSlip;
+                      const linesHtml = slip.lines.map((l) => `
+                        <tr>
+                          <td style="border:1px solid #ddd;padding:6px 8px">${l.medicineName}</td>
+                          <td style="border:1px solid #ddd;padding:6px 8px;font-family:monospace;font-size:11px">${l.batchNumber || "—"}</td>
+                          <td style="border:1px solid #ddd;padding:6px 8px;text-align:right;font-weight:600">${l.quantity}</td>
+                        </tr>`).join("");
+                      const html = `<!DOCTYPE html><html><head><meta charset="utf-8"><title>Dispense Slip</title>
+                        <style>body{font-family:Arial,sans-serif;font-size:13px;margin:0;padding:24px}h1{font-size:18px;margin:0 0 4px}.sub{color:#555;font-size:12px;margin:0 0 16px}.fields{display:grid;grid-template-columns:1fr 1fr;gap:4px 24px;margin-bottom:16px;font-size:12px}.lb{font-weight:600}table{width:100%;border-collapse:collapse;font-size:12px}th{border:1px solid #ddd;padding:6px 8px;background:#f5f5f5;text-align:left;font-weight:600}hr{border:none;border-top:1px solid #ddd;margin:12px 0}.footer{margin-top:24px;font-size:10px;color:#999;text-align:center}</style>
+                      </head><body>
+                        <h1>Dispense Slip</h1><p class="sub">${slip.facilityName}</p><hr/>
+                        <div class="fields">
+                          <div><span class="lb">Patient Name:</span> ${slip.patientName}</div>
+                          <div><span class="lb">Patient ID:</span> ${slip.patientId}</div>
+                          <div><span class="lb">Prescription Ref:</span> ${slip.prescriptionRef}</div>
+                          <div><span class="lb">Dispensing Date/Time:</span> ${new Date(slip.dispensedAt).toLocaleString()}</div>
+                          <div><span class="lb">Dispensed By:</span> ${slip.dispensedBy}</div>
+                          <div><span class="lb">Facility:</span> ${slip.facilityName}</div>
+                        </div>
+                        <table><thead><tr><th>Medicine Name</th><th>Batch Number</th><th style="text-align:right">Qty Dispensed</th></tr></thead><tbody>${linesHtml}</tbody></table>
+                        <p class="footer">Generated by SCM Solution &middot; ${new Date().toLocaleString()}</p>
+                      </body></html>`;
+                      const win = window.open("", "_blank", "width=794,height=1123");
+                      if (!win) return;
+                      win.document.write(html);
+                      win.document.close();
+                      win.focus();
+                      win.print();
+                    }}
+                    className="bg-slate-700 text-white hover:bg-slate-800"
+                  >
+                    <Printer className="mr-1.5 h-4 w-4" /> Print Dispense Slip
+                  </Button>
+                )}
               </div>
-              <table className="w-full text-sm">
-                <thead className="text-left text-xs text-slate-500"><tr><th className="border-b p-1.5">Medicine</th><th className="border-b p-1.5 text-right">Qty</th><th className="border-b p-1.5">Dosage</th><th className="border-b p-1.5">Duration</th><th className="border-b p-1.5">Batch</th><th className="border-b p-1.5">Expiry</th></tr></thead>
-                <tbody>{docket.lines.map((l, i) => (<tr key={i}><td className="border-b p-1.5 font-medium">{l.medicineName}</td><td className="border-b p-1.5 text-right">{l.quantity}</td><td className="border-b p-1.5">{l.dosage || "—"}</td><td className="border-b p-1.5">{l.duration || "—"}</td><td className="border-b p-1.5">{l.batchNumber}</td><td className="border-b p-1.5">{l.expiryDate ? new Date(l.expiryDate).toLocaleDateString() : "—"}</td></tr>))}</tbody>
-              </table>
-              <p className="text-xs text-slate-400">Keep this docket with the medicines. Follow the dosage instructions; contact the facility with any concerns.</p>
-            </div>
-            <div className="flex gap-2 print:hidden">
-              <Button onClick={() => window.print()} variant="outline">Print docket</Button>
-              <Button onClick={resetWorkflow}>New dispensing</Button>
-            </div>
-          </CardContent>
-        </Card>
+            </CardContent>
+          </Card>
+        </>
       )}
 
-      {!docket && (
+      {!dispensed && (
         <>
           {/* ═══════════════════════════════════════════════
               SECTION 1 — PATIENT (+ inline facility)
@@ -525,7 +648,7 @@ function DispenseWorkflow() {
                       Select existing ({activeRxs.length})
                     </button>
                     <button type="button" onClick={() => setRxSection("create")} className={`rounded-full px-3 py-1 font-medium ${rxSection === "create" ? "bg-medflow-50 text-medflow-700" : "text-slate-500 hover:text-slate-700"}`}>
-                      Create new
+                      New
                     </button>
                   </div>
                 )}
@@ -632,13 +755,28 @@ function DispenseWorkflow() {
                         <table className="w-full min-w-[480px] text-sm">
                           <thead className="bg-slate-50 text-left text-xs text-slate-500"><tr><th className="p-2 pl-3">Medicine</th><th className="p-2 w-24 text-right">Qty</th><th className="p-2 w-10"></th></tr></thead>
                           <tbody className="divide-y">
-                            {newRxLines.map((ln, i) => (
+                            {newRxLines.map((ln, i) => {
+                              const avail = ln.medicineId ? (availabilityMap[ln.medicineId] ?? null) : undefined;
+                              const requested = Number(ln.quantity);
+                              const over = lineOverAvailable(ln);
+                              return (
                               <tr key={i}>
-                                <td className="p-2 pl-3"><MedicineCombobox medicines={medicines} value={ln.medicineId} onChange={(id) => setNewRxLines((ls) => ls.map((x, idx) => idx === i ? { ...x, medicineId: id } : x))} className="h-9" /></td>
-                                <td className="p-2"><Input className="text-right" inputMode="numeric" placeholder="Qty" value={ln.quantity} onChange={(e) => setNewRxLines((ls) => ls.map((x, idx) => idx === i ? { ...x, quantity: e.target.value.replace(/\D/g, "") } : x))} /></td>
-                                <td className="p-2">{newRxLines.length > 1 && <button type="button" className="flex h-8 w-8 items-center justify-center rounded text-slate-400 hover:bg-red-50 hover:text-red-500" onClick={() => setNewRxLines((ls) => ls.filter((_, idx) => idx !== i))}><Trash2 className="h-4 w-4" /></button>}</td>
+                                <td className="p-2 pl-3 align-top">
+                                  <MedicineCombobox medicines={medicines} value={ln.medicineId} onChange={(id) => setNewRxLines((ls) => ls.map((x, idx) => idx === i ? { ...x, medicineId: id } : x))} className="h-9" />
+                                  {ln.medicineId && <div className="mt-1"><AvailabilityBadge a={avail} /></div>}
+                                </td>
+                                <td className="p-2 align-top">
+                                  <Input className={`text-right ${over ? "border-red-400 focus-visible:ring-red-400" : ""}`} inputMode="numeric" placeholder="Qty" value={ln.quantity} onChange={(e) => setNewRxLines((ls) => ls.map((x, idx) => idx === i ? { ...x, quantity: e.target.value.replace(/\D/g, "") } : x))} />
+                                  {ln.medicineId && avail && requested > 0 && (
+                                    <p className={`mt-1 text-right text-xs ${over ? "font-medium text-red-600" : "text-slate-400"}`}>
+                                      Req {requested} · Avail {avail.availableQty}
+                                    </p>
+                                  )}
+                                </td>
+                                <td className="p-2 align-top">{newRxLines.length > 1 && <button type="button" className="flex h-8 w-8 items-center justify-center rounded text-slate-400 hover:bg-red-50 hover:text-red-500" onClick={() => setNewRxLines((ls) => ls.filter((_, idx) => idx !== i))}><Trash2 className="h-4 w-4" /></button>}</td>
                               </tr>
-                            ))}
+                              );
+                            })}
                           </tbody>
                         </table>
                       </div>
@@ -647,7 +785,9 @@ function DispenseWorkflow() {
                       </button>
                     </div>
 
-                    <Button onClick={createRxThenPlan} disabled={busy}>{busy ? <><Loader2 className="mr-1.5 h-4 w-4 animate-spin" /> Submitting…</> : <><Syringe className="mr-1.5 h-4 w-4" /> Create prescription & load plan</>}</Button>
+                    {availabilityBlocked && <p className="text-xs text-red-600">⚠ One or more quantities exceed available stock — reduce them to continue.</p>}
+                    {!file && <p className="text-xs text-slate-400">No prescription image — this dispense will appear in the Dispense Report only (not the Prescription Log).</p>}
+                    <Button onClick={continueToDispense} disabled={busy || availabilityBlocked}>{busy ? <><Loader2 className="mr-1.5 h-4 w-4 animate-spin" /> Loading…</> : "Continue"}</Button>
                   </div>
                 )}
               </CardContent>
@@ -665,8 +805,10 @@ function DispenseWorkflow() {
                   <ShieldCheck className="h-5 w-5 text-medflow-600" />
                   <div>
                     <p className="font-semibold text-slate-800">
-                      {rxNumber && <span className="mr-1.5">Rx {rxNumber}</span>}
-                      {rxSummary.doctorName && <span className="text-slate-500 font-normal">· Dr. {rxSummary.doctorName}</span>}
+                      {rxNumber
+                        ? <><span className="mr-1.5">Rx {rxNumber}</span>{rxSummary.doctorName && <span className="text-slate-500 font-normal">· Dr. {rxSummary.doctorName}</span>}</>
+                        : <span className="text-slate-500 font-normal text-sm">Walk-in dispense{rxSummary.doctorName ? ` · Dr. ${rxSummary.doctorName}` : ""}</span>
+                      }
                     </p>
                     {rxPrescriptionDate && <p className="text-xs text-slate-400">{rxPrescriptionDate}</p>}
                   </div>
@@ -742,67 +884,43 @@ function DispenseWorkflow() {
                   </table>
                 </div>
 
-                {/* Prescription verification */}
-                <div className="rounded-lg border p-3 space-y-2.5">
-                  <div className="flex items-center justify-between gap-3">
-                    <div>
-                      <p className="text-sm font-semibold text-slate-800">Medicine Verification</p>
-                      <p className="text-xs text-slate-500 mt-0.5">
-                        {allLinesConfirmed ? "All medicines confirmed against the prescription." : `${confirmedCount} of ${confirmLines.length} confirmed — review required.`}
-                      </p>
+                {/* Prescription image — shown inline only when one was uploaded */}
+                {imgSrc && (
+                  <div className="rounded-lg border p-3 space-y-2">
+                    <div className="flex items-center justify-between gap-3">
+                      <p className="text-sm font-semibold text-slate-800">Prescription</p>
+                      <Button variant="outline" size="sm" onClick={() => setPreviewModalOpen(true)} className="shrink-0">
+                        <Maximize2 className="mr-1.5 h-3.5 w-3.5" /> Enlarge
+                      </Button>
                     </div>
-                    <Button variant="outline" size="sm" onClick={() => setPreviewModalOpen(true)} className="shrink-0">Review Prescription</Button>
-                  </div>
-                  <div className="space-y-1">
-                    {confirmLines.map((l) => {
-                      const confirmed = !!confirmedMedicineLines[l.medicineId];
-                      return (
-                        <div key={l.medicineId} className="flex items-center gap-2 text-sm">
-                          {confirmed ? <CheckCircle2 className="h-4 w-4 shrink-0 text-emerald-500" /> : <div className="h-4 w-4 shrink-0 rounded-full border-2 border-slate-300" />}
-                          <span className={confirmed ? "text-emerald-700 font-medium" : "text-slate-500"}>
-                            {l.medicineName}{l.strength ? ` ${l.strength}` : ""}
-                          </span>
-                        </div>
-                      );
-                    })}
-                  </div>
-                </div>
-
-                {/* Safety checkboxes — only shown when no prescription image is uploaded */}
-                {!rxImageUrl && (
-                  <div className="rounded-lg border bg-slate-50 p-3 space-y-2.5">
-                    <p className="text-xs font-semibold uppercase tracking-wide text-slate-400">Pharmacist confirmation</p>
-                    <label className="flex cursor-pointer items-start gap-2 text-sm">
-                      <input type="checkbox" className="mt-0.5 h-4 w-4 shrink-0 accent-medflow-600" checked={rxMatchChecked} onChange={(e) => setRxMatchChecked(e.target.checked)} />
-                      <span>Prescription matches all selected medicines and quantities</span>
-                    </label>
-                    <label className="flex cursor-pointer items-start gap-2 text-sm">
-                      <input type="checkbox" className="mt-0.5 h-4 w-4 shrink-0 accent-medflow-600" checked={quantitiesChecked} onChange={(e) => setQuantitiesChecked(e.target.checked)} />
-                      <span>Quantities verified against the prescription</span>
-                    </label>
-                    {hasControlledLines && (
-                      <label className="flex cursor-pointer items-start gap-2 text-sm text-red-800">
-                        <input type="checkbox" className="mt-0.5 h-4 w-4 shrink-0 accent-red-600" checked={controlledAck} onChange={(e) => setControlledAck(e.target.checked)} />
-                        <span>Controlled medicine(s) verified — prescription, prescriber, patient identity, and quantity confirmed</span>
-                      </label>
-                    )}
+                    <button
+                      type="button"
+                      onClick={() => setPreviewModalOpen(true)}
+                      title="Click to enlarge"
+                      className="block w-full overflow-hidden rounded-lg border bg-slate-950"
+                    >
+                      {!rxImageLoaded && !rxImageError && (
+                        <div className="flex h-40 items-center justify-center"><Loader2 className="h-6 w-6 animate-spin text-slate-400" /></div>
+                      )}
+                      {rxImageError && (
+                        <div className="flex h-40 items-center justify-center text-sm text-red-300">Prescription image failed to load</div>
+                      )}
+                      {/* eslint-disable-next-line @next/next/no-img-element */}
+                      <img
+                        src={imgSrc}
+                        alt="Prescription"
+                        className="mx-auto max-h-72 w-auto object-contain"
+                        style={{ display: rxImageLoaded ? "block" : "none" }}
+                        onLoad={() => setRxImageLoaded(true)}
+                        onError={() => setRxImageError(true)}
+                      />
+                    </button>
                   </div>
                 )}
-                {rxImageUrl && hasControlledLines && (
-                  <div className="rounded-lg border bg-slate-50 p-3">
-                    <label className="flex cursor-pointer items-start gap-2 text-sm text-red-800">
-                      <input type="checkbox" className="mt-0.5 h-4 w-4 shrink-0 accent-red-600" checked={controlledAck} onChange={(e) => setControlledAck(e.target.checked)} />
-                      <span>Controlled medicine(s) verified — prescription, prescriber, patient identity, and quantity confirmed</span>
-                    </label>
-                  </div>
-                )}
-
-                {!allLinesConfirmed && <p className="text-xs text-amber-600">⚠ Click &ldquo;Review Prescription&rdquo; and confirm every medicine line before dispensing.</p>}
-                {!rxImageUrl && allLinesConfirmed && (!rxMatchChecked || !quantitiesChecked) && <p className="text-xs text-amber-600">⚠ Complete all pharmacist confirmation checkboxes before dispensing.</p>}
 
                 <Button
                   onClick={dispense}
-                  disabled={busy || !allLinesConfirmed || (!rxImageUrl && (!rxMatchChecked || !quantitiesChecked)) || (hasControlledLines && !controlledAck)}
+                  disabled={busy || confirmLines.length === 0}
                   className="w-full bg-emerald-600 text-white hover:bg-emerald-700"
                 >
                   {busy ? <><Loader2 className="mr-1.5 h-4 w-4 animate-spin" /> Dispensing…</> : "Confirm & Dispense"}
@@ -813,89 +931,31 @@ function DispenseWorkflow() {
         </>
       )}
 
-      {/* ── Print + Rx preview styles ── */}
+      {/* ── Rx preview fullscreen styles ── */}
       <style jsx global>{`
-        @media print { body * { visibility: hidden; } .print-docket, .print-docket * { visibility: visible; } .print-docket { position: absolute; inset: 0; padding: 24px; } }
         .rx-img-panel:fullscreen { background: #0f172a; display: flex; align-items: flex-start; justify-content: center; overflow: auto; padding: 16px; }
       `}</style>
 
-      {/* ── Prescription preview modal ── */}
-      {previewModalOpen && (
+      {/* ── Prescription image viewer (zoom / fullscreen) ── */}
+      {previewModalOpen && imgSrc && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-3">
-          <div className="flex w-full max-w-5xl flex-col rounded-xl bg-white shadow-2xl" style={{ height: "min(92vh, 720px)" }}>
+          <div className="flex w-full max-w-4xl flex-col rounded-xl bg-white shadow-2xl" style={{ height: "min(92vh, 760px)" }}>
             <div className="flex shrink-0 items-center justify-between border-b px-4 py-3">
-              <div><p className="font-semibold text-slate-800">Verify Prescription</p><p className="text-xs text-slate-500">{rxNumber && <span>Rx {rxNumber} · </span>}Compare the original prescription image with each medicine below</p></div>
-              <button type="button" onClick={() => setPreviewModalOpen(false)} className="flex h-8 w-8 items-center justify-center rounded-lg text-slate-400 hover:bg-slate-100 hover:text-slate-700"><X className="h-5 w-5" /></button>
+              <p className="font-semibold text-slate-800">{rxNumber ? `Prescription · Rx ${rxNumber}` : "Prescription"}</p>
+              <div className="flex items-center gap-1">
+                <button type="button" disabled={imageScale <= 0.5} onClick={() => setImageScale((s) => Math.max(0.5, Math.round((s - 0.25) * 100) / 100))} className="flex h-7 w-7 items-center justify-center rounded text-slate-500 hover:bg-slate-100 disabled:opacity-30 text-sm font-bold">−</button>
+                <span className="min-w-[40px] text-center text-xs text-slate-500">{Math.round(imageScale * 100)}%</span>
+                <button type="button" disabled={imageScale >= 4} onClick={() => setImageScale((s) => Math.min(4, Math.round((s + 0.25) * 100) / 100))} className="flex h-7 w-7 items-center justify-center rounded text-slate-500 hover:bg-slate-100 disabled:opacity-30 text-sm font-bold">+</button>
+                <button type="button" onClick={() => setImageScale(1)} className="ml-1 rounded px-2 py-1 text-xs text-slate-500 hover:bg-slate-100">Reset</button>
+                <button type="button" onClick={toggleFullscreen} className="ml-1 flex h-7 w-7 items-center justify-center rounded text-slate-500 hover:bg-slate-100">{isFullscreen ? <Minimize2 className="h-4 w-4" /> : <Maximize2 className="h-4 w-4" />}</button>
+                <button type="button" onClick={() => setPreviewModalOpen(false)} className="ml-1 flex h-7 w-7 items-center justify-center rounded text-slate-400 hover:bg-slate-100 hover:text-slate-700"><X className="h-5 w-5" /></button>
+              </div>
             </div>
-            <div className="flex min-h-0 flex-1 overflow-hidden">
-              <div className="flex w-[45%] shrink-0 flex-col border-r">
-                <div className="flex shrink-0 items-center justify-between border-b bg-slate-900 px-3 py-2">
-                  <span className="text-xs font-semibold uppercase tracking-wide text-slate-400">Original Prescription</span>
-                  {imgSrc && (
-                    <div className="flex items-center gap-1">
-                      <button type="button" disabled={imageScale <= 0.5} onClick={() => setImageScale((s) => Math.max(0.5, Math.round((s - 0.25) * 100) / 100))} className="flex h-6 w-6 items-center justify-center rounded text-slate-300 hover:bg-slate-700 disabled:opacity-30 text-sm font-bold">−</button>
-                      <span className="min-w-[38px] text-center text-xs text-slate-400">{Math.round(imageScale * 100)}%</span>
-                      <button type="button" disabled={imageScale >= 4} onClick={() => setImageScale((s) => Math.min(4, Math.round((s + 0.25) * 100) / 100))} className="flex h-6 w-6 items-center justify-center rounded text-slate-300 hover:bg-slate-700 disabled:opacity-30 text-sm font-bold">+</button>
-                      <button type="button" onClick={() => setImageScale(1)} className="ml-1 rounded px-1.5 py-0.5 text-[10px] text-slate-400 hover:bg-slate-700">Reset</button>
-                      <button type="button" onClick={toggleFullscreen} className="ml-1 flex h-6 w-6 items-center justify-center rounded text-slate-300 hover:bg-slate-700">{isFullscreen ? <Minimize2 className="h-3.5 w-3.5" /> : <Maximize2 className="h-3.5 w-3.5" />}</button>
-                    </div>
-                  )}
-                </div>
-                <div ref={imageContainerRef} className="rx-img-panel relative flex-1 overflow-auto bg-slate-950">
-                  {!imgSrc ? (
-                    <div className="flex h-full flex-col items-center justify-center gap-3 px-6 text-center"><AlertCircle className="h-9 w-9 text-amber-400" /><div><p className="font-semibold text-amber-300 text-sm">No prescription image</p><p className="mt-1 max-w-xs text-xs text-amber-400/80">Verify all medicines against the physical paper prescription.</p></div></div>
-                  ) : (
-                    <>
-                      {!rxImageLoaded && !rxImageError && <div className="absolute inset-0 flex items-center justify-center"><Loader2 className="h-8 w-8 animate-spin text-slate-400" /></div>}
-                      {rxImageError && <div className="flex h-full flex-col items-center justify-center gap-3 px-6 text-center"><AlertCircle className="h-8 w-8 text-red-400" /><p className="font-semibold text-red-300 text-sm">Image failed to load</p><button type="button" className="text-xs text-red-300 underline hover:text-red-200" onClick={() => { setRxImageError(false); setRxImageLoaded(false); }}>Retry</button></div>}
-                      {/* eslint-disable-next-line @next/next/no-img-element */}
-                      <img src={imgSrc} alt="Uploaded prescription" style={{ transform: `scale(${imageScale})`, transformOrigin: "top left", transition: "transform 0.15s ease", display: rxImageLoaded ? "block" : "none", maxWidth: "none" }} onLoad={() => setRxImageLoaded(true)} onError={() => setRxImageError(true)} />
-                    </>
-                  )}
-                </div>
-              </div>
-              <div className="flex min-w-0 flex-1 flex-col overflow-hidden">
-                <div className="flex-1 overflow-y-auto divide-y">
-                  {confirmLines.map((l, idx) => {
-                    const b = l.batches.find((x) => x.id === l.batchId);
-                    const days = b ? daysUntilExpiry(b.expiryDate) : 999;
-                    const expiryClass = days < 30 ? "text-red-600 font-semibold" : days < 90 ? "text-amber-600" : "text-slate-700";
-                    const confirmed = !!confirmedMedicineLines[l.medicineId];
-                    return (
-                      <div key={l.medicineId} className={`p-3 text-sm transition-colors ${confirmed ? "bg-emerald-50/50" : "bg-white"}`}>
-                        <div className="mb-2 flex items-start justify-between gap-2">
-                          <div>
-                            <div className="flex flex-wrap items-center gap-1.5">
-                              <span className="font-semibold text-slate-900">{idx + 1}. {l.medicineName}</span>
-                              {l.controlled && <span className="rounded-full bg-red-100 px-1.5 py-0.5 text-xs font-semibold text-red-700">Controlled</span>}
-                            </div>
-                            {(l.strength || l.categoryName) && <p className="mt-0.5 text-xs text-slate-500">{l.strength}{l.strength && l.categoryName ? " · " : ""}{l.categoryName}</p>}
-                          </div>
-                          {confirmed && <Check className="mt-0.5 h-4 w-4 shrink-0 text-emerald-500" />}
-                        </div>
-                        <div className="mb-2.5 grid grid-cols-3 gap-1.5 text-xs">
-                          <div className="rounded-md border bg-slate-50 p-1.5"><p className="text-slate-400">Prescribed</p><p className="font-semibold text-slate-800">{l.prescribedQuantity ?? "Open"}</p></div>
-                          <div className="rounded-md border bg-slate-50 p-1.5"><p className="text-slate-400">Dispensing</p><p className="font-semibold text-medflow-700">{l.quantity}</p></div>
-                          <div className="rounded-md border bg-slate-50 p-1.5"><p className="text-slate-400">Batch Stock</p><p className="font-semibold text-slate-800">{b?.quantity ?? "—"}</p></div>
-                          <div className="rounded-md border bg-slate-50 p-1.5"><p className="text-slate-400">Batch</p><p className="truncate font-semibold text-slate-800">{b?.batchNumber ?? "—"}</p></div>
-                          <div className="rounded-md border bg-slate-50 p-1.5"><p className="text-slate-400">Expiry</p><p className={`font-semibold ${expiryClass}`}>{b ? new Date(b.expiryDate).toLocaleDateString() : "—"}{days < 90 && days >= 0 && " ⚠"}</p></div>
-                          <div className="rounded-md border bg-slate-50 p-1.5"><p className="text-slate-400">On Hand</p><p className="font-semibold text-slate-800">{l.onHand}</p></div>
-                        </div>
-                        <label className="flex cursor-pointer items-start gap-2">
-                          <input type="checkbox" className="mt-0.5 h-4 w-4 shrink-0 accent-medflow-600" checked={confirmed} onChange={(e) => setConfirmedMedicineLines((prev) => ({ ...prev, [l.medicineId]: e.target.checked }))} />
-                          <span className={`text-xs leading-snug ${confirmed ? "text-emerald-700 font-medium" : "text-slate-600"}`}>
-                            I confirm <strong>{l.medicineName}</strong>{b ? <> (Batch <strong>{b.batchNumber}</strong>)</> : null} matches the prescription
-                          </span>
-                        </label>
-                      </div>
-                    );
-                  })}
-                </div>
-                <div className="shrink-0 flex items-center justify-between border-t bg-slate-50 px-4 py-3">
-                  <p className="text-sm text-slate-600"><span className={allLinesConfirmed ? "font-semibold text-emerald-700" : "font-semibold text-slate-800"}>{confirmedCount} of {confirmLines.length}</span> medicine{confirmLines.length !== 1 ? "s" : ""} confirmed</p>
-                  <Button onClick={() => setPreviewModalOpen(false)} size="sm">Done Reviewing</Button>
-                </div>
-              </div>
+            <div ref={imageContainerRef} className="rx-img-panel relative flex-1 overflow-auto bg-slate-950">
+              {!rxImageLoaded && !rxImageError && <div className="absolute inset-0 flex items-center justify-center"><Loader2 className="h-8 w-8 animate-spin text-slate-400" /></div>}
+              {rxImageError && <div className="flex h-full flex-col items-center justify-center gap-3 px-6 text-center"><AlertCircle className="h-8 w-8 text-red-400" /><p className="font-semibold text-red-300 text-sm">Image failed to load</p><button type="button" className="text-xs text-red-300 underline hover:text-red-200" onClick={() => { setRxImageError(false); setRxImageLoaded(false); }}>Retry</button></div>}
+              {/* eslint-disable-next-line @next/next/no-img-element */}
+              <img src={imgSrc} alt="Uploaded prescription" style={{ transform: `scale(${imageScale})`, transformOrigin: "top left", transition: "transform 0.15s ease", display: rxImageLoaded ? "block" : "none", maxWidth: "none" }} onLoad={() => setRxImageLoaded(true)} onError={() => setRxImageError(true)} />
             </div>
           </div>
         </div>

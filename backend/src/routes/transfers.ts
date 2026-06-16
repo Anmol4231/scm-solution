@@ -282,7 +282,10 @@ router.get("/:id", transferView, async (req, res, next) => {
   }
 });
 
-// POST /transfers/new — create multi-line transfer (PENDING, no stock movement)
+// POST /transfers/new — create + send a multi-line transfer in one step.
+// Mirrors the simple Order→Receipt flow: there is no separate authorize/dispatch
+// stage. Creating a transfer immediately deducts the stock from the sending
+// facility and puts the transfer IN_TRANSIT, ready for the destination to receive.
 const newTransferSchema = z.object({
   fromFacilityId: z.string().optional(),
   toFacilityId: z.string(),
@@ -306,13 +309,13 @@ router.post("/new", transferCreate, async (req, res, next) => {
     if (!effectiveFromFacilityId) return res.status(400).json({ error: "From-facility required" });
     if (effectiveFromFacilityId === data.toFacilityId) return res.status(400).json({ error: "From and to facility must differ" });
 
-    // Validate all batches belong to the from-facility and have sufficient stock
+    // Validate all batches belong to the from-facility and have sufficient stock.
     const batchIds = data.lines.map((l) => l.batchId);
     const batches = await prisma.stockBatch.findMany({
       where: { id: { in: batchIds }, facilityId: effectiveFromFacilityId },
       include: { medicine: true },
     });
-    if (batches.length !== data.lines.length) return res.status(400).json({ error: "One or more batches not found at the sending facility" });
+    if (batches.length !== new Set(batchIds).size) return res.status(400).json({ error: "One or more batches not found at the sending facility" });
 
     for (const line of data.lines) {
       const batch = batches.find((b) => b.id === line.batchId);
@@ -322,191 +325,76 @@ router.post("/new", transferCreate, async (req, res, next) => {
       assertBatchAvailable(batch, `${batch.medicine.medicineName} (batch ${batch.batchNumber})`);
     }
 
-    const transfer = await prisma.transfer.create({
-      data: {
-        transferCode: generateTransferCode(),
-        fromFacilityId: effectiveFromFacilityId,
-        toFacilityId: data.toFacilityId,
-        status: TransferStatus.PENDING,
-        priority: data.priority,
-        authorizationNotes: data.authorizationNotes,
-        createdById: userId,
-        lines: {
-          create: data.lines.map((l) => {
-            const batch = batches.find((b) => b.id === l.batchId)!;
-            return {
-              medicineId: batch.medicineId,
-              batchId: batch.id,
-              batchNumber: batch.batchNumber,
-              expiryDate: batch.expiryDate,
-              quantityTransferred: l.quantityTransferred,
-            };
-          }),
-        },
-      },
-      include: {
-        fromFacility: true, toFacility: true,
-        lines: { include: { medicine: true, batch: true } },
-      },
-    });
-
-    await logAudit({ facilityId: effectiveFromFacilityId, userId, action: "TRANSFER_CREATE", entityType: "Transfer", entityId: transfer.id, details: { code: transfer.transferCode } });
-    res.status(201).json(transfer);
-  } catch (e) {
-    next(e);
-  }
-});
-
-// PATCH /transfers/:id — edit a PENDING transfer (destination + lines). No stock
-// has moved yet at PENDING, so this is a pure record edit. Locked once AUTHORIZED.
-const editTransferSchema = z.object({
-  toFacilityId: z.string().optional(),
-  authorizationNotes: z.string().optional().nullable(),
-  lines: z.array(z.object({
-    batchId: z.string(),
-    quantityTransferred: positiveWholeNumber,
-  })).min(1).optional(),
-});
-
-router.patch("/:id", transferEdit, async (req, res, next) => {
-  try {
-    const transfer = await prisma.transfer.findUnique({ where: { id: req.params.id }, include: { lines: true } });
-    if (!transfer) return res.status(404).json({ error: "Not found" });
-    if (transfer.status !== TransferStatus.PENDING) {
-      return res.status(400).json({ error: "Only PENDING transfers can be edited (it has already been authorized or dispatched)." });
-    }
-
-    const userId = req.user!.userId;
-    const isCrossAdmin = req.user!.role === UserRole.PROVINCIAL_MANAGER || req.user!.role === UserRole.SUPER_ADMIN;
-    if (!isCrossAdmin && req.user!.facilityId !== transfer.fromFacilityId) {
-      return res.status(403).json({ error: "Only the sending facility can edit this transfer" });
-    }
-
-    const data = editTransferSchema.parse(req.body);
-    const toFacilityId = data.toFacilityId ?? transfer.toFacilityId;
-    if (toFacilityId === transfer.fromFacilityId) {
-      return res.status(400).json({ error: "Destination must differ from the sending facility" });
-    }
-
-    // Validate replacement lines against the sending facility's live stock.
-    let newLines: { medicineId: string; batchId: string; batchNumber: string; expiryDate: Date; quantityTransferred: number }[] | null = null;
-    if (data.lines) {
-      const batchIds = data.lines.map((l) => l.batchId);
-      const batches = await prisma.stockBatch.findMany({
-        where: { id: { in: batchIds }, facilityId: transfer.fromFacilityId },
-        include: { medicine: true },
-      });
-      if (batches.length !== new Set(batchIds).size) {
-        return res.status(400).json({ error: "One or more batches not found at the sending facility" });
-      }
-      for (const line of data.lines) {
-        const batch = batches.find((b) => b.id === line.batchId)!;
-        if (batch.quantity < line.quantityTransferred) {
-          return res.status(400).json({ error: `Insufficient stock in batch ${batch.batchNumber} (available ${batch.quantity})` });
-        }
-        assertBatchAvailable(batch, `${batch.medicine.medicineName} (batch ${batch.batchNumber})`);
-      }
-      newLines = data.lines.map((l) => {
-        const batch = batches.find((b) => b.id === l.batchId)!;
-        return { medicineId: batch.medicineId, batchId: batch.id, batchNumber: batch.batchNumber, expiryDate: batch.expiryDate, quantityTransferred: l.quantityTransferred };
-      });
-    }
-
-    const updated = await prisma.$transaction(async (tx) => {
-      if (newLines) {
-        await tx.transferLine.deleteMany({ where: { transferId: transfer.id } });
-        for (const l of newLines) {
-          await tx.transferLine.create({ data: { transferId: transfer.id, ...l } });
-        }
-      }
-      return tx.transfer.update({
-        where: { id: transfer.id },
+    // Create the transfer (IN_TRANSIT) and deduct source stock atomically.
+    const transfer = await prisma.$transaction(async (tx) => {
+      const created = await tx.transfer.create({
         data: {
-          toFacilityId,
-          ...(data.authorizationNotes !== undefined ? { authorizationNotes: data.authorizationNotes } : {}),
+          transferCode: generateTransferCode(),
+          fromFacilityId: effectiveFromFacilityId,
+          toFacilityId: data.toFacilityId,
+          status: TransferStatus.IN_TRANSIT,
+          priority: data.priority,
+          authorizationNotes: data.authorizationNotes,
+          createdById: userId,
+          dispatchedAt: new Date(),
+          lines: {
+            create: data.lines.map((l) => {
+              const batch = batches.find((b) => b.id === l.batchId)!;
+              return {
+                medicineId: batch.medicineId,
+                batchId: batch.id,
+                batchNumber: batch.batchNumber,
+                expiryDate: batch.expiryDate,
+                quantityTransferred: l.quantityTransferred,
+              };
+            }),
+          },
         },
-        include: { lines: { include: { medicine: true, batch: true } }, fromFacility: true, toFacility: true },
+        include: { lines: true },
       });
-    });
 
-    await logAudit({ facilityId: transfer.fromFacilityId, userId, action: "TRANSFER_UPDATE", entityType: "Transfer", entityId: transfer.id, details: { code: transfer.transferCode } });
-    res.json(updated);
-  } catch (e) {
-    next(e);
-  }
-});
-
-// POST /transfers/:id/authorize — PENDING → AUTHORIZED
-router.post("/:id/authorize", transferApprove, async (req, res, next) => {
-  try {
-    const transfer = await prisma.transfer.findUnique({ where: { id: req.params.id } });
-    if (!transfer) return res.status(404).json({ error: "Not found" });
-    if (transfer.status !== TransferStatus.PENDING) return res.status(400).json({ error: "Only PENDING transfers can be authorized" });
-
-    const userId = req.user!.userId;
-    const isCrossAdmin = req.user!.role === UserRole.PROVINCIAL_MANAGER || req.user!.role === UserRole.SUPER_ADMIN;
-    const userFacilityId = req.user!.facilityId;
-    if (!isCrossAdmin && userFacilityId !== transfer.fromFacilityId) {
-      return res.status(403).json({ error: "Only the sending facility or admin can authorize" });
-    }
-
-    const updated = await prisma.transfer.update({
-      where: { id: transfer.id },
-      data: { status: TransferStatus.AUTHORIZED, authorizedById: userId, authorizedAt: new Date() },
-    });
-    await logAudit({ facilityId: transfer.fromFacilityId, userId, action: "TRANSFER_AUTHORIZE", entityType: "Transfer", entityId: transfer.id });
-    res.json(updated);
-  } catch (e) {
-    next(e);
-  }
-});
-
-// POST /transfers/:id/dispatch — AUTHORIZED → IN_TRANSIT, deduct stock
-router.post("/:id/dispatch", transferEdit, async (req, res, next) => {
-  try {
-    const transfer = await prisma.transfer.findUnique({ where: { id: req.params.id }, include: { lines: true } });
-    if (!transfer) return res.status(404).json({ error: "Not found" });
-    if (transfer.status !== TransferStatus.AUTHORIZED) return res.status(400).json({ error: "Transfer must be AUTHORIZED before dispatch" });
-
-    const userId = req.user!.userId;
-    const userFacilityId = req.user!.facilityId;
-    const isCrossAdmin = req.user!.role === UserRole.PROVINCIAL_MANAGER || req.user!.role === UserRole.SUPER_ADMIN;
-    if (!isCrossAdmin && userFacilityId !== transfer.fromFacilityId) {
-      return res.status(403).json({ error: "Only the sending facility can dispatch" });
-    }
-
-    await prisma.$transaction(async (tx) => {
-      for (const line of transfer.lines) {
+      for (const line of created.lines) {
         const batch = await tx.stockBatch.findUnique({ where: { id: line.batchId } });
-        if (!batch) throw new Error(`Batch ${line.batchNumber} not found at time of dispatch`);
-        // Re-check expiry/availability and decrement atomically at dispatch time.
+        if (!batch) throw new Error(`Batch ${line.batchNumber} not found`);
         assertBatchAvailable(batch, `batch ${line.batchNumber}`);
-        const before = await getMedicineBalanceTx(tx, line.medicineId, transfer.fromFacilityId);
+        const before = await getMedicineBalanceTx(tx, line.medicineId, effectiveFromFacilityId);
         await decrementBatchOrThrow(tx, line.batchId, line.quantityTransferred, `batch ${line.batchNumber}`);
         await tx.stockTransaction.create({
           data: {
-            facilityId: transfer.fromFacilityId,
+            facilityId: effectiveFromFacilityId,
             medicineId: line.medicineId,
             batchId: line.batchId,
             type: StockTransactionType.TRANSFER_OUT,
             quantity: -line.quantityTransferred,
             balanceBefore: before,
             balanceAfter: before - line.quantityTransferred,
-            transferId: transfer.id,
+            transferId: created.id,
             performedById: userId,
-            reason: `Transfer ${transfer.transferCode}`,
+            reason: `Transfer ${created.transferCode}`,
           },
         });
       }
-      await tx.transfer.update({
-        where: { id: transfer.id },
-        data: { status: TransferStatus.IN_TRANSIT, dispatchedAt: new Date() },
-      });
+      return created;
     });
 
-    await logAudit({ facilityId: transfer.fromFacilityId, userId, action: "TRANSFER_DISPATCH", entityType: "Transfer", entityId: transfer.id });
-    const updated = await prisma.transfer.findUnique({ where: { id: transfer.id }, include: { lines: { include: { medicine: true } }, fromFacility: true, toFacility: true } });
-    res.json(updated);
+    // Best-effort notify the destination that stock is on the way.
+    await createAlert({
+      facilityId: data.toFacilityId,
+      type: AlertType.TRANSFER_PENDING,
+      severity: AlertSeverity.INFO,
+      title: "Incoming transfer",
+      message: `Transfer ${transfer.transferCode} is in transit — confirm receipt in SCM Solution.`,
+    }).catch(() => {});
+    await whatsappService
+      .sendToFacilityPhones(data.toFacilityId, `Transfer ${transfer.transferCode} incoming. Confirm receipt in SCM Solution.`)
+      .catch(() => {});
+
+    await logAudit({ facilityId: effectiveFromFacilityId, userId, action: "TRANSFER_SEND", entityType: "Transfer", entityId: transfer.id, details: { code: transfer.transferCode } });
+    const full = await prisma.transfer.findUnique({
+      where: { id: transfer.id },
+      include: { fromFacility: true, toFacility: true, lines: { include: { medicine: true, batch: true } } },
+    });
+    res.status(201).json(full);
   } catch (e) {
     next(e);
   }
@@ -519,6 +407,8 @@ const receiveMultiSchema = z.object({
   lines: z.array(z.object({
     lineId: z.string(),
     quantityReceived: z.number().min(0),
+    mismatchReason: z.string().optional(),
+    remarks: z.string().optional(),
   })),
   // When true, close the transfer even if short; the undelivered remainder is
   // recorded as a documented loss (lost in transit) rather than left stranded.
@@ -554,6 +444,27 @@ router.post("/:id/receive-multi", transferApprove, async (req, res, next) => {
         return res.status(400).json({
           error: `Cannot receive ${receipt.quantityReceived} for batch ${line.batchNumber} — only ${remaining} remaining (shipped ${line.quantityTransferred}, already received ${already}).`,
         });
+      }
+    }
+
+    // C-2: when finalizing with a shortfall, mismatch reason + remarks are required
+    // for every line that will end with a quantity variance.
+    if (data.finalizeShortfall) {
+      for (const line of transfer.lines) {
+        const receipt = data.lines.find((r) => r.lineId === line.id);
+        const newTotal = (line.quantityReceived ?? 0) + (receipt?.quantityReceived ?? 0);
+        if (newTotal < line.quantityTransferred) {
+          if (!receipt?.mismatchReason) {
+            return res.status(400).json({
+              error: `Mismatch reason required for batch ${line.batchNumber}: ${newTotal} received of ${line.quantityTransferred} issued.`,
+            });
+          }
+          if (!receipt?.remarks) {
+            return res.status(400).json({
+              error: `Remarks are required when received quantity differs from issued quantity for batch ${line.batchNumber}.`,
+            });
+          }
+        }
       }
     }
 
@@ -593,7 +504,12 @@ router.post("/:id/receive-multi", transferApprove, async (req, res, next) => {
         const newTotal = (line.quantityReceived ?? 0) + receipt.quantityReceived;
         await tx.transferLine.update({
           where: { id: line.id },
-          data: { quantityReceived: newTotal, shortfallFlag: newTotal < line.quantityTransferred },
+          data: {
+            quantityReceived: newTotal,
+            shortfallFlag: newTotal < line.quantityTransferred,
+            ...(receipt.mismatchReason ? { mismatchReason: receipt.mismatchReason } : {}),
+            ...(receipt.remarks ? { remarks: receipt.remarks } : {}),
+          },
         });
       }
 
@@ -636,7 +552,32 @@ router.post("/:id/receive-multi", transferApprove, async (req, res, next) => {
       });
     });
 
-    await logAudit({ facilityId: transfer.toFacilityId, userId, action: "TRANSFER_RECEIVE", entityType: "Transfer", entityId: transfer.id });
+    await logAudit({
+      facilityId: transfer.toFacilityId,
+      userId,
+      action: "TRANSFER_RECEIVE",
+      entityType: "Transfer",
+      entityId: transfer.id,
+      details: {
+        transferCode: transfer.transferCode,
+        finalizeShortfall: data.finalizeShortfall ?? false,
+        lines: data.lines.map((r) => {
+          const line = transfer.lines.find((l) => l.id === r.lineId);
+          const newTotal = (line?.quantityReceived ?? 0) + r.quantityReceived;
+          const variance = line ? newTotal - line.quantityTransferred : null;
+          return {
+            lineId: r.lineId,
+            batchNumber: line?.batchNumber,
+            issuedQty: line?.quantityTransferred,
+            receivedQty: r.quantityReceived,
+            totalReceived: newTotal,
+            variance,
+            mismatchReason: r.mismatchReason ?? null,
+            remarks: r.remarks ?? null,
+          };
+        }),
+      },
+    });
     const updated = await prisma.transfer.findUnique({ where: { id: transfer.id }, include: { lines: { include: { medicine: true } }, fromFacility: true, toFacility: true } });
     res.json(updated);
   } catch (e) {
@@ -644,22 +585,60 @@ router.post("/:id/receive-multi", transferApprove, async (req, res, next) => {
   }
 });
 
-// POST /transfers/:id/cancel — PENDING|AUTHORIZED → CANCELLED
+// POST /transfers/:id/cancel — recall an in-transit transfer before it is received.
+// Stock was deducted from the source when the transfer was sent, so cancelling
+// returns it to the source. Only allowed while IN_TRANSIT with nothing received.
 router.post("/:id/cancel", transferEdit, async (req, res, next) => {
   try {
-    const transfer = await prisma.transfer.findUnique({ where: { id: req.params.id } });
+    const transfer = await prisma.transfer.findUnique({ where: { id: req.params.id }, include: { lines: true } });
     if (!transfer) return res.status(404).json({ error: "Not found" });
-    const cancellable: TransferStatus[] = [TransferStatus.PENDING, TransferStatus.AUTHORIZED];
-    if (!cancellable.includes(transfer.status)) return res.status(400).json({ error: "Only PENDING or AUTHORIZED transfers can be cancelled" });
+    if (transfer.status !== TransferStatus.IN_TRANSIT) {
+      return res.status(400).json({ error: "Only in-transit transfers can be cancelled." });
+    }
+    if (transfer.lines.some((l) => (l.quantityReceived ?? 0) > 0)) {
+      return res.status(400).json({ error: "Cannot cancel — some items have already been received." });
+    }
 
     const userId = req.user!.userId;
     const isCrossAdmin = req.user!.role === UserRole.PROVINCIAL_MANAGER || req.user!.role === UserRole.SUPER_ADMIN;
     if (!isCrossAdmin && req.user!.facilityId !== transfer.fromFacilityId) {
-      return res.status(403).json({ error: "Insufficient permissions" });
+      return res.status(403).json({ error: "Only the sending facility can cancel this transfer." });
     }
 
-    const updated = await prisma.transfer.update({ where: { id: transfer.id }, data: { status: TransferStatus.CANCELLED } });
+    await prisma.$transaction(async (tx) => {
+      // Return each line's stock to the source facility's batch.
+      for (const line of transfer.lines) {
+        const before = await getMedicineBalanceTx(tx, line.medicineId, transfer.fromFacilityId);
+        let batch = await tx.stockBatch.findUnique({
+          where: { medicineId_facilityId_batchNumber: { medicineId: line.medicineId, facilityId: transfer.fromFacilityId, batchNumber: line.batchNumber } },
+        });
+        if (batch) {
+          batch = await tx.stockBatch.update({ where: { id: batch.id }, data: { quantity: { increment: line.quantityTransferred } } });
+        } else {
+          batch = await tx.stockBatch.create({
+            data: { medicineId: line.medicineId, facilityId: transfer.fromFacilityId, batchNumber: line.batchNumber, expiryDate: line.expiryDate, quantity: line.quantityTransferred },
+          });
+        }
+        await tx.stockTransaction.create({
+          data: {
+            facilityId: transfer.fromFacilityId,
+            medicineId: line.medicineId,
+            batchId: batch.id,
+            type: StockTransactionType.TRANSFER_IN,
+            quantity: line.quantityTransferred,
+            balanceBefore: before,
+            balanceAfter: before + line.quantityTransferred,
+            transferId: transfer.id,
+            performedById: userId,
+            reason: `Transfer ${transfer.transferCode} cancelled — stock returned`,
+          },
+        });
+      }
+      await tx.transfer.update({ where: { id: transfer.id }, data: { status: TransferStatus.CANCELLED } });
+    });
+
     await logAudit({ facilityId: transfer.fromFacilityId, userId, action: "TRANSFER_CANCEL", entityType: "Transfer", entityId: transfer.id });
+    const updated = await prisma.transfer.findUnique({ where: { id: transfer.id }, include: { lines: { include: { medicine: true } }, fromFacility: true, toFacility: true } });
     res.json(updated);
   } catch (e) {
     next(e);

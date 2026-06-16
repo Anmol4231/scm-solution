@@ -357,7 +357,7 @@ model MedicineCategory {
 
 model Medicine {
   id               String   @id @default(cuid())
-  medicineName     String   @unique
+  medicineName     String
   genericName      String?
   dosageForm       String?
   dosageFormOther  String?
@@ -393,6 +393,7 @@ model Medicine {
   issueVoucherLines        IssueVoucherLine[]
   transferLines            TransferLine[]
 
+  @@unique([medicineName, strength])
   @@index([medicineName])
   @@index([deletedAt])
 }
@@ -589,6 +590,8 @@ model TransferLine {
   quantityTransferred Float
   quantityReceived    Float?
   shortfallFlag       Boolean   @default(false)
+  mismatchReason     String?
+  remarks            String?
 
   @@index([transferId])
 }

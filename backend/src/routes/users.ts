@@ -4,7 +4,7 @@ import crypto from "crypto";
 import { z } from "zod";
 import { Prisma, UserRole } from "@prisma/client";
 import { prisma } from "../lib/prisma";
-import { authenticate, requireRoles } from "../middleware/auth";
+import { authenticate, requireRoles, invalidateUserIdentity } from "../middleware/auth";
 import { requirePermission } from "../middleware/permission";
 import { logAudit } from "../services/audit";
 import { personName, email as emailField, optionalPhone } from "../utils/validators";
@@ -107,7 +107,7 @@ router.get("/", requirePermission("users", "view"), async (req, res, next) => {
     const users = await prisma.user.findMany({
       where,
       select: userSelect,
-      orderBy: [{ isActive: "desc" }, { firstName: "asc" }],
+      orderBy: { createdAt: "desc" },
     });
     res.json(users);
   } catch (e) {
@@ -235,6 +235,10 @@ router.patch("/:id", requirePermission("users", "edit"), async (req, res, next) 
 
     const updated = await prisma.user.update({ where: { id: user.id }, data, select: userSelect });
 
+    // Role / facility / email / access changed — drop the cached identity so the
+    // edited user's next request reflects it immediately (no re-login needed).
+    invalidateUserIdentity(updated.id);
+
     await logAudit({
       facilityId: updated.facilityId,
       userId: req.user!.userId,
@@ -264,6 +268,10 @@ router.patch("/:id/status", requirePermission("users", "edit"), async (req, res,
       data: { isActive },
       select: userSelect,
     });
+
+    // Deactivation must take effect immediately — drop the cached identity so the
+    // next request from this user is rejected (or re-enabled on activation).
+    invalidateUserIdentity(updated.id);
 
     await logAudit({
       facilityId: updated.facilityId,

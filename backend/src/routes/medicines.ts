@@ -91,10 +91,13 @@ async function validateCategory(categoryId: string, medicine: { medicineName: st
   return { category };
 }
 
-async function assertUniqueMedicineName(medicineName: string, excludeId?: string) {
+async function assertUnique(medicineName: string, strength: string | null, excludeId?: string) {
   const existing = await prisma.medicine.findFirst({
     where: {
       medicineName: { equals: medicineName, mode: "insensitive" },
+      ...(strength
+        ? { strength: { equals: strength, mode: "insensitive" } }
+        : {}),
       isActive: true,
       deletedAt: null,
       ...(excludeId ? { id: { not: excludeId } } : {}),
@@ -294,21 +297,25 @@ router.post("/", medicineCreate, async (req, res, next) => {
       minimumOrderLevel: parsed.minimumOrderLevel,
       categoryId: parsed.categoryId,
     };
-    const strengths = normalizeStrengths(parsed.strengths?.length ? parsed.strengths : parsed.strength ? [parsed.strength] : []);
+    const rawStrengths = normalizeStrengths(parsed.strengths?.length ? parsed.strengths : parsed.strength ? [parsed.strength] : []);
+    if (rawStrengths.length === 0) {
+      return res.status(400).json({ error: "Strength is required" });
+    }
+    const strength = rawStrengths[0];
 
     const categoryCheck = await validateCategory(data.categoryId, data);
     if ("error" in categoryCheck) return res.status(400).json({ error: categoryCheck.error });
 
-    if (!(await assertUniqueMedicineName(data.medicineName))) {
-      return res.status(409).json({ error: "A medicine with this name already exists" });
+    if (!(await assertUnique(data.medicineName, strength))) {
+      return res.status(409).json({ error: "A medicine with this name and strength already exists" });
     }
 
     const medicine = await prisma.medicine.create({
       data: {
         ...data,
-        strength: strengths[0],
+        strength,
         unitType: "units",
-        strengths: { create: strengths.map((strength, sortOrder) => ({ strength, sortOrder })) },
+        strengths: { create: [{ strength, sortOrder: 0 }] },
       },
       include: medicineInclude(),
     });
@@ -329,9 +336,9 @@ router.post("/", medicineCreate, async (req, res, next) => {
         leadTimeDays: medicine.leadTimeDays,
         minimumOrderLevel: medicine.minimumOrderLevel,
         categoryId: medicine.categoryId,
-        strengths,
+        strength,
       },
-      changeDetails: `Created medicine with ${strengths.length > 0 ? `strengths: ${strengths.join(", ")}` : "no specific strengths"}`,
+      changeDetails: `Created medicine: ${medicine.medicineName} ${strength}`,
     });
 
     res.status(201).json(medicine);
@@ -361,12 +368,14 @@ router.patch("/:id", medicineEdit, async (req, res, next) => {
     const categoryCheck = await validateCategory(nextMedicine.categoryId, nextMedicine);
     if ("error" in categoryCheck) return res.status(400).json({ error: categoryCheck.error });
 
-    if (!(await assertUniqueMedicineName(nextMedicine.medicineName, existing.id))) {
-      return res.status(409).json({ error: "A medicine with this name already exists" });
-    }
-
-    const strengths = normalizeStrengths(parsed.strengths?.length ? parsed.strengths : parsed.strength ? [parsed.strength] : []);
+    const rawStrengths = normalizeStrengths(parsed.strengths?.length ? parsed.strengths : parsed.strength ? [parsed.strength] : []);
     const updateStrengths = parsed.strengths !== undefined || parsed.strength !== undefined;
+    const newStrength = rawStrengths.length > 0 ? rawStrengths[0] : null;
+    const effectiveStrength = updateStrengths ? newStrength : existing.strength;
+
+    if (!(await assertUnique(nextMedicine.medicineName, effectiveStrength, existing.id))) {
+      return res.status(409).json({ error: "A medicine with this name and strength already exists" });
+    }
 
     // Capture previous values for audit trail
     const previousValues = {
@@ -395,10 +404,10 @@ router.patch("/:id", medicineEdit, async (req, res, next) => {
           leadTimeDays: parsed.leadTimeDays ?? existing.leadTimeDays,
           minimumOrderLevel: parsed.minimumOrderLevel ?? existing.minimumOrderLevel,
           categoryId: nextMedicine.categoryId,
-          ...(updateStrengths
+          ...(updateStrengths && newStrength
             ? {
-                strength: strengths[0],
-                strengths: { create: strengths.map((strength, sortOrder) => ({ strength, sortOrder })) },
+                strength: newStrength,
+                strengths: { create: [{ strength: newStrength, sortOrder: 0 }] },
               }
             : {}),
         },
@@ -473,8 +482,8 @@ router.post("/:id/restore", medicineDelete, async (req, res, next) => {
   try {
     const medicine = await prisma.medicine.findUnique({ where: { id: req.params.id } });
     if (!medicine) return res.status(404).json({ error: "Medicine not found" });
-    if (!(await assertUniqueMedicineName(medicine.medicineName, medicine.id))) {
-      return res.status(409).json({ error: "Cannot restore because an active medicine with this name already exists" });
+    if (!(await assertUnique(medicine.medicineName, medicine.strength, medicine.id))) {
+      return res.status(409).json({ error: "Cannot restore: an active medicine with this name and strength already exists" });
     }
     const restored = await prisma.medicine.update({
       where: { id: medicine.id },

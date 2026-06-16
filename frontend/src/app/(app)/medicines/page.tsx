@@ -1,6 +1,6 @@
 ﻿"use client";
 
-import { useEffect, useState, Suspense } from "react";
+import { useEffect, useState, useMemo, Suspense } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { Pencil, Plus, ScrollText, Search, Trash2 } from "lucide-react";
 import { api } from "@/lib/api";
@@ -47,13 +47,13 @@ interface Medicine {
 
 interface MedForm {
   medicineName: string; genericName: string; dosageForm: string; dosageFormOther: string;
-  strengthsText: string; reorderThreshold: string;
+  strength: string; reorderThreshold: string;
   leadTimeDays: string; minimumOrderLevel: string; categoryId: string;
 }
 
 const EMPTY_MED: MedForm = {
   medicineName: "", genericName: "", dosageForm: "", dosageFormOther: "",
-  strengthsText: "", reorderThreshold: "50", leadTimeDays: "", minimumOrderLevel: "", categoryId: "",
+  strength: "", reorderThreshold: "", leadTimeDays: "", minimumOrderLevel: "", categoryId: "",
 };
 
 // ─── Dosage form + strength options ──────────────────────────────────────────
@@ -82,33 +82,11 @@ function strengthOptionsFor(form: string): string[] {
   return STRENGTH_OPTIONS[form] ?? [];
 }
 
-function parseStrengths(v: string) {
-  return Array.from(new Set(v.split(/[\n,]+/).map((s) => s.trim()).filter(Boolean)));
-}
-
 function strengthLabel(m: Medicine): string {
+  if (m.strength) return m.strength;
   const s = m.strengths?.map((x) => x.strength).filter(Boolean);
   if (s?.length) return s.join(", ");
-  return m.strength ?? "";
-}
-
-// ─── Custom-strength persistence ──────────────────────────────────────────────
-
-const STRENGTHS_KEY = "medflow_custom_strengths";
-
-function loadCustomStrengths(): string[] {
-  if (typeof window === "undefined") return [];
-  try { return JSON.parse(localStorage.getItem(STRENGTHS_KEY) ?? "[]") as string[]; }
-  catch { return []; }
-}
-
-function persistCustomStrengths(newStrengths: string[]) {
-  if (typeof window === "undefined") return;
-  try {
-    const existing = loadCustomStrengths();
-    const merged = Array.from(new Set([...existing, ...newStrengths])).sort();
-    localStorage.setItem(STRENGTHS_KEY, JSON.stringify(merged));
-  } catch { /* ignore */ }
+  return "";
 }
 
 // ─── Spinner ─────────────────────────────────────────────────────────────────
@@ -139,64 +117,44 @@ function IntInput({
 // ─── StrengthSelector ────────────────────────────────────────────────────────
 
 function StrengthSelector({
-  dosageForm, value, onChange, suggestions = [],
-}: { dosageForm: string; value: string; onChange: (v: string) => void; suggestions?: string[] }) {
-  const options = strengthOptionsFor(dosageForm);
-  const selected = parseStrengths(value);
-
-  const toggle = (opt: string) => {
-    const next = selected.includes(opt)
-      ? selected.filter((s) => s !== opt)
-      : [...selected, opt];
-    onChange(next.join("\n"));
-  };
-
-  const customVal = selected.find((s) => !options.includes(s)) ?? "";
-
-  const handleCustom = (raw: string) => {
-    const existing = selected.filter((s) => options.includes(s));
-    const trimmed = raw.trim();
-    onChange([...existing, ...(trimmed ? [trimmed] : [])].join("\n"));
-  };
-
-  const datalistOptions = suggestions.filter((s) => !options.includes(s));
+  dosageForm, value, onChange, existingStrengths = [], existsCombination = false,
+}: {
+  dosageForm: string;
+  value: string;
+  onChange: (v: string) => void;
+  existingStrengths?: string[];
+  existsCombination?: boolean;
+}) {
+  const predefined = strengthOptionsFor(dosageForm);
+  const allOptions = Array.from(new Set([...predefined, ...existingStrengths])).sort((a, b) => {
+    // predefined first, then existing, then rest
+    const aP = predefined.includes(a), bP = predefined.includes(b);
+    if (aP && !bP) return -1;
+    if (!aP && bP) return 1;
+    return a.localeCompare(b);
+  });
 
   return (
     <div>
-      <Label>
-        Strength *{options.length > 0 ? " (select or type custom)" : " (type value)"}
-      </Label>
-      {options.length > 0 && (
-        <div className="mt-1 flex flex-wrap gap-2">
-          {options.map((opt) => (
-            <button
-              key={opt}
-              type="button"
-              onClick={() => toggle(opt)}
-              className={`rounded-full border px-3 py-1 text-sm font-medium transition ${
-                selected.includes(opt)
-                  ? "border-medflow-400 bg-medflow-50 text-medflow-700"
-                  : "border-slate-200 text-slate-600 hover:bg-slate-50"
-              }`}
-            >
-              {opt}
-            </button>
-          ))}
-        </div>
-      )}
+      <Label>Strength *</Label>
       <datalist id="strength-datalist">
-        {datalistOptions.map((s) => <option key={s} value={s} />)}
+        {allOptions.map((s) => <option key={s} value={s} />)}
       </datalist>
       <input
         list="strength-datalist"
-        className="mt-2 h-11 w-full rounded-lg border px-3 text-sm focus:outline-none focus:ring-2 focus:ring-medflow-400"
-        placeholder="Strength"
-        value={customVal}
-        onChange={(e) => handleCustom(e.target.value)}
+        className="mt-1 h-11 w-full rounded-lg border px-3 text-sm focus:outline-none focus:ring-2 focus:ring-medflow-400"
+        placeholder={predefined.length > 0 ? `e.g. ${predefined[0]}` : "e.g. 500 mg, 250mg/5ml"}
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
       />
-      {selected.length > 0 && (
-        <p className="mt-1 text-sm text-muted-foreground">
-          Selected: {selected.join(", ")}
+      {existsCombination && (
+        <p className="mt-1 text-sm text-red-600">
+          This medicine + strength combination already exists.
+        </p>
+      )}
+      {!existsCombination && existingStrengths.length > 0 && value && (
+        <p className="mt-1 text-xs text-muted-foreground">
+          Existing strengths for this medicine: {existingStrengths.join(", ")}
         </p>
       )}
       {!dosageForm && (
@@ -290,10 +248,27 @@ function MedicinesInner() {
   const [error, setError] = useState("");
   const [success, setSuccess] = useState("");
 
-  // ── Custom strength suggestions ──
-  const [customStrengths, setCustomStrengths] = useState<string[]>([]);
+  // ── Strength suggestions derived from loaded medicines (same base name) ──
+  const existingStrengths = useMemo(() => {
+    const name = medForm.medicineName.trim().toLowerCase();
+    if (!name) return [];
+    return medicines
+      .filter((m) => m.medicineName.toLowerCase() === name && m.id !== editingMedId)
+      .map((m) => m.strength)
+      .filter((s): s is string => !!s)
+      .sort();
+  }, [medForm.medicineName, medicines, editingMedId]);
 
-  useEffect(() => { setCustomStrengths(loadCustomStrengths()); }, []);
+  const existsCombination = useMemo(() => {
+    const name = medForm.medicineName.trim().toLowerCase();
+    const str = medForm.strength.trim().toLowerCase();
+    if (!name || !str) return false;
+    return medicines.some(
+      (m) => m.medicineName.toLowerCase() === name &&
+             m.strength?.toLowerCase() === str &&
+             m.id !== editingMedId
+    );
+  }, [medForm.medicineName, medForm.strength, medicines, editingMedId]);
 
   // ── Data loading ─────────────────────────────────────────────────────────────
 
@@ -350,7 +325,7 @@ function MedicinesInner() {
       medicineName: m.medicineName, genericName: m.genericName ?? "",
       dosageForm: m.dosageForm ?? "",
       dosageFormOther: m.dosageFormOther ?? "",
-      strengthsText: m.strengths?.length ? m.strengths.map((s) => s.strength).join("\n") : (m.strength ?? ""),
+      strength: m.strength ?? m.strengths?.[0]?.strength ?? "",
       reorderThreshold: String(m.reorderThreshold),
       leadTimeDays: m.leadTimeDays != null ? String(m.leadTimeDays) : "",
       minimumOrderLevel: m.minimumOrderLevel != null ? String(m.minimumOrderLevel) : "",
@@ -375,7 +350,12 @@ function MedicinesInner() {
       if (!medForm.dosageFormOther.trim()) return setError("Please specify the dosage form.");
       if (!/[A-Za-z]/.test(medForm.dosageFormOther)) return setError("Dosage form must be alphanumeric.");
     }
-    if (!parseStrengths(medForm.strengthsText).length) return setError("Strength is required.");
+    const strengthValue = medForm.strength.trim();
+    if (!strengthValue) return setError("Strength is required.");
+    if (existsCombination) return setError("A medicine with this name and strength already exists.");
+    if (!medForm.reorderThreshold) return setError("Stock Threshold is required.");
+    const threshold = parseInt(medForm.reorderThreshold, 10);
+    if (isNaN(threshold) || threshold < 1) return setError("Stock Threshold must be greater than 0.");
     if (!medForm.leadTimeDays) return setError("Lead Days is required.");
     const leadDays = parseInt(medForm.leadTimeDays, 10);
     if (isNaN(leadDays) || leadDays < 1) return setError("Lead Days must be greater than 0.");
@@ -387,8 +367,8 @@ function MedicinesInner() {
       genericName: medForm.genericName.trim() || undefined,
       dosageForm: medForm.dosageForm,
       dosageFormOther: medForm.dosageForm === "Other" ? (medForm.dosageFormOther.trim() || null) : null,
-      strengths: parseStrengths(medForm.strengthsText),
-      reorderThreshold: medForm.reorderThreshold ? parseInt(medForm.reorderThreshold, 10) : 50,
+      strengths: [strengthValue],
+      reorderThreshold: threshold,
       leadTimeDays: leadDays,
       minimumOrderLevel: minOrder,
       categoryId: medForm.categoryId,
@@ -397,10 +377,7 @@ function MedicinesInner() {
       await api(editingMedId ? `/medicines/${editingMedId}` : "/medicines", {
         method: editingMedId ? "PATCH" : "POST", body: JSON.stringify(payload),
       });
-      setSuccess(editingMedId ? "Medicine updated" : `${medForm.medicineName} added`);
-      const staticOpts = strengthOptionsFor(medForm.dosageForm);
-      const customs = parseStrengths(medForm.strengthsText).filter((s) => !staticOpts.includes(s));
-      if (customs.length) { persistCustomStrengths(customs); setCustomStrengths(loadCustomStrengths()); }
+      setSuccess(editingMedId ? "Medicine updated" : `${medForm.medicineName} ${strengthValue} added`);
       resetMedForm(); loadCategories(); loadMedicines(categoryFilter, debouncedQ);
     } catch (err) { setError(err instanceof Error ? err.message : "Failed to save medicine"); }
   };
@@ -482,8 +459,7 @@ function MedicinesInner() {
                   className="h-11 w-full rounded-lg border px-3 text-sm"
                   value={medForm.dosageForm}
                   onChange={(e) => {
-                    // Changing dosage form clears both the "other" specifier and selected strengths.
-                    setMedForm({ ...medForm, dosageForm: e.target.value, dosageFormOther: "", strengthsText: "" });
+                    setMedForm({ ...medForm, dosageForm: e.target.value, dosageFormOther: "", strength: "" });
                   }}
                   required
                 >
@@ -503,17 +479,18 @@ function MedicinesInner() {
                   />
                 </div>
               )}
-              {/* 4. Strength — updates based on Dosage Form */}
+              {/* 4. Strength — single value with suggestions from existing medicines */}
               <div className="md:col-span-2">
                 <StrengthSelector
                   dosageForm={medForm.dosageForm}
-                  value={medForm.strengthsText}
-                  onChange={(v) => setMedForm({ ...medForm, strengthsText: v })}
-                  suggestions={customStrengths}
+                  value={medForm.strength}
+                  onChange={(v) => setMedForm({ ...medForm, strength: v })}
+                  existingStrengths={existingStrengths}
+                  existsCombination={existsCombination}
                 />
               </div>
               {/* 5. Thresholds */}
-              <IntInput label="Stock Threshold" value={medForm.reorderThreshold} placeholder="50"
+              <IntInput label="Stock Threshold *" value={medForm.reorderThreshold} placeholder="e.g. 50"
                 onChange={(v) => setMedForm({ ...medForm, reorderThreshold: v })} />
               <IntInput label="Lead Days *" value={medForm.leadTimeDays} placeholder="Days"
                 onChange={(v) => setMedForm({ ...medForm, leadTimeDays: v })} />

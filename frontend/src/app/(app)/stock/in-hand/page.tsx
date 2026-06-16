@@ -177,7 +177,7 @@ export default function StockInHandPage() {
       {/* Header */}
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div>
-          <h1 className="text-2xl font-bold">Stock on Hand</h1>
+          <h1 className="text-2xl font-bold">Stock in Hand</h1>
           <p className="text-sm text-muted-foreground">Real-time view of current inventory across all batches.</p>
         </div>
         <div className="flex gap-2">

@@ -2,18 +2,19 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { Syringe, Users, ClipboardList, BarChart3 } from "lucide-react";
+import { Syringe, Users, ClipboardList, BarChart3, RotateCcw } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
 import { cn } from "@/lib/utils";
 
 const TABS: { href: string; label: string; icon: LucideIcon }[] = [
   { href: "/dispense", label: "Dispense", icon: Syringe },
-  { href: "/patients", label: "Patients", icon: Users },
-  { href: "/prescriptions", label: "Prescriptions", icon: ClipboardList },
-  { href: "/dispense/log", label: "Dispensing Reports", icon: BarChart3 },
+  { href: "/patients", label: "Patient Log", icon: Users },
+  { href: "/prescriptions", label: "Prescription Log", icon: ClipboardList },
+  { href: "/patient-returns", label: "Patient Returns", icon: RotateCcw },
+  { href: "/dispense/log", label: "Dispensing Report", icon: BarChart3 },
 ];
 
-/** Shared header for the unified Operations workspace (Dispense · Patients · Prescriptions · Dispensing Reports). */
+/** Shared header for the unified Operations workspace (Dispense · Patient Log · Prescription Log · Dispensing Report). */
 export function OperationsTabs() {
   const pathname = usePathname();
   // Longest prefix wins so /dispense/log doesn't also light up /dispense.

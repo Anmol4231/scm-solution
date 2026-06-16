@@ -338,6 +338,98 @@ router.post("/", dispenseCreate, async (req, res, next) => {
 });
 
 /**
+ * Direct (walk-in) dispensing plan — no prescription required.
+ * Returns FEFO batch suggestions per medicine exactly like the Rx plan endpoint
+ * but without creating any DB record. The resulting dispense will have no
+ * prescriptionId and will appear only in the Dispense Report, not the Prescription Log.
+ *
+ *   POST /dispensing/direct-plan
+ *   Body: { patientId, facilityId?, lines: [{ medicineId, quantity, dosage? }] }
+ */
+const directPlanSchema = z.object({
+  patientId: z.string().min(1),
+  facilityId: z.string().optional(),
+  lines: z.array(z.object({
+    medicineId: z.string().min(1),
+    quantity: z.number().positive(),
+    dosage: z.string().optional(),
+  })).min(1),
+});
+
+router.post("/direct-plan", dispenseView, async (req, res, next) => {
+  try {
+    const data = directPlanSchema.parse(req.body);
+    const facilityId = resolveDispenseFacility(req, data.facilityId);
+    if (!facilityId) return res.status(400).json({ error: "Select a facility to dispense from." });
+
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+
+    const [patient, allergyRows] = await Promise.all([
+      prisma.patient.findUnique({ where: { id: data.patientId }, select: { allergies: true } }),
+      prisma.prescription.findMany({
+        where: { patientId: data.patientId, allergies: { not: null } },
+        select: { allergies: true },
+      }),
+    ]);
+
+    const fromPrescriptions = [...new Set(
+      allergyRows.map((r) => (r.allergies ?? "").trim()).filter((a) => a && !/^(nkda|none|nil|no known( drug)? allergies)$/i.test(a))
+    )];
+
+    const medicineIds = data.lines.map((l) => l.medicineId);
+    const medicines = await prisma.medicine.findMany({
+      where: { id: { in: medicineIds } },
+      select: {
+        id: true, medicineName: true, dosageForm: true, strength: true,
+        category: { select: { requiresPrescription: true, controlledDrug: true, name: true } },
+      },
+    });
+    const medById = new Map(medicines.map((m) => [m.id, m]));
+
+    const lines = await Promise.all(
+      data.lines.map(async (input) => {
+        const med = medById.get(input.medicineId);
+        const batches = await prisma.stockBatch.findMany({
+          where: { facilityId, medicineId: input.medicineId, quantity: { gt: 0 }, status: "ACTIVE", expiryDate: { gte: today } },
+          orderBy: { expiryDate: "asc" },
+          select: { id: true, batchNumber: true, expiryDate: true, quantity: true },
+        });
+        const onHand = batches.reduce((sum, b) => sum + b.quantity, 0);
+        return {
+          medicineId: input.medicineId,
+          medicineName: med?.medicineName ?? "Unknown",
+          dosage: input.dosage ?? "",
+          form: med?.dosageForm ?? "",
+          duration: "",
+          requestedQuantity: input.quantity,
+          prescribedQuantity: input.quantity,
+          alreadyDispensed: 0,
+          remainingQuantity: input.quantity,
+          fulfilled: false,
+          onHand,
+          recommendedBatchId: batches[0]?.id ?? null,
+          batches,
+          requiresPrescription: med?.category?.requiresPrescription ?? false,
+          controlled: med?.category?.controlledDrug ?? false,
+          categoryName: med?.category?.name ?? "",
+          strength: med?.strength ?? "",
+          noQuantityWarning: false,
+        };
+      })
+    );
+
+    res.json({
+      prescription: null,
+      allergies: { patient: patient?.allergies ?? null, fromPrescriptions },
+      lines,
+    });
+  } catch (e) {
+    next(e);
+  }
+});
+
+/**
  * Builds a dispensing "plan" from a prescription: each prescribed medicine with
  * its available batches (FEFO order) and a recommended batch. Powers the unified
  * dispensing workflow so the pharmacist sees auto-loaded lines + auto-picked batch.
@@ -460,6 +552,81 @@ router.get("/prescription/:id/plan", dispenseView, async (req, res, next) => {
   }
 });
 
+/**
+ * Bulk medicine availability for the dispensing entry screen. Returns, per
+ * requested medicine, the dispensable on-hand quantity at the selected facility
+ * plus a status the UI can render immediately — BEFORE a dispensing plan exists.
+ *
+ * "Dispensable" uses the exact same predicate as the plan/dispense engine
+ * (ACTIVE status, non-expired, quantity > 0) so the indicator can never disagree
+ * with what the plan will actually offer. One pair of bulk queries regardless of
+ * how many medicines are passed (no per-row request).
+ *
+ *   GET /dispensing/availability?facilityId=…&medicineIds=a,b,c
+ *
+ * Statuses:
+ *   AVAILABLE     — dispensable qty > 0 and above the medicine's reorder threshold
+ *   LOW_STOCK     — dispensable qty > 0 but at/below the threshold
+ *   OUT_OF_STOCK  — no stock at all
+ *   EXPIRED_ONLY  — stock exists but all of it is expired / non-ACTIVE
+ */
+router.get("/availability", dispenseView, async (req, res, next) => {
+  try {
+    const facilityId = resolveDispenseFacility(req, req.query.facilityId as string | undefined);
+    if (!facilityId) return res.status(400).json({ error: "Select a facility to check availability." });
+
+    const ids = [
+      ...new Set(
+        ((req.query.medicineIds as string | undefined) ?? "")
+          .split(",")
+          .map((s) => s.trim())
+          .filter(Boolean)
+      ),
+    ].slice(0, 200); // cap to keep the query bounded
+    if (ids.length === 0) return res.json({ items: [] });
+
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+
+    const [batches, meds] = await Promise.all([
+      prisma.stockBatch.findMany({
+        where: { facilityId, medicineId: { in: ids }, quantity: { gt: 0 } },
+        select: { medicineId: true, quantity: true, status: true, expiryDate: true },
+      }),
+      prisma.medicine.findMany({
+        where: { id: { in: ids } },
+        select: { id: true, reorderThreshold: true },
+      }),
+    ]);
+
+    const thresholdById = new Map(meds.map((m) => [m.id, m.reorderThreshold ?? 0]));
+    const agg = new Map<string, { available: number; expired: number }>();
+    for (const id of ids) agg.set(id, { available: 0, expired: 0 });
+    for (const b of batches) {
+      const bucket = agg.get(b.medicineId);
+      if (!bucket) continue;
+      // Identical predicate to the dispensing plan (status ACTIVE, expiry >= today).
+      const dispensable = b.status === "ACTIVE" && b.expiryDate.getTime() >= today.getTime();
+      if (dispensable) bucket.available += b.quantity;
+      else bucket.expired += b.quantity;
+    }
+
+    const items = ids.map((medicineId) => {
+      const { available, expired } = agg.get(medicineId)!;
+      const threshold = thresholdById.get(medicineId) ?? 0;
+      let status: "AVAILABLE" | "LOW_STOCK" | "OUT_OF_STOCK" | "EXPIRED_ONLY";
+      if (available > 0) status = threshold > 0 && available <= threshold ? "LOW_STOCK" : "AVAILABLE";
+      else if (expired > 0) status = "EXPIRED_ONLY";
+      else status = "OUT_OF_STOCK";
+      return { medicineId, availableQty: available, expiredQty: expired, threshold, status };
+    });
+
+    res.json({ items });
+  } catch (e) {
+    next(e);
+  }
+});
+
 const batchLineSchema = z.object({
   medicineId: z.string().min(1),
   batchId: z.string().min(1),
@@ -472,7 +639,9 @@ const batchLineSchema = z.object({
 
 const batchDispenseSchema = z.object({
   patientId: z.string().min(1),
-  prescriptionId: z.string().min(1),
+  // Optional: medicines may be dispensed without a prescription. Prescription-only
+  // and controlled medicines are still rejected below unless an Rx is supplied.
+  prescriptionId: z.string().min(1).optional(),
   facilityId: z.string().optional(),
   dispensingPurpose: z.string().optional(),
   prescribingDepartment: z.string().optional(),
@@ -487,72 +656,86 @@ router.post("/batch", dispenseCreate, async (req, res, next) => {
     if (!facilityId) return res.status(400).json({ error: "Select a facility to dispense from." });
     const userId = req.user!.userId;
 
-    const prescription = await prisma.prescription.findFirst({
-      where: { id: data.prescriptionId, patientId: data.patientId, facilityId, status: "ACTIVE" },
-    });
-    if (!prescription) {
-      return res.status(400).json({ error: "Active prescription required for this patient" });
-    }
-    // H3: friendly pre-check (authoritative re-check happens under the row lock).
-    if (isRxExpired(prescription.prescriptionDate)) {
-      return res.status(400).json({
-        error: `Prescription has expired — prescriptions are valid for ${RX_VALIDITY_DAYS} days (issued ${prescription.prescriptionDate.toISOString().slice(0, 10)}).`,
-      });
-    }
-
-    // Enforce requiresPrescription/controlled: every such medicine must appear on the prescription.
+    // Category info for every line — needed for both prescription and walk-in dispensing.
     const medicinesForCheck = await prisma.medicine.findMany({
       where: { id: { in: data.lines.map((l) => l.medicineId) } },
       select: { id: true, medicineName: true, category: { select: { requiresPrescription: true, controlledDrug: true } } },
     });
     const controlledMedIds = new Set(medicinesForCheck.filter((m) => m.category?.controlledDrug).map((m) => m.id));
-    if (controlledMedIds.size > 0 && isRxExpired(prescription.prescriptionDate, true)) {
-      const names = medicinesForCheck.filter((m) => controlledMedIds.has(m.id)).map((m) => m.medicineName).join(", ");
-      return res.status(400).json({
-        error: `Controlled medicines (${names}) may only be dispensed within ${RX_VALIDITY_DAYS_CONTROLLED} days of prescribing.`,
+    const medNameById = new Map(medicinesForCheck.map((m) => [m.id, m.medicineName]));
+
+    if (data.prescriptionId) {
+      const prescription = await prisma.prescription.findFirst({
+        where: { id: data.prescriptionId, patientId: data.patientId, facilityId, status: "ACTIVE" },
       });
-    }
-    const rxRequiredMeds = medicinesForCheck.filter((m) => m.category?.requiresPrescription || m.category?.controlledDrug);
-    if (rxRequiredMeds.length > 0) {
-      const prescriptionMedIds = new Set(
-        (await prisma.prescriptionMedicine.findMany({
-          where: { prescriptionId: data.prescriptionId },
-          select: { medicineId: true },
-        })).map((r) => r.medicineId)
-      );
-      for (const med of rxRequiredMeds) {
-        if (!prescriptionMedIds.has(med.id)) {
-          return res.status(400).json({
-            error: `"${med.medicineName}" requires a prescription. It must be listed on the prescription before dispensing.`,
-          });
+      if (!prescription) {
+        return res.status(400).json({ error: "Active prescription required for this patient" });
+      }
+      // H3: friendly pre-check (authoritative re-check happens under the row lock).
+      if (isRxExpired(prescription.prescriptionDate)) {
+        return res.status(400).json({
+          error: `Prescription has expired — prescriptions are valid for ${RX_VALIDITY_DAYS} days (issued ${prescription.prescriptionDate.toISOString().slice(0, 10)}).`,
+        });
+      }
+      if (controlledMedIds.size > 0 && isRxExpired(prescription.prescriptionDate, true)) {
+        const names = medicinesForCheck.filter((m) => controlledMedIds.has(m.id)).map((m) => m.medicineName).join(", ");
+        return res.status(400).json({
+          error: `Controlled medicines (${names}) may only be dispensed within ${RX_VALIDITY_DAYS_CONTROLLED} days of prescribing.`,
+        });
+      }
+      // Enforce requiresPrescription/controlled: every such medicine must appear on the prescription.
+      const rxRequiredMeds = medicinesForCheck.filter((m) => m.category?.requiresPrescription || m.category?.controlledDrug);
+      if (rxRequiredMeds.length > 0) {
+        const prescriptionMedIds = new Set(
+          (await prisma.prescriptionMedicine.findMany({
+            where: { prescriptionId: data.prescriptionId },
+            select: { medicineId: true },
+          })).map((r) => r.medicineId)
+        );
+        for (const med of rxRequiredMeds) {
+          if (!prescriptionMedIds.has(med.id)) {
+            return res.status(400).json({
+              error: `"${med.medicineName}" requires a prescription. It must be listed on the prescription before dispensing.`,
+            });
+          }
         }
+      }
+    } else {
+      // No prescription supplied — only general-sale medicines may be dispensed.
+      // Prescription-only and controlled medicines always require an Rx.
+      const rxRequired = medicinesForCheck.filter((m) => m.category?.requiresPrescription || m.category?.controlledDrug);
+      if (rxRequired.length > 0) {
+        const names = rxRequired.map((m) => m.medicineName).join(", ");
+        return res.status(400).json({
+          error: `${names} require a prescription and cannot be dispensed without one — create a prescription for these medicines.`,
+        });
       }
     }
 
-    const medNameById = new Map(medicinesForCheck.map((m) => [m.id, m.medicineName]));
-
-    // B-1: enforce prescribed quantities. Aggregate requested-per-medicine across
-    // this batch's lines and add to what has already been dispensed on the Rx.
-    const prescribedMap = await prescribedByMedicine(data.prescriptionId);
-    const alreadyMap = await dispensedByMedicine(data.prescriptionId);
+    // B-1: aggregate requested-per-medicine (used by the Rx row-lock validation).
     const requestedByMed = new Map<string, number>();
     for (const line of data.lines) {
       requestedByMed.set(line.medicineId, (requestedByMed.get(line.medicineId) ?? 0) + line.quantity);
     }
-    for (const [medId, requested] of requestedByMed) {
-      const prescribed = prescribedMap.get(medId);
-      if (prescribed == null && controlledMedIds.has(medId)) {
-        return res.status(400).json({
-          error: `"${medNameById.get(medId) ?? "This medicine"}" is a controlled drug — it cannot be dispensed against a prescription line without a prescribed quantity.`,
-        });
-      }
-      if (prescribed != null) {
-        const already = alreadyMap.get(medId) ?? 0;
-        const remaining = prescribed - already;
-        if (requested > remaining) {
+    // Enforce prescribed quantities only when dispensing against a prescription.
+    if (data.prescriptionId) {
+      const prescribedMap = await prescribedByMedicine(data.prescriptionId);
+      const alreadyMap = await dispensedByMedicine(data.prescriptionId);
+      for (const [medId, requested] of requestedByMed) {
+        const prescribed = prescribedMap.get(medId);
+        if (prescribed == null && controlledMedIds.has(medId)) {
           return res.status(400).json({
-            error: `Cannot dispense ${requested} of "${medNameById.get(medId) ?? "this medicine"}" — only ${Math.max(0, remaining)} remaining of ${prescribed} prescribed (${already} already dispensed).`,
+            error: `"${medNameById.get(medId) ?? "This medicine"}" is a controlled drug — it cannot be dispensed against a prescription line without a prescribed quantity.`,
           });
+        }
+        if (prescribed != null) {
+          const already = alreadyMap.get(medId) ?? 0;
+          const remaining = prescribed - already;
+          if (requested > remaining) {
+            return res.status(400).json({
+              error: `Cannot dispense ${requested} of "${medNameById.get(medId) ?? "this medicine"}" — only ${Math.max(0, remaining)} remaining of ${prescribed} prescribed (${already} already dispensed).`,
+            });
+          }
         }
       }
     }
@@ -574,14 +757,16 @@ router.post("/batch", dispenseCreate, async (req, res, next) => {
 
     const created = await prisma.$transaction(async (tx) => {
         // Authoritative, race-proof guard: lock the Rx row, re-check status + remaining qty.
-        await lockAndValidatePrescription(tx, {
-          prescriptionId: data.prescriptionId,
-          patientId: data.patientId,
-          facilityId,
-          requestedByMed,
-          medNameById,
-          controlledMedIds,
-        });
+        if (data.prescriptionId) {
+          await lockAndValidatePrescription(tx, {
+            prescriptionId: data.prescriptionId,
+            patientId: data.patientId,
+            facilityId,
+            requestedByMed,
+            medNameById,
+            controlledMedIds,
+          });
+        }
 
         const records = [];
         for (const line of data.lines) {
@@ -598,7 +783,7 @@ router.post("/batch", dispenseCreate, async (req, res, next) => {
             facilityId,
             recipientType: DispensingRecipientType.PATIENT,
             patientId: data.patientId,
-            prescriptionId: data.prescriptionId,
+            prescriptionId: data.prescriptionId ?? null,
             medicineId: line.medicineId,
             batchId: batch.id,
             batchNumber: batch.batchNumber,
@@ -623,7 +808,7 @@ router.post("/batch", dispenseCreate, async (req, res, next) => {
             balanceBefore,
             balanceAfter: balanceBefore - line.quantity,
             patientId: data.patientId,
-            prescriptionId: data.prescriptionId,
+            prescriptionId: data.prescriptionId ?? null,
             performedById: userId,
             reason: "Dispensed to patient",
             notes: line.notes,
@@ -631,7 +816,7 @@ router.post("/batch", dispenseCreate, async (req, res, next) => {
         });
         records.push(record);
       }
-      await maybeCompletePrescription(tx, data.prescriptionId);
+      if (data.prescriptionId) await maybeCompletePrescription(tx, data.prescriptionId);
       return records;
     });
 
@@ -639,10 +824,10 @@ router.post("/batch", dispenseCreate, async (req, res, next) => {
       facilityId,
       userId,
       action: "DISPENSE",
-      entityType: "Prescription",
-      entityId: data.prescriptionId,
+      entityType: data.prescriptionId ? "Prescription" : "DispensingRecord",
+      entityId: data.prescriptionId ?? data.patientId,
       details: {
-        prescriptionId: data.prescriptionId,
+        prescriptionId: data.prescriptionId ?? null,
         patientId: data.patientId,
         lineCount: created.length,
         lines: data.lines.map((l) => ({ medicineId: l.medicineId, quantity: l.quantity })),
@@ -757,29 +942,65 @@ router.get("/", dispenseView, async (req, res, next) => {
   }
 });
 
-/** Summary stats for the Dispensed Reports screen — today's counts scoped to a facility (or global for cross-facility roles). */
+/**
+ * Summary stats for the Dispensing Report screen. The KPI cards mirror the table,
+ * so the counts honour the same filters (date range, patient, medicine, batch,
+ * pharmacist, facility) rather than being fixed to "today".
+ */
 router.get("/summary", dispenseView, async (req, res, next) => {
   try {
     const facilityId = getFacilityId(req, req.query.facilityId as string);
-    const today = new Date();
-    today.setHours(0, 0, 0, 0);
-    const todayFilter = { gte: today };
-    const facFilter = facilityId ? { facilityId } : {};
+    const { patientId, patientName, medicineName, batchNumber, pharmacist } =
+      req.query as Record<string, string | undefined>;
+    const from = req.query.from as string | undefined;
+    const to = req.query.to as string | undefined;
 
-    const [totalToday, controlledToday, medicinesDispensedToday, uniquePatientGroups, returnsToday] = await Promise.all([
-      prisma.dispensingRecord.count({ where: { ...facFilter, dispensedAt: todayFilter } }),
-      prisma.dispensingRecord.count({ where: { ...facFilter, dispensedAt: todayFilter, medicine: { category: { controlledDrug: true } } } }),
-      prisma.dispensingRecord.aggregate({ where: { ...facFilter, dispensedAt: todayFilter }, _sum: { quantity: true } }),
-      prisma.dispensingRecord.groupBy({ by: ["patientId"], where: { ...facFilter, dispensedAt: todayFilter } }),
-      prisma.medicineReturn.count({ where: { ...facFilter, createdAt: todayFilter } }).catch(() => 0),
+    const dispensedAt: { gte?: Date; lte?: Date } = {};
+    if (from && !isNaN(Date.parse(from))) dispensedAt.gte = new Date(from);
+    if (to && !isNaN(Date.parse(to))) {
+      const end = new Date(to); end.setHours(23, 59, 59, 999); dispensedAt.lte = end;
+    }
+    const hasRange = dispensedAt.gte || dispensedAt.lte;
+
+    const recordWhere: Prisma.DispensingRecordWhereInput = {
+      ...(facilityId ? { facilityId } : {}),
+      ...(hasRange ? { dispensedAt } : {}),
+      ...(patientId ? { OR: [{ patientId }, { patient: { patientId } }] } : {}),
+      ...(patientName
+        ? { patient: { OR: [{ firstName: { contains: patientName, mode: "insensitive" } }, { lastName: { contains: patientName, mode: "insensitive" } }] } }
+        : {}),
+      ...(batchNumber ? { batchNumber: { contains: batchNumber, mode: "insensitive" } } : {}),
+      ...(medicineName ? { medicine: { medicineName: { contains: medicineName, mode: "insensitive" } } } : {}),
+      ...(pharmacist
+        ? { dispensedBy: { OR: [{ firstName: { contains: pharmacist, mode: "insensitive" } }, { lastName: { contains: pharmacist, mode: "insensitive" } }] } }
+        : {}),
+    };
+
+    // Controlled-drug variant keeps the medicineName filter (if any) alongside the category constraint.
+    const controlledWhere: Prisma.DispensingRecordWhereInput = {
+      ...recordWhere,
+      medicine: { ...(medicineName ? { medicineName: { contains: medicineName, mode: "insensitive" } } : {}), category: { controlledDrug: true } },
+    };
+
+    const returnsWhere = {
+      ...(facilityId ? { facilityId } : {}),
+      ...(hasRange ? { createdAt: dispensedAt } : {}),
+    };
+
+    const [totalCount, controlledCount, unitsAgg, uniquePatientGroups, returnsCount] = await Promise.all([
+      prisma.dispensingRecord.count({ where: recordWhere }),
+      prisma.dispensingRecord.count({ where: controlledWhere }),
+      prisma.dispensingRecord.aggregate({ where: recordWhere, _sum: { quantity: true } }),
+      prisma.dispensingRecord.groupBy({ by: ["patientId"], where: recordWhere }),
+      prisma.medicineReturn.count({ where: returnsWhere }).catch(() => 0),
     ]);
 
     res.json({
-      totalDispensingsToday: totalToday,
-      patientsTodayCount: uniquePatientGroups.length,
-      controlledDispensingsToday: controlledToday,
-      medicinesDispensedToday: medicinesDispensedToday._sum.quantity ?? 0,
-      returnsToday,
+      totalDispensings: totalCount,
+      patientsCount: uniquePatientGroups.length,
+      controlledDispensings: controlledCount,
+      unitsDispensed: unitsAgg._sum.quantity ?? 0,
+      returns: returnsCount,
     });
   } catch (e) {
     next(e);

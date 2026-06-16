@@ -226,6 +226,11 @@ async function main() {
 
   const medicineDefs = [
     { medicineName: "Paracetamol 500mg", genericName: "Acetaminophen", dosageForm: "Tablet", strength: "500mg", unitType: "tablets", reorderThreshold: 200, category: "Analgesics", storageCondition: "Room temperature", emergencyStockFlag: false },
+    { medicineName: "Paracetamol 650mg", genericName: "Acetaminophen", dosageForm: "Tablet", strength: "650mg", unitType: "tablets", reorderThreshold: 150, category: "Analgesics", storageCondition: "Room temperature" },
+    { medicineName: "Paracetamol 250mg/5ml Syrup", genericName: "Acetaminophen", dosageForm: "Syrup", strength: "250mg/5ml", unitType: "bottles", reorderThreshold: 50, category: "Analgesics", storageCondition: "Room temperature" },
+    { medicineName: "Paracetamol 120mg/5ml Syrup", genericName: "Acetaminophen", dosageForm: "Syrup", strength: "120mg/5ml", unitType: "bottles", reorderThreshold: 50, category: "Analgesics", storageCondition: "Room temperature" },
+    { medicineName: "Paracetamol 1g Infusion", genericName: "Acetaminophen", dosageForm: "IV Fluid", strength: "1g/100ml", unitType: "bags", reorderThreshold: 30, category: "Analgesics", storageCondition: "Room temperature" },
+    { medicineName: "Paracetamol 125mg Suppository", genericName: "Acetaminophen", dosageForm: "Suppository", strength: "125mg", unitType: "suppositories", reorderThreshold: 40, category: "Analgesics", storageCondition: "Room temperature" },
     { medicineName: "Amoxicillin 250mg", genericName: "Amoxicillin", dosageForm: "Capsule", strength: "250mg", unitType: "capsules", reorderThreshold: 100, category: "Antibiotics", storageCondition: "Cool dry place" },
     { medicineName: "Metformin 500mg", genericName: "Metformin", dosageForm: "Tablet", strength: "500mg", unitType: "tablets", reorderThreshold: 150, category: "Chronic Disease Medicines" },
     { medicineName: "ORS Sachets", genericName: "Oral Rehydration Salts", dosageForm: "Sachet", strength: "Standard", unitType: "sachets", reorderThreshold: 80, category: "GI & Rehydration" },

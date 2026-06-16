@@ -1,4 +1,4 @@
-﻿"use client";
+"use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import Link from "next/link";
@@ -16,7 +16,7 @@ import { MedicineCombobox } from "@/components/ui/medicine-combobox";
 // ─── Types ────────────────────────────────────────────────────────────────────
 interface Category { id: string; name: string }
 interface ExpiryBatch {
-  id: string; batchNumber: string; medicineId: string;
+  id: string; batchNumber: string; medicineId: string; facilityId: string;
   daysUntilExpiry: number; severity: string; quantity: number; expiryDate: string;
   medicine: { medicineName: string; category?: { name: string } | null };
   facility?: { name: string };
@@ -28,7 +28,12 @@ interface ExpiryResponse {
   facilityAnalytics?: { name: string; count: number; quantity: number }[];
   recommendations?: { medicineId: string; medicineName: string; batchNumber: string; facility: string; daysUntilExpiry: number; quantity: number; recommendation: string }[];
 }
-interface DisposalRecord { id: string; batchNumber: string; medicineName: string; quantity: number; disposalMethod: string; createdAt: string }
+interface DisposalRecord {
+  id: string; batchNumber: string; medicineName: string; quantity: number;
+  disposalMethod: string; disposalWitness?: string | null; createdAt: string;
+  facilityName?: string; processedByName?: string;
+}
+interface Witness { id: string; name: string }
 
 const WITHIN_OPTIONS = [
   { value: "30", label: "Within 30 days" },
@@ -93,6 +98,22 @@ function StatCard({ label, value, accent, icon: Icon }: { label: string; value: 
   );
 }
 
+// ─── Witness select ───────────────────────────────────────────────────────────
+function WitnessSelect({ witnesses, value, onChange }: { witnesses: Witness[]; value: string; onChange: (v: string) => void }) {
+  return (
+    <select
+      className="mt-1 h-9 w-full rounded-lg border px-3 text-sm"
+      value={value}
+      onChange={(e) => onChange(e.target.value)}
+    >
+      <option value="">— Select authorized witness —</option>
+      {witnesses.map((w) => (
+        <option key={w.id} value={w.name}>{w.name}</option>
+      ))}
+    </select>
+  );
+}
+
 // ─── Page ─────────────────────────────────────────────────────────────────────
 export default function ExpiryPage() {
   const { user } = useAuth();
@@ -110,26 +131,31 @@ export default function ExpiryPage() {
   const [categories, setCategories] = useState<Category[]>([]);
   const [facilities, setFacilities] = useState<{ id: string; name: string }[]>([]);
   const [medicines, setMedicines] = useState<{ id: string; medicineName: string }[]>([]);
+  const [witnesses, setWitnesses] = useState<Witness[]>([]);
 
   // Secondary panels
   const [showAnalytics, setShowAnalytics] = useState(false);
   const [showRecommendations, setShowRecommendations] = useState(false);
   const [showHistory, setShowHistory] = useState(false);
   const [history, setHistory] = useState<DisposalRecord[]>([]);
+  const [historyError, setHistoryError] = useState("");
 
   // Modals
   const [recordModal, setRecordModal] = useState(false);
   const [disposeTarget, setDisposeTarget] = useState<ExpiryBatch | null>(null);
 
   // Record Expired form
-  const emptyRecord = { medicineId: "", batchNumber: "", expiryDate: "", quantity: "", disposalMethod: "Incineration", notes: "", facilityId: user?.facilityId ?? "" };
+  const emptyRecord = {
+    medicineId: "", batchNumber: "", expiryDate: "", quantity: "",
+    disposalMethod: "Incineration", witness: "", comment: "", facilityId: user?.facilityId ?? "",
+  };
   const [recordForm, setRecordForm] = useState(emptyRecord);
   const [recordError, setRecordError] = useState("");
   const [recordBusy, setRecordBusy] = useState(false);
   const [recordSuccess, setRecordSuccess] = useState("");
 
   // Dispose form
-  const [disposeForm, setDisposeForm] = useState({ disposalMethod: "Incineration", witness: "" });
+  const [disposeForm, setDisposeForm] = useState({ disposalMethod: "Incineration", witness: "", comment: "" });
   const [disposeError, setDisposeError] = useState("");
   const [disposeBusy, setDisposeBusy] = useState(false);
   const [disposeSuccess, setDisposeSuccess] = useState("");
@@ -143,16 +169,37 @@ export default function ExpiryPage() {
     api<ExpiryResponse>(`/expiry/alerts?${params}`).then(setData).catch(console.error);
   }, [withinDays, categoryId, facilityFilter, status]);
 
-  const loadHistory = () =>
-    api<DisposalRecord[]>("/expiry/disposal-history").then(setHistory).catch(console.error);
+  const loadHistory = useCallback(() => {
+    setHistoryError("");
+    const params = facilityFilter ? `?facilityId=${facilityFilter}` : "";
+    api<DisposalRecord[]>(`/expiry/disposal-history${params}`)
+      .then(setHistory)
+      .catch((err) => setHistoryError(err instanceof Error ? err.message : "Failed to load disposal history"));
+  }, [facilityFilter]);
+
+  const loadWitnesses = useCallback((facilityId?: string) => {
+    const params = facilityId ? `?facilityId=${facilityId}` : "";
+    api<Witness[]>(`/expiry/authorized-witnesses${params}`).then(setWitnesses).catch(console.error);
+  }, []);
 
   useEffect(() => {
     api<Category[]>("/categories").then(setCategories);
     api<{ id: string; medicineName: string }[]>("/medicines").then(setMedicines);
     if (isAdmin) api<{ id: string; name: string }[]>("/auth/facilities").then(setFacilities);
-  }, [isAdmin]);
+    loadWitnesses(user?.facilityId ?? undefined);
+  }, [isAdmin, user?.facilityId, loadWitnesses]);
 
   useEffect(() => { loadAlerts(); }, [loadAlerts]);
+
+  // Reload witnesses when facility filter changes
+  useEffect(() => {
+    if (facilityFilter) loadWitnesses(facilityFilter);
+  }, [facilityFilter, loadWitnesses]);
+
+  // Reload history when facilityFilter changes if history panel is open
+  useEffect(() => {
+    if (showHistory) loadHistory();
+  }, [facilityFilter]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // ── Record Expired submit ───────────────────────────────────────────────────
   const submitRecord = async (e: React.FormEvent) => {
@@ -164,7 +211,12 @@ export default function ExpiryPage() {
     const qty = Number(recordForm.quantity);
     if (!recordForm.quantity || isNaN(qty) || qty <= 0) return setRecordError("Quantity must be greater than 0");
     if (!recordForm.disposalMethod) return setRecordError("Disposal method is required");
+    if (recordForm.disposalMethod === "Other" && !recordForm.comment.trim()) return setRecordError("Please describe the disposal method");
     if (isAdmin && !recordForm.facilityId) return setRecordError("Please select a facility");
+
+    const effectiveMethod = recordForm.disposalMethod === "Other"
+      ? `Other - ${recordForm.comment.trim()}`
+      : recordForm.disposalMethod;
 
     setRecordBusy(true);
     try {
@@ -175,8 +227,8 @@ export default function ExpiryPage() {
           batchNumber: recordForm.batchNumber.trim(),
           expiryDate: recordForm.expiryDate,
           quantity: qty,
-          disposalMethod: recordForm.disposalMethod,
-          disposalWitness: recordForm.notes.trim() || undefined,
+          disposalMethod: effectiveMethod,
+          disposalWitness: recordForm.witness.trim() || undefined,
           ...(isAdmin && recordForm.facilityId ? { facilityId: recordForm.facilityId } : {}),
         }),
       });
@@ -198,6 +250,11 @@ export default function ExpiryPage() {
     if (!disposeTarget) return;
     setDisposeError(""); setDisposeSuccess("");
     if (!disposeForm.disposalMethod) return setDisposeError("Disposal method is required");
+    if (disposeForm.disposalMethod === "Other" && !disposeForm.comment.trim()) return setDisposeError("Please describe the disposal method");
+
+    const effectiveMethod = disposeForm.disposalMethod === "Other"
+      ? `Other - ${disposeForm.comment.trim()}`
+      : disposeForm.disposalMethod;
 
     setDisposeBusy(true);
     try {
@@ -208,8 +265,9 @@ export default function ExpiryPage() {
           batchNumber: disposeTarget.batchNumber,
           expiryDate: disposeTarget.expiryDate,
           quantity: disposeTarget.quantity,
-          disposalMethod: disposeForm.disposalMethod,
+          disposalMethod: effectiveMethod,
           disposalWitness: disposeForm.witness || undefined,
+          facilityId: disposeTarget.facilityId,
         }),
       });
       setDisposeSuccess(`Disposed ${disposeTarget.quantity} units of ${disposeTarget.medicine?.medicineName}.`);
@@ -239,7 +297,9 @@ export default function ExpiryPage() {
           <h1 className="mt-0.5 text-2xl font-bold">Expiry Management</h1>
         </div>
         <div className="flex gap-2">
-          <Button size="sm" variant="outline" onClick={() => { setShowHistory(!showHistory); if (!showHistory) loadHistory(); }}>
+          <Button size="sm" variant="outline" onClick={() => {
+            if (showHistory) { setShowHistory(false); } else { setShowHistory(true); loadHistory(); }
+          }}>
             Disposal History
           </Button>
           <Button size="sm" onClick={() => { setRecordForm({ ...emptyRecord, facilityId: user?.facilityId ?? "" }); setRecordError(""); setRecordSuccess(""); setRecordModal(true); }}>
@@ -353,8 +413,9 @@ export default function ExpiryPage() {
                             title="Dispose off"
                             onClick={() => {
                               setDisposeTarget(batch);
-                              setDisposeForm({ disposalMethod: "Incineration", witness: "" });
+                              setDisposeForm({ disposalMethod: "Incineration", witness: "", comment: "" });
                               setDisposeError(""); setDisposeSuccess("");
+                              loadWitnesses(batch.facilityId);
                             }}
                           >
                             <Trash2 className="mr-1 h-3.5 w-3.5" /> Dispose
@@ -454,7 +515,9 @@ export default function ExpiryPage() {
             </div>
           </CardHeader>
           <CardContent className="p-0">
-            {history.length === 0 ? (
+            {historyError ? (
+              <p className="px-4 py-6 text-center text-sm text-red-600">{historyError}</p>
+            ) : history.length === 0 ? (
               <p className="px-4 py-6 text-center text-sm text-slate-500">No disposal records yet.</p>
             ) : (
               <div className="overflow-x-auto">
@@ -465,6 +528,9 @@ export default function ExpiryPage() {
                       <th className="px-4 py-2">Batch</th>
                       <th className="px-4 py-2">Qty</th>
                       <th className="px-4 py-2">Method</th>
+                      <th className="px-4 py-2">Witness</th>
+                      {isAdmin && <th className="px-4 py-2">Facility</th>}
+                      <th className="px-4 py-2">Processed by</th>
                       <th className="px-4 py-2">Date</th>
                     </tr>
                   </thead>
@@ -475,6 +541,9 @@ export default function ExpiryPage() {
                         <td className="px-4 py-2.5 font-mono text-sm text-slate-600">{h.batchNumber}</td>
                         <td className="px-4 py-2.5 text-slate-600">{h.quantity}</td>
                         <td className="px-4 py-2.5 text-slate-600">{h.disposalMethod}</td>
+                        <td className="px-4 py-2.5 text-slate-500">{h.disposalWitness || <span className="text-slate-300">—</span>}</td>
+                        {isAdmin && <td className="px-4 py-2.5 text-slate-500">{h.facilityName ?? "—"}</td>}
+                        <td className="px-4 py-2.5 text-slate-500">{h.processedByName ?? "—"}</td>
                         <td className="px-4 py-2.5 text-slate-500">{new Date(h.createdAt).toLocaleDateString()}</td>
                       </tr>
                     ))}
@@ -503,7 +572,15 @@ export default function ExpiryPage() {
               {isAdmin && (
                 <div>
                   <Label>Facility <span className="text-red-500">*</span></Label>
-                  <select className="mt-1 h-9 w-full rounded-lg border px-3 text-sm" value={recordForm.facilityId} onChange={(e) => setRecordForm({ ...recordForm, facilityId: e.target.value })} required>
+                  <select
+                    className="mt-1 h-9 w-full rounded-lg border px-3 text-sm"
+                    value={recordForm.facilityId}
+                    onChange={(e) => {
+                      setRecordForm({ ...recordForm, facilityId: e.target.value });
+                      if (e.target.value) loadWitnesses(e.target.value);
+                    }}
+                    required
+                  >
                     <option value="">Select facility</option>
                     {facilities.map((f) => <option key={f.id} value={f.id}>{f.name}</option>)}
                   </select>
@@ -538,14 +615,32 @@ export default function ExpiryPage() {
 
               <div>
                 <Label>Disposal method <span className="text-red-500">*</span></Label>
-                <select className="mt-1 h-9 w-full rounded-lg border px-3 text-sm" value={recordForm.disposalMethod} onChange={(e) => setRecordForm({ ...recordForm, disposalMethod: e.target.value })} required>
+                <select className="mt-1 h-9 w-full rounded-lg border px-3 text-sm" value={recordForm.disposalMethod} onChange={(e) => setRecordForm({ ...recordForm, disposalMethod: e.target.value, comment: "" })} required>
                   {DISPOSAL_METHODS.map((m) => <option key={m}>{m}</option>)}
                 </select>
               </div>
 
+              {recordForm.disposalMethod === "Other" && (
+                <div>
+                  <Label>Describe disposal method <span className="text-red-500">*</span></Label>
+                  <textarea
+                    className="mt-1 w-full rounded-lg border px-3 py-2 text-sm resize-none"
+                    rows={2}
+                    placeholder="Describe how the stock will be disposed…"
+                    value={recordForm.comment}
+                    onChange={(e) => setRecordForm({ ...recordForm, comment: e.target.value })}
+                    required
+                  />
+                </div>
+              )}
+
               <div>
-                <Label>Notes / Witness</Label>
-                <Input className="mt-1 h-9" value={recordForm.notes} onChange={(e) => setRecordForm({ ...recordForm, notes: e.target.value })} placeholder="Witness name or notes" />
+                <Label>Witness / Authorized by</Label>
+                {witnesses.length > 0 ? (
+                  <WitnessSelect witnesses={witnesses} value={recordForm.witness} onChange={(v) => setRecordForm({ ...recordForm, witness: v })} />
+                ) : (
+                  <Input className="mt-1 h-9" value={recordForm.witness} onChange={(e) => setRecordForm({ ...recordForm, witness: e.target.value })} placeholder="Witness name" />
+                )}
               </div>
 
               <div className="flex gap-2 pt-1">
@@ -571,21 +666,47 @@ export default function ExpiryPage() {
             <form onSubmit={submitDispose} className="space-y-3">
               <div className="rounded-lg bg-slate-50 px-4 py-3 text-sm">
                 <p className="font-medium text-slate-800">{disposeTarget.medicine?.medicineName}</p>
-                <p className="mt-0.5 text-slate-500">Batch {disposeTarget.batchNumber} · {disposeTarget.quantity} units · Expired {new Date(disposeTarget.expiryDate).toLocaleDateString()}</p>
+                <p className="mt-0.5 text-slate-500">
+                  Batch {disposeTarget.batchNumber} · {disposeTarget.quantity} units · Expired {new Date(disposeTarget.expiryDate).toLocaleDateString()}
+                  {disposeTarget.facility?.name && <span> · {disposeTarget.facility.name}</span>}
+                </p>
               </div>
 
               {disposeError && <p className="rounded-lg bg-red-50 px-3 py-2 text-sm text-red-700">{disposeError}</p>}
 
               <div>
                 <Label>Disposal method <span className="text-red-500">*</span></Label>
-                <select className="mt-1 h-9 w-full rounded-lg border px-3 text-sm" value={disposeForm.disposalMethod} onChange={(e) => setDisposeForm({ ...disposeForm, disposalMethod: e.target.value })} required>
+                <select
+                  className="mt-1 h-9 w-full rounded-lg border px-3 text-sm"
+                  value={disposeForm.disposalMethod}
+                  onChange={(e) => setDisposeForm({ ...disposeForm, disposalMethod: e.target.value, comment: "" })}
+                  required
+                >
                   {DISPOSAL_METHODS.map((m) => <option key={m}>{m}</option>)}
                 </select>
               </div>
 
+              {disposeForm.disposalMethod === "Other" && (
+                <div>
+                  <Label>Describe disposal method <span className="text-red-500">*</span></Label>
+                  <textarea
+                    className="mt-1 w-full rounded-lg border px-3 py-2 text-sm resize-none"
+                    rows={2}
+                    placeholder="Describe how the stock will be disposed…"
+                    value={disposeForm.comment}
+                    onChange={(e) => setDisposeForm({ ...disposeForm, comment: e.target.value })}
+                    required
+                  />
+                </div>
+              )}
+
               <div>
                 <Label>Witness / Authorized by</Label>
-                <Input className="mt-1 h-9" value={disposeForm.witness} placeholder="Witness name" onChange={(e) => setDisposeForm({ ...disposeForm, witness: e.target.value })} />
+                {witnesses.length > 0 ? (
+                  <WitnessSelect witnesses={witnesses} value={disposeForm.witness} onChange={(v) => setDisposeForm({ ...disposeForm, witness: v })} />
+                ) : (
+                  <Input className="mt-1 h-9" value={disposeForm.witness} placeholder="Witness name" onChange={(e) => setDisposeForm({ ...disposeForm, witness: e.target.value })} />
+                )}
               </div>
 
               <p className="text-sm text-slate-500">

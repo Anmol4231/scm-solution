@@ -389,8 +389,18 @@ router.get("/:id", rxView, async (req, res, next) => {
       where: { id: req.params.id },
       include: {
         patient: true,
-        medicines: { include: { medicine: true } },
-        dispensingRecords: { include: { medicine: true } },
+        medicines: {
+          include: {
+            medicine: { include: { strengths: { where: { isActive: true }, select: { strength: true } } } },
+          },
+        },
+        dispensingRecords: {
+          include: {
+            medicine: true,
+            dispensedBy: { select: { firstName: true, lastName: true } },
+          },
+          orderBy: { dispensedAt: "desc" },
+        },
       },
     });
     if (!prescription) return res.status(404).json({ error: "Not found" });
