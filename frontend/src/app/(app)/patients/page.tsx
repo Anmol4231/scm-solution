@@ -2,11 +2,13 @@
 
 import { useEffect, useState } from "react";
 import Link from "next/link";
+import { Search } from "lucide-react";
 import { api } from "@/lib/api";
+import { useRequirePermission } from "@/hooks/useRequirePermission";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Card, CardContent } from "@/components/ui/card";
+import { OperationsTabs } from "@/components/layout/operations-tabs";
 
 interface Patient {
   id: string;
@@ -19,54 +21,34 @@ interface Patient {
 }
 
 export default function PatientsPage() {
+  const hasAccess = useRequirePermission("patients");
   const [patients, setPatients] = useState<Patient[]>([]);
   const [q, setQ] = useState("");
-  const [showForm, setShowForm] = useState(false);
-  const [form, setForm] = useState({ firstName: "", lastName: "", gender: "Female", age: 30, phoneNumber: "", address: "" });
+  const [error, setError] = useState("");
 
-  const load = () => api<Patient[]>(`/patients?q=${encodeURIComponent(q)}`).then(setPatients);
-  useEffect(() => { load(); }, []);
+  const load = () =>
+    api<Patient[]>(`/patients?q=${encodeURIComponent(q)}`)
+      .then(setPatients)
+      .catch((e) => setError(e instanceof Error ? e.message : "Failed to load patients"));
+  useEffect(() => { load(); }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
-  const search = (e: React.FormEvent) => {
-    e.preventDefault();
-    load();
-  };
+  const search = (e: React.FormEvent) => { e.preventDefault(); setError(""); load(); };
 
-  const register = async (e: React.FormEvent) => {
-    e.preventDefault();
-    await api("/patients", { method: "POST", body: JSON.stringify(form) });
-    setShowForm(false);
-    load();
-  };
+  if (!hasAccess) return null;
 
   return (
     <div className="space-y-4">
-      <div className="flex items-center justify-between">
-        <h1 className="text-2xl font-bold">Patients</h1>
-        <Button size="lg" onClick={() => setShowForm(!showForm)}>+ Register Patient</Button>
-      </div>
+      <OperationsTabs />
 
-      <form onSubmit={search} className="flex gap-2">
-        <Input placeholder="Search name, ID, phone..." value={q} onChange={(e) => setQ(e.target.value)} className="flex-1" />
-        <Button type="submit">Search</Button>
+      {error && <p className="rounded-lg bg-red-50 p-3 text-sm text-red-700">{error}</p>}
+
+      <form onSubmit={search} className="flex gap-2 sm:max-w-md">
+        <div className="relative flex-1">
+          <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
+          <Input className="pl-9 text-base" placeholder="Search by name, patient ID, or phone…" value={q} onChange={(e) => setQ(e.target.value)} />
+        </div>
+        <Button type="submit" variant="outline">Search</Button>
       </form>
-
-      {showForm && (
-        <Card>
-          <CardHeader><CardTitle>New Patient</CardTitle></CardHeader>
-          <CardContent>
-            <form onSubmit={register} className="grid gap-3 md:grid-cols-2">
-              <div><Label>First name</Label><Input value={form.firstName} onChange={(e) => setForm({ ...form, firstName: e.target.value })} required /></div>
-              <div><Label>Last name</Label><Input value={form.lastName} onChange={(e) => setForm({ ...form, lastName: e.target.value })} required /></div>
-              <div><Label>Gender</Label><select className="h-11 w-full rounded-lg border px-3" value={form.gender} onChange={(e) => setForm({ ...form, gender: e.target.value })}><option>Female</option><option>Male</option><option>Other</option></select></div>
-              <div><Label>Age</Label><Input type="number" value={form.age} onChange={(e) => setForm({ ...form, age: +e.target.value })} required /></div>
-              <div><Label>Phone</Label><Input value={form.phoneNumber} onChange={(e) => setForm({ ...form, phoneNumber: e.target.value })} /></div>
-              <div><Label>Address</Label><Input value={form.address} onChange={(e) => setForm({ ...form, address: e.target.value })} /></div>
-              <Button type="submit" size="lg" className="md:col-span-2">Save Patient</Button>
-            </form>
-          </CardContent>
-        </Card>
-      )}
 
       <div className="space-y-2">
         {patients.map((p) => (
@@ -74,14 +56,15 @@ export default function PatientsPage() {
             <Card className="transition hover:border-medflow-300">
               <CardContent className="flex items-center justify-between p-4">
                 <div>
-                  <p className="font-semibold">{p.firstName} {p.lastName}</p>
-                  <p className="text-sm text-muted-foreground">{p.patientId} · {p.gender}, {p.age}y</p>
+                  <p className="text-base font-semibold">{p.firstName} {p.lastName}</p>
+                  <p className="text-sm text-muted-foreground">{p.patientId} · {p.gender}, {p.age}y{p.phoneNumber ? ` · ${p.phoneNumber}` : ""}</p>
                 </div>
-                <span className="text-medflow-600">View →</span>
+                <span className="text-sm font-medium text-medflow-600">View →</span>
               </CardContent>
             </Card>
           </Link>
         ))}
+        {patients.length === 0 && <p className="py-6 text-center text-sm text-muted-foreground">No patients found.</p>}
       </div>
     </div>
   );

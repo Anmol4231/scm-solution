@@ -1,0 +1,19 @@
+{
+  "name": "SCM Solution",
+  "short_name": "SCM",
+  "description": "Healthcare supply chain — inventory, dispensing, and facility operations",
+  "start_url": "/dashboard",
+  "scope": "/",
+  "display": "standalone",
+  "orientation": "portrait-primary",
+  "background_color": "#f8fafc",
+  "theme_color": "#0284c7",
+  "icons": [
+    {
+      "src": "/icons/icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any"
+    }
+  ]
+}

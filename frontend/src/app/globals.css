@@ -27,4 +27,31 @@
 
 body {
   @apply bg-background text-foreground antialiased;
+  overflow-x: hidden;
+}
+
+input,
+select,
+textarea {
+  max-width: 100%;
+}
+
+table {
+  width: 100%;
+}
+
+@media (max-width: 640px) {
+  th,
+  td {
+    white-space: nowrap;
+  }
+}
+
+@layer components {
+  .search-result-item {
+    @apply flex w-full flex-col rounded-lg px-3 py-2 text-left text-sm transition hover:bg-medflow-50;
+  }
+  .status-badge {
+    @apply inline-flex rounded-full bg-medflow-50 px-2 py-0.5 text-xs font-medium text-medflow-800;
+  }
 }

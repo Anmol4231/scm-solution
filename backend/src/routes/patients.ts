@@ -1,30 +1,34 @@
 import { Router } from "express";
 import { z } from "zod";
+import { Prisma } from "@prisma/client";
 import { prisma } from "../lib/prisma";
 import { authenticate, getFacilityId, requireFacility } from "../middleware/auth";
+import { requirePermission } from "../middleware/permission";
 import { generatePatientId } from "../utils/ids";
 import { logAudit } from "../services/audit";
 
 const router = Router();
 router.use(authenticate, requireFacility);
 
+const patientView   = requirePermission("patients", "view");
+const patientCreate = requirePermission("patients", "create");
+
 const createSchema = z.object({
   firstName: z.string().min(1),
-  lastName: z.string().min(1),
-  gender: z.string(),
-  age: z.number().int().positive(),
-  phoneNumber: z.string().optional(),
+  lastName: z.string().optional(),
+  gender: z.string().optional(),
+  age: z.number().int().positive().optional(),
+  phoneNumber: z.string().min(1),
   address: z.string().optional(),
+  allergies: z.string().optional(),
   facilityId: z.string().optional(),
 });
 
-router.get("/", async (req, res, next) => {
+router.get("/", patientView, async (req, res, next) => {
   try {
-    const facilityId = getFacilityId(req, req.query.facilityId as string);
     const q = (req.query.q as string) || "";
     const patients = await prisma.patient.findMany({
       where: {
-        facilityId: facilityId!,
         OR: q
           ? [
               { patientId: { contains: q, mode: "insensitive" } },
@@ -35,7 +39,7 @@ router.get("/", async (req, res, next) => {
           : undefined,
       },
       orderBy: { createdAt: "desc" },
-      take: 50,
+      take: 200,
     });
     res.json(patients);
   } catch (e) {
@@ -43,20 +47,31 @@ router.get("/", async (req, res, next) => {
   }
 });
 
-router.post("/", async (req, res, next) => {
+router.post("/", patientCreate, async (req, res, next) => {
   try {
     const data = createSchema.parse(req.body);
-    const facilityId = data.facilityId || getFacilityId(req)!;
-    const count = await prisma.patient.count();
-    const patient = await prisma.patient.create({
-      data: {
-        patientId: generatePatientId(count + 1),
-        ...data,
-        facilityId,
-      },
-    });
+    const facilityId = data.facilityId || getFacilityId(req) || undefined;
+    // count()+1 is not unique under concurrency — retry on collision with a bumped sequence.
+    let patient!: Awaited<ReturnType<typeof prisma.patient.create>>;
+    for (let attempt = 0; ; attempt++) {
+      const count = await prisma.patient.count();
+      try {
+        patient = await prisma.patient.create({
+          data: {
+            patientId: generatePatientId(count + 1 + attempt),
+            ...data,
+            facilityId,
+          },
+        });
+        break;
+      } catch (err) {
+        const isUniqueCollision =
+          err instanceof Prisma.PrismaClientKnownRequestError && err.code === "P2002";
+        if (!isUniqueCollision || attempt >= 4) throw err;
+      }
+    }
     await logAudit({
-      facilityId,
+      facilityId: facilityId ?? null,
       userId: req.user!.userId,
       action: "CREATE",
       entityType: "Patient",
@@ -68,7 +83,7 @@ router.post("/", async (req, res, next) => {
   }
 });
 
-router.get("/:id", async (req, res, next) => {
+router.get("/:id", patientView, async (req, res, next) => {
   try {
     const patient = await prisma.patient.findUnique({
       where: { id: req.params.id },
@@ -91,7 +106,7 @@ router.get("/:id", async (req, res, next) => {
   }
 });
 
-router.get("/:id/history", async (req, res, next) => {
+router.get("/:id/history", patientView, async (req, res, next) => {
   try {
     const [prescriptions, dispensing, returns] = await Promise.all([
       prisma.prescription.findMany({

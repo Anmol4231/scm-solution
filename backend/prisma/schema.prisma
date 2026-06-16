@@ -12,6 +12,18 @@ enum UserRole {
   STOREKEEPER
   NURSE_ADMIN
   PROVINCIAL_MANAGER
+  SUPER_ADMIN
+}
+
+enum FacilityType {
+  HOSPITAL
+  CLINIC
+  PHARMACY
+  WAREHOUSE
+  REGIONAL_STORE
+  AMS_CENTRAL
+  MEDICAL_STORE
+  OTHER
 }
 
 enum PrescriptionStatus {
@@ -63,9 +75,18 @@ enum AlertSeverity {
 
 enum TransferStatus {
   PENDING
+  AUTHORIZED
   IN_TRANSIT
   RECEIVED
+  PARTIALLY_RECEIVED
   CANCELLED
+}
+
+enum BatchStatus {
+  ACTIVE
+  EXPIRED
+  QUARANTINED
+  DISPOSED
 }
 
 enum DispensingRecipientType {
@@ -89,21 +110,64 @@ enum VendorOrderStatus {
   DRAFT
   SUBMITTED
   CONFIRMED
+  IN_TRANSIT
+  PARTIALLY_RECEIVED
   RECEIVED
   CANCELLED
 }
 
-model Facility {
-  id        String   @id @default(cuid())
-  name      String
-  code      String   @unique
-  province  String?
-  district  String?
-  phone     String?
-  isActive  Boolean  @default(true)
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
+enum ShipmentStatus {
+  SUBMITTED
+  PROCESSING
+  DISPATCHED
+  IN_TRANSIT
+  ARRIVED
+  RECEIVED
+}
 
+enum ShipmentType {
+  VENDOR_ORDER
+  TRANSFER
+}
+
+enum RequisitionStatus {
+  DRAFT
+  SUBMITTED
+  UNDER_REVIEW
+  APPROVED
+  ISSUED
+  IN_TRANSIT
+  RECEIVED
+  PARTIALLY_RECEIVED
+  CLOSED
+  CANCELLED
+}
+
+enum VoucherStatus {
+  DRAFT
+  FINALIZED
+  ACKNOWLEDGED
+  VOID
+}
+
+model Facility {
+  id                 String        @id @default(cuid())
+  name               String
+  code               String        @unique
+  facilityType       FacilityType? @default(HOSPITAL)
+  customFacilityType String?
+  province           String?
+  district           String?
+  address            String?
+  phone              String?
+  latitude           Float?
+  longitude          Float?
+  isActive           Boolean       @default(true)
+  createdAt          DateTime      @default(now())
+  updatedAt          DateTime      @updatedAt
+
+  shipmentsFrom      Shipment[] @relation("ShipmentSource")
+  shipmentsTo        Shipment[] @relation("ShipmentDestination")
   users              User[]
   patients           Patient[]
   healthcareWorkers  HealthcareWorker[]
@@ -117,7 +181,26 @@ model Facility {
   alerts             Alert[]
   auditLogs          AuditLog[]
   consumptionReports ConsumptionReport[]
-  stockOrders        StockOrder[]
+  stockOrders              StockOrder[]
+  stockReceipts            StockReceipt[]
+  requisitionsRequesting   StockRequisition[] @relation("RequisitionRequesting")
+  requisitionsIssuing      StockRequisition[] @relation("RequisitionIssuing")
+  returnsReceived          MedicineReturn[]   @relation("ReturnReceivingFacility")
+}
+
+model Role {
+  id          String   @id @default(cuid())
+  name        String   @unique
+  code        String   @unique
+  description String?
+  isActive    Boolean  @default(true)
+  isSystem    Boolean  @default(false)
+  scopeAllFacilities Boolean @default(false)
+  permissions Json     @default("{}")
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  users User[]
 }
 
 model User {
@@ -127,22 +210,42 @@ model User {
   firstName    String
   lastName     String
   role         UserRole
+  roleId       String?
+  roleMaster   Role?    @relation(fields: [roleId], references: [id])
   facilityId   String?
   facility     Facility? @relation(fields: [facilityId], references: [id])
   phone        String?
   isActive     Boolean  @default(true)
+  mustChangePassword Boolean @default(false)
+  passwordChangedAt  DateTime?
+  passwordExpiryDays Int?
+  loginAttempts      Int      @default(0)
+  lockedUntil        DateTime?
   createdAt    DateTime @default(now())
   updatedAt    DateTime @updatedAt
 
   stockTransactions StockTransaction[] @relation("PerformedBy")
   dispensingRecords DispensingRecord[]
   medicineReturns   MedicineReturn[]
-  transfersCreated  Transfer[]         @relation("TransferCreatedBy")
-  transfersReceived Transfer[]         @relation("TransferReceivedBy")
+  transfersCreated    Transfer[]         @relation("TransferCreatedBy")
+  transfersAuthorized Transfer[]         @relation("TransferAuthorizedBy")
+  transfersReceived   Transfer[]         @relation("TransferReceivedBy")
   alertsAcknowledged Alert[]           @relation("AlertAcknowledgedBy")
   auditLogs          AuditLog[]
   passwordResetTokens PasswordResetToken[]
-  stockOrdersCreated  StockOrder[]
+  stockOrdersCreated       StockOrder[]
+  stockReceiptsReceived    StockReceipt[]     @relation("StockReceiptReceivedBy")
+  stockReceiptsLastEdited  StockReceipt[]     @relation("StockReceiptLastEditedBy")
+  medicinesDeleted         Medicine[]         @relation("MedicineDeletedBy")
+  categoriesDeleted        MedicineCategory[] @relation("CategoryDeletedBy")
+  stockOrdersDeleted       StockOrder[]       @relation("StockOrderDeletedBy")
+  requisitionsRequested    StockRequisition[] @relation("RequisitionRequestedBy")
+  requisitionsApproved     StockRequisition[] @relation("RequisitionApprovedBy")
+  requisitionsIssued       StockRequisition[] @relation("RequisitionIssuedBy")
+  requisitionsReceived     StockRequisition[] @relation("RequisitionReceivedBy")
+  vouchersFinalized        IssueVoucher[]     @relation("VoucherFinalizedBy")
+  vouchersAcknowledged     IssueVoucher[]     @relation("VoucherAcknowledgedBy")
+  vouchersVoided           IssueVoucher[]     @relation("VoucherVoidedBy")
 }
 
 model PasswordResetToken {
@@ -180,13 +283,14 @@ model Patient {
   id               String   @id @default(cuid())
   patientId        String   @unique
   firstName        String
-  lastName         String
-  gender           String
-  age              Int
-  phoneNumber      String?
+  lastName         String?
+  gender           String?
+  age              Int?
+  phoneNumber      String
   address          String?
-  facilityId       String
-  facility         Facility @relation(fields: [facilityId], references: [id])
+  allergies        String?
+  facilityId       String?
+  facility         Facility? @relation(fields: [facilityId], references: [id])
   registrationDate DateTime @default(now())
   createdAt        DateTime @default(now())
   updatedAt        DateTime @updatedAt
@@ -235,13 +339,18 @@ model PrescriptionMedicine {
 }
 
 model MedicineCategory {
-  id          String   @id @default(cuid())
-  name        String   @unique
-  description String?
-  sortOrder   Int      @default(0)
-  isActive    Boolean  @default(true)
-  createdAt   DateTime @default(now())
-  updatedAt   DateTime @updatedAt
+  id                   String   @id @default(cuid())
+  name                 String   @unique
+  description          String?
+  coldStorage          Boolean  @default(false)
+  controlledDrug       Boolean  @default(false)
+  requiresPrescription Boolean  @default(false)
+  isActive             Boolean  @default(true)
+  deletedAt            DateTime?
+  deletedById          String?
+  deletedBy            User?    @relation("CategoryDeletedBy", fields: [deletedById], references: [id])
+  createdAt            DateTime @default(now())
+  updatedAt            DateTime @updatedAt
 
   medicines Medicine[]
 }
@@ -251,9 +360,12 @@ model Medicine {
   medicineName     String
   genericName      String?
   dosageForm       String?
+  dosageFormOther  String?
   strength         String?
   unitType         String   @default("tablets")
   reorderThreshold      Float    @default(50)
+  leadTimeDays          Int?
+  minimumOrderLevel     Int?
   storageCondition      String?
   temperatureSensitive  Boolean  @default(false)
   priorityLevel         String?  @default("ROUTINE")
@@ -261,9 +373,13 @@ model Medicine {
   categoryId            String?
   category              MedicineCategory? @relation(fields: [categoryId], references: [id])
   isActive              Boolean  @default(true)
+  deletedAt             DateTime?
+  deletedById           String?
+  deletedBy             User?    @relation("MedicineDeletedBy", fields: [deletedById], references: [id])
   createdAt        DateTime @default(now())
   updatedAt        DateTime @updatedAt
 
+  strengths              MedicineStrength[]
   stockBatches           StockBatch[]
   prescriptionMedicines  PrescriptionMedicine[]
   stockTransactions      StockTransaction[]
@@ -272,6 +388,28 @@ model Medicine {
   transfers                Transfer[]
   consumptionReports       ConsumptionReport[]
   stockOrderLines          StockOrderLine[]
+  stockReceiptLines        StockReceiptLine[]
+  requisitionLines         RequisitionLine[]
+  issueVoucherLines        IssueVoucherLine[]
+  transferLines            TransferLine[]
+
+  @@unique([medicineName, strength])
+  @@index([medicineName])
+  @@index([deletedAt])
+}
+
+model MedicineStrength {
+  id         String   @id @default(cuid())
+  medicineId String
+  medicine   Medicine @relation(fields: [medicineId], references: [id], onDelete: Cascade)
+  strength   String
+  sortOrder  Int      @default(0)
+  isActive   Boolean  @default(true)
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  @@unique([medicineId, strength])
+  @@index([strength])
 }
 
 model StockBatch {
@@ -286,6 +424,10 @@ model StockBatch {
   unitCost         Float?
   supplierSource   String?
   storageCondition String?
+  status           BatchStatus @default(ACTIVE)
+  quarantinedAt    DateTime?
+  quarantineReason String?
+  disposedAt       DateTime?
   createdAt        DateTime @default(now())
   updatedAt  DateTime @updatedAt
 
@@ -293,10 +435,14 @@ model StockBatch {
   dispensingRecords DispensingRecord[]
   medicineReturns   MedicineReturn[]
   transfers         Transfer[]
+  transferLines     TransferLine[]
+  issueVoucherLines IssueVoucherLine[]
+  receiptLines      StockReceiptLine[]
 
   @@unique([medicineId, facilityId, batchNumber])
   @@index([expiryDate])
   @@index([facilityId, medicineId])
+  @@index([status, expiryDate])
 }
 
 model StockTransaction {
@@ -309,6 +455,7 @@ model StockTransaction {
   batch           StockBatch?          @relation(fields: [batchId], references: [id])
   type            StockTransactionType
   quantity        Float
+  balanceBefore   Float?
   balanceAfter    Float?
   requestedQty    Float?
   receivedQty     Float?
@@ -381,8 +528,9 @@ model MedicineReturn {
   condition       MedicineCondition?
   reusable        Boolean            @default(false)
   stockAdjusted   Boolean            @default(false)
-  transferCode    String?
+  transferCode        String?
   receivingFacilityId String?
+  receivingFacility   Facility?  @relation("ReturnReceivingFacility", fields: [receivingFacilityId], references: [id])
   processedById   String
   processedBy     User               @relation(fields: [processedById], references: [id])
   notes           String?
@@ -398,26 +546,54 @@ model Transfer {
   fromFacility        Facility       @relation("TransferFrom", fields: [fromFacilityId], references: [id])
   toFacilityId        String
   toFacility          Facility       @relation("TransferTo", fields: [toFacilityId], references: [id])
-  medicineId          String
-  medicine            Medicine       @relation(fields: [medicineId], references: [id])
-  batchId             String
-  batch               StockBatch     @relation(fields: [batchId], references: [id])
-  batchNumber         String
-  expiryDate          DateTime
-  quantity            Float
+  // Legacy single-item fields (nullable for new multi-line transfers)
+  medicineId          String?
+  medicine            Medicine?      @relation(fields: [medicineId], references: [id])
+  batchId             String?
+  batch               StockBatch?    @relation(fields: [batchId], references: [id])
+  batchNumber         String?
+  expiryDate          DateTime?
+  quantity            Float?
   quantityReceived    Float?
   status              TransferStatus @default(PENDING)
+  priority            String         @default("ROUTINE")
   authorizationNotes  String?
   createdById         String
   createdBy           User           @relation("TransferCreatedBy", fields: [createdById], references: [id])
+  authorizedById      String?
+  authorizedBy        User?          @relation("TransferAuthorizedBy", fields: [authorizedById], references: [id])
+  authorizedAt        DateTime?
+  dispatchedAt        DateTime?
   receivedById        String?
   receivedBy          User?          @relation("TransferReceivedBy", fields: [receivedById], references: [id])
   receivedAt          DateTime?
   createdAt           DateTime       @default(now())
   updatedAt           DateTime       @updatedAt
+  shipment            Shipment?
+
+  lines TransferLine[]
 
   @@index([fromFacilityId, status])
   @@index([toFacilityId, status])
+}
+
+model TransferLine {
+  id                 String    @id @default(cuid())
+  transferId         String
+  transfer           Transfer  @relation(fields: [transferId], references: [id], onDelete: Cascade)
+  medicineId         String
+  medicine           Medicine  @relation(fields: [medicineId], references: [id])
+  batchId            String
+  batch              StockBatch @relation(fields: [batchId], references: [id])
+  batchNumber        String
+  expiryDate         DateTime
+  quantityTransferred Float
+  quantityReceived    Float?
+  shortfallFlag       Boolean   @default(false)
+  mismatchReason     String?
+  remarks            String?
+
+  @@index([transferId])
 }
 
 model ConsumptionReport {
@@ -444,12 +620,14 @@ model Alert {
   medicineId     String?
   batchId        String?
   metadata       Json?
-  isRead         Boolean       @default(false)
+  isRead           Boolean       @default(false)
+  resolvedAt       DateTime?
   acknowledgedById String?
-  acknowledgedBy User?         @relation("AlertAcknowledgedBy", fields: [acknowledgedById], references: [id])
-  createdAt      DateTime      @default(now())
+  acknowledgedBy   User?         @relation("AlertAcknowledgedBy", fields: [acknowledgedById], references: [id])
+  createdAt        DateTime      @default(now())
 
   @@index([facilityId, isRead, createdAt])
+  @@index([facilityId, resolvedAt])
 }
 
 model AuditLog {
@@ -492,16 +670,60 @@ model StockOrder {
   status               VendorOrderStatus @default(SUBMITTED)
   priority             String?           @default("ROUTINE")
   expectedDeliveryDate DateTime?
+  leadTimeDays         Int?
+  minimumOrderLevel    Int?
   notes                String?
   orderedById          String
   orderedBy            User              @relation(fields: [orderedById], references: [id])
+  deletedAt            DateTime?
+  deletedById          String?
+  deletedBy            User?             @relation("StockOrderDeletedBy", fields: [deletedById], references: [id])
   createdAt            DateTime          @default(now())
   updatedAt            DateTime          @updatedAt
 
-  lines StockOrderLine[]
+  lines    StockOrderLine[]
+  receipts StockReceipt[]
+  shipment Shipment?
 
   @@index([facilityId, status])
   @@index([vendorId])
+  @@index([deletedAt])
+}
+
+model Shipment {
+  id                    String         @id @default(cuid())
+  shipmentCode          String         @unique
+  shipmentType          ShipmentType
+  status                ShipmentStatus @default(SUBMITTED)
+  stockOrderId          String?        @unique
+  stockOrder            StockOrder?    @relation(fields: [stockOrderId], references: [id])
+  transferId            String?        @unique
+  transfer              Transfer?      @relation(fields: [transferId], references: [id])
+  sourceFacilityId      String?
+  sourceFacility        Facility?      @relation("ShipmentSource", fields: [sourceFacilityId], references: [id])
+  destinationFacilityId String
+  destinationFacility   Facility       @relation("ShipmentDestination", fields: [destinationFacilityId], references: [id])
+  estimatedDeliveryDate DateTime?
+  notes                 String?
+  createdAt             DateTime       @default(now())
+  updatedAt             DateTime       @updatedAt
+
+  events ShipmentEvent[]
+
+  @@index([status, shipmentType])
+  @@index([destinationFacilityId])
+}
+
+model ShipmentEvent {
+  id          String         @id @default(cuid())
+  shipmentId  String
+  shipment    Shipment       @relation(fields: [shipmentId], references: [id], onDelete: Cascade)
+  status      ShipmentStatus
+  note        String?
+  createdById String?
+  createdAt   DateTime       @default(now())
+
+  @@index([shipmentId, createdAt])
 }
 
 model StockOrderLine {
@@ -514,6 +736,55 @@ model StockOrderLine {
   quantityReceived Float?
   unitCost         Float?
   notes            String?
+
+  receiptLines StockReceiptLine[]
+
+  @@index([orderId])
+}
+
+model StockReceipt {
+  id             String    @id @default(cuid())
+  receiptCode    String    @unique
+  orderId        String
+  order          StockOrder @relation(fields: [orderId], references: [id])
+  receivedById   String
+  receivedBy     User      @relation("StockReceiptReceivedBy", fields: [receivedById], references: [id])
+  facilityId     String
+  facility       Facility  @relation(fields: [facilityId], references: [id])
+  notes          String?
+  lastEditedById String?
+  lastEditedBy   User?     @relation("StockReceiptLastEditedBy", fields: [lastEditedById], references: [id])
+  lastEditedAt   DateTime?
+  lastEditReason String?
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+
+  lines StockReceiptLine[]
+
+  @@index([orderId])
+  @@index([facilityId])
+}
+
+model StockReceiptLine {
+  id               String         @id @default(cuid())
+  receiptId        String
+  receipt          StockReceipt   @relation(fields: [receiptId], references: [id], onDelete: Cascade)
+  orderLineId      String
+  orderLine        StockOrderLine @relation(fields: [orderLineId], references: [id])
+  medicineId       String
+  medicine         Medicine       @relation(fields: [medicineId], references: [id])
+  batchId          String
+  batch            StockBatch     @relation(fields: [batchId], references: [id])
+  batchNumber      String
+  expiryDate       DateTime
+  quantityReceived Float
+  unitCost         Float?
+  notes            String?
+  createdAt        DateTime       @default(now())
+  updatedAt        DateTime       @updatedAt
+
+  @@index([receiptId])
+  @@index([orderLineId])
 }
 
 model ExpiredMedicineRecord {
@@ -529,3 +800,98 @@ model ExpiredMedicineRecord {
   processedById   String
   createdAt       DateTime @default(now())
 }
+
+model StockRequisition {
+  id                   String            @id @default(cuid())
+  requisitionCode      String            @unique
+  requestingFacilityId String
+  requestingFacility   Facility          @relation("RequisitionRequesting", fields: [requestingFacilityId], references: [id])
+  issuingFacilityId    String
+  issuingFacility      Facility          @relation("RequisitionIssuing", fields: [issuingFacilityId], references: [id])
+  status               RequisitionStatus @default(DRAFT)
+  priority             String            @default("ROUTINE")
+  notes                String?
+  requestedById        String
+  requestedBy          User              @relation("RequisitionRequestedBy", fields: [requestedById], references: [id])
+  approvedById         String?
+  approvedBy           User?             @relation("RequisitionApprovedBy", fields: [approvedById], references: [id])
+  issuedById           String?
+  issuedBy             User?             @relation("RequisitionIssuedBy", fields: [issuedById], references: [id])
+  receivedById         String?
+  receivedBy           User?             @relation("RequisitionReceivedBy", fields: [receivedById], references: [id])
+  approvedAt           DateTime?
+  issuedAt             DateTime?
+  receivedAt           DateTime?
+  cancellationReason   String?
+  cancelledAt          DateTime?
+  createdAt            DateTime          @default(now())
+  updatedAt            DateTime          @updatedAt
+
+  lines        RequisitionLine[]
+  issueVoucher IssueVoucher?
+
+  @@index([requestingFacilityId, status])
+  @@index([issuingFacilityId, status])
+}
+
+model RequisitionLine {
+  id                String           @id @default(cuid())
+  requisitionId     String
+  requisition       StockRequisition @relation(fields: [requisitionId], references: [id], onDelete: Cascade)
+  medicineId        String
+  medicine          Medicine         @relation(fields: [medicineId], references: [id])
+  quantityRequested Float
+  quantityApproved  Float?
+  quantityIssued    Float?
+  quantityReceived  Float?
+  batchNumber       String?
+  expiryDate        DateTime?
+  shortfallFlag     Boolean          @default(false)
+  approvalNotes     String?
+
+  @@index([requisitionId])
+}
+
+model IssueVoucher {
+  id                   String        @id @default(cuid())
+  voucherCode          String        @unique
+  requisitionId        String        @unique
+  requisition          StockRequisition @relation(fields: [requisitionId], references: [id])
+  status               VoucherStatus @default(DRAFT)
+  finalizedById        String?
+  finalizedBy          User?         @relation("VoucherFinalizedBy", fields: [finalizedById], references: [id])
+  finalizedAt          DateTime?
+  acknowledgedById     String?
+  acknowledgedBy       User?         @relation("VoucherAcknowledgedBy", fields: [acknowledgedById], references: [id])
+  acknowledgedAt       DateTime?
+  voidedById           String?
+  voidedBy             User?         @relation("VoucherVoidedBy", fields: [voidedById], references: [id])
+  voidedAt             DateTime?
+  voidReason           String?
+  notes                String?
+  createdAt            DateTime      @default(now())
+  updatedAt            DateTime      @updatedAt
+
+  lines IssueVoucherLine[]
+
+  @@index([requisitionId])
+}
+
+model IssueVoucherLine {
+  id               String       @id @default(cuid())
+  voucherId        String
+  voucher          IssueVoucher @relation(fields: [voucherId], references: [id], onDelete: Cascade)
+  requisitionLineId String?
+  medicineId       String
+  medicine         Medicine     @relation(fields: [medicineId], references: [id])
+  batchId          String?
+  batch            StockBatch?  @relation(fields: [batchId], references: [id])
+  batchNumber      String
+  expiryDate       DateTime
+  quantityIssued   Float
+  stockBalanceAfter Float?
+
+  @@index([voucherId])
+}
+
+

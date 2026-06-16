@@ -1,4 +1,4 @@
-"use client";
+﻿"use client";
 
 import { useState } from "react";
 import Link from "next/link";
@@ -61,7 +61,7 @@ export default function ForgotPasswordPage() {
             <div className="space-y-3 rounded-lg bg-green-50 p-4 text-sm">
               <p className="font-medium text-green-800">Reset link generated (simulated email)</p>
               {result.simulatedEmail && (
-                <div className="rounded border bg-white p-3 text-xs">
+                <div className="rounded border bg-white p-3 text-sm">
                   <p className="font-semibold">{result.simulatedEmail.subject}</p>
                   <p className="mt-1 text-muted-foreground">{result.simulatedEmail.body}</p>
                 </div>

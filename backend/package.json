@@ -11,6 +11,7 @@
     "db:push": "prisma db push",
     "db:seed": "tsx prisma/seed.ts",
     "db:reset-demo": "tsx prisma/seed.ts",
+    "db:backfill": "tsx prisma/backfill.ts",
     "db:studio": "prisma studio"
   },
   "dependencies": {
@@ -21,6 +22,8 @@
     "express": "^4.21.1",
     "jsonwebtoken": "^9.0.2",
     "multer": "^1.4.5-lts.1",
+    "nodemailer": "^8.0.10",
+    "tesseract.js": "^7.0.0",
     "zod": "^3.23.8"
   },
   "prisma": {
@@ -33,6 +36,7 @@
     "@types/jsonwebtoken": "^9.0.7",
     "@types/multer": "^1.4.12",
     "@types/node": "^22.9.0",
+    "@types/nodemailer": "^8.0.0",
     "prisma": "^5.22.0",
     "tsx": "^4.19.2",
     "typescript": "^5.6.3"

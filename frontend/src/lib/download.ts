@@ -1,10 +1,8 @@
-import { getToken, clearAuth } from "./api";
-
-const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:4000/api";
+import { getToken, clearAuth, resolveApiUrl } from "./api";
 
 export async function downloadAuthenticatedFile(path: string, filename: string) {
   const token = getToken();
-  const res = await fetch(`${API_URL}${path}`, {
+  const res = await fetch(`${resolveApiUrl()}${path}`, {
     headers: token ? { Authorization: `Bearer ${token}` } : {},
   });
 

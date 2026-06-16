@@ -26,6 +26,7 @@ export default function PatientProfilePage() {
     gender: string;
     age: number;
     phoneNumber?: string;
+    allergies?: string | null;
     prescriptions?: { prescriptionId: string; doctorName?: string; prescriptionDate: string }[];
     dispensingRecords?: { medicine: { medicineName: string }; quantity: number; dispensedAt: string; dosage?: string }[];
     medicineReturns?: { medicine: { medicineName: string }; quantity: number; returnReason: string }[];
@@ -40,6 +41,12 @@ export default function PatientProfilePage() {
         </div>
         <Link href={`/dispense?patientId=${id}`}><Button size="lg">Dispense Medicine</Button></Link>
       </div>
+
+      {p.allergies?.trim() && (
+        <div className="rounded-lg border border-red-300 bg-red-50 px-3 py-2 text-sm text-red-800">
+          <strong>Allergies:</strong> {p.allergies}
+        </div>
+      )}
 
       <Card>
         <CardHeader><CardTitle>Medicine Timeline</CardTitle></CardHeader>

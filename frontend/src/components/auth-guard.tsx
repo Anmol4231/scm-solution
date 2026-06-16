@@ -4,6 +4,9 @@ import { useEffect } from "react";
 import { useRouter } from "next/navigation";
 import { useAuth } from "@/lib/auth-context";
 import { AppShell } from "@/components/layout/app-shell";
+import { ScmAssistant } from "@/components/chat/scm-assistant";
+import { OfflineProvider } from "@/lib/offline/offline-context";
+import { ForcePasswordChange } from "@/components/force-password-change";
 import { getToken } from "@/lib/api";
 
 export function AuthGuard({ children }: { children: React.ReactNode }) {
@@ -26,5 +29,16 @@ export function AuthGuard({ children }: { children: React.ReactNode }) {
 
   if (!user) return null;
 
-  return <AppShell>{children}</AppShell>;
+  // Hard gate: a user on a temporary password cannot reach any app route
+  // until they set a new password (which clears mustChangePassword server-side).
+  if (user.mustChangePassword) {
+    return <ForcePasswordChange />;
+  }
+
+  return (
+    <OfflineProvider>
+      <AppShell>{children}</AppShell>
+      <ScmAssistant />
+    </OfflineProvider>
+  );
 }

@@ -1,8 +1,11 @@
 import { Router } from "express";
+import { TransferStatus } from "@prisma/client";
 import { prisma } from "../lib/prisma";
 import { authenticate, getFacilityId } from "../middleware/auth";
 import { getMedicineBalance, daysUntilExpiry } from "../utils/stock";
 import { config } from "../utils/config";
+import { isAdminDashboardRole } from "../utils/roles";
+import { buildAdminDashboard } from "../services/adminDashboard";
 
 const router = Router();
 router.use(authenticate);
@@ -118,6 +121,32 @@ router.get("/facility", async (req, res, next) => {
       else movementByDay[day].outbound += Math.abs(tx.quantity);
     }
 
+    const [
+      totalMedicines,
+      totalPatients,
+      totalWorkers,
+      activeShipments,
+      pendingTransfers,
+      pendingReturns,
+    ] = await Promise.all([
+      prisma.medicine.count({ where: { isActive: true } }),
+      prisma.patient.count({ where: { facilityId } }),
+      prisma.healthcareWorker.count({ where: { facilityId, status: "ACTIVE" } }),
+      prisma.shipment.count({
+        where: {
+          status: { not: "RECEIVED" },
+          OR: [{ destinationFacilityId: facilityId }, { sourceFacilityId: facilityId }],
+        },
+      }),
+      prisma.transfer.count({
+        where: {
+          status: { in: [TransferStatus.PENDING, TransferStatus.IN_TRANSIT] },
+          OR: [{ fromFacilityId: facilityId }, { toFacilityId: facilityId }],
+        },
+      }),
+      prisma.medicineReturn.count({ where: { facilityId, stockAdjusted: false } }),
+    ]);
+
     res.json({
       stockBalances,
       lowStock,
@@ -136,6 +165,18 @@ router.get("/facility", async (req, res, next) => {
       monthlyDispensing,
       nearStockoutPrediction: nearStockout,
       stockMovementTrend: Object.entries(movementByDay).map(([date, v]) => ({ date, ...v })),
+      widgets: {
+        totalMedicines,
+        totalPatients,
+        totalHealthcareWorkers: totalWorkers,
+        totalFacilities: 1,
+        dispensingToday,
+        lowStockCount: lowStock.length + stockouts.length,
+        nearExpiryCount: expiring.length,
+        activeShipments,
+        pendingTransfers,
+        pendingReturns,
+      },
     });
   } catch (e) {
     next(e);
@@ -144,80 +185,12 @@ router.get("/facility", async (req, res, next) => {
 
 router.get("/admin", async (req, res, next) => {
   try {
-    if (req.user!.role !== "PROVINCIAL_MANAGER") {
-      return res.status(403).json({ error: "Provincial manager access required" });
+    if (!isAdminDashboardRole(req.user!.role)) {
+      return res.status(403).json({ error: "Admin access required" });
     }
-
-    const facilities = await prisma.facility.findMany({ where: { isActive: true } });
-    const medicines = await prisma.medicine.findMany({ where: { isActive: true } });
-
-    const facilityStats = await Promise.all(
-      facilities.map(async (f) => {
-        let totalStock = 0;
-        let lowCount = 0;
-        let stockoutCount = 0;
-        for (const m of medicines) {
-          const bal = await getMedicineBalance(m.id, f.id);
-          totalStock += bal;
-          if (bal <= 0) stockoutCount++;
-          else if (bal <= m.reorderThreshold) lowCount++;
-        }
-        const expiringBatches = await prisma.stockBatch.count({
-          where: {
-            facilityId: f.id,
-            quantity: { gt: 0 },
-            expiryDate: {
-              lte: new Date(Date.now() + config.expiryWarningDays * 86400000),
-              gte: new Date(),
-            },
-          },
-        });
-        const lastReport = await prisma.consumptionReport.findFirst({
-          where: { facilityId: f.id },
-          orderBy: { reportedAt: "desc" },
-        });
-        const daysSinceReport = lastReport
-          ? Math.floor((Date.now() - lastReport.reportedAt.getTime()) / 86400000)
-          : 999;
-
-        return {
-          facility: f,
-          totalStock,
-          lowCount,
-          stockoutCount,
-          expiringBatches,
-          daysSinceReport,
-          nonReporting: daysSinceReport > config.nonReportingDays,
-        };
-      })
-    );
-
-    const consumption = await prisma.consumptionReport.groupBy({
-      by: ["reportingPeriod", "medicineId"],
-      _sum: { quantityUsed: true },
-      orderBy: { reportingPeriod: "desc" },
-      take: 20,
-    });
-
-    const expiryHeatmap = await prisma.stockBatch.findMany({
-      where: { quantity: { gt: 0 } },
-      include: { medicine: true, facility: true },
-    });
-
-    const heatmap = expiryHeatmap.map((b) => ({
-      facility: b.facility.name,
-      medicine: b.medicine.medicineName,
-      batch: b.batchNumber,
-      days: daysUntilExpiry(b.expiryDate),
-      quantity: b.quantity,
-    }));
-
-    res.json({
-      facilityStats,
-      consumptionTrends: consumption,
-      expiryHeatmap: heatmap,
-      nonReportingFacilities: facilityStats.filter((f) => f.nonReporting),
-    });
+    const facilityId = (req.query.facilityId as string) || undefined;
+    const data = await buildAdminDashboard(facilityId);
+    res.json(data);
   } catch (e) {
     next(e);
   }

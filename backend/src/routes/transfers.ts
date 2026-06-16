@@ -3,37 +3,37 @@ import { z } from "zod";
 import { TransferStatus, StockTransactionType } from "@prisma/client";
 import { prisma } from "../lib/prisma";
 import { authenticate, getFacilityId } from "../middleware/auth";
+import { requirePermission } from "../middleware/permission";
 import { UserRole } from "@prisma/client";
-
-const TRANSFER_CREATOR_ROLES: UserRole[] = [
-  UserRole.PHARMACIST,
-  UserRole.STOREKEEPER,
-  UserRole.NURSE_ADMIN,
-  UserRole.PROVINCIAL_MANAGER,
-];
 import { generateTransferCode } from "../utils/ids";
 import { logAudit } from "../services/audit";
 import { whatsappService } from "../whatsapp/service";
 import { createAlert } from "../services/alerts";
 import { AlertType, AlertSeverity } from "@prisma/client";
+import { createShipmentForTransfer } from "../services/shipment";
+import { assertBatchAvailable, decrementBatchOrThrow } from "../utils/stockGuards";
+import { getMedicineBalanceTx } from "../utils/stock";
 
 const router = Router();
 router.use(authenticate);
+
+const transferView    = requirePermission("transfers", "view");
+const transferCreate  = requirePermission("transfers", "create");
+const transferEdit    = requirePermission("transfers", "edit");
+const transferApprove = requirePermission("transfers", "approve");
+
+const positiveWholeNumber = z.number().int("Quantity must be a whole number").positive("Quantity must be greater than zero");
 
 const createSchema = z.object({
   toFacilityId: z.string(),
   medicineId: z.string(),
   batchId: z.string(),
-  quantity: z.number().positive(),
+  quantity: positiveWholeNumber,
   authorizationNotes: z.string().optional(),
 });
 
-router.post("/", async (req, res, next) => {
+router.post("/", transferCreate, async (req, res, next) => {
   try {
-    if (!TRANSFER_CREATOR_ROLES.includes(req.user!.role)) {
-      return res.status(403).json({ error: "Insufficient permissions to create transfers" });
-    }
-
     const data = createSchema.parse(req.body);
     const batch = await prisma.stockBatch.findUnique({
       where: { id: data.batchId },
@@ -43,11 +43,14 @@ router.post("/", async (req, res, next) => {
       return res.status(400).json({ error: "Invalid batch or insufficient quantity" });
     }
 
+    // Expired / quarantined stock can never be transferred.
+    assertBatchAvailable(batch, `${batch.medicine.medicineName} (batch ${batch.batchNumber})`);
+
     if (data.toFacilityId === batch.facilityId) {
       return res.status(400).json({ error: "Receiving facility must differ from sending facility" });
     }
 
-    if (req.user!.role !== UserRole.PROVINCIAL_MANAGER) {
+    if (req.user!.role !== UserRole.PROVINCIAL_MANAGER && req.user!.role !== UserRole.SUPER_ADMIN) {
       if (!req.user!.facilityId) {
         return res.status(400).json({ error: "Facility selection required" });
       }
@@ -56,10 +59,8 @@ router.post("/", async (req, res, next) => {
       }
     }
 
-    await prisma.stockBatch.update({
-      where: { id: batch.id },
-      data: { quantity: { decrement: data.quantity } },
-    });
+    // Conditional decrement guarantees stock cannot be driven negative under races.
+    await decrementBatchOrThrow(prisma, batch.id, data.quantity, `${batch.medicine.medicineName} (batch ${batch.batchNumber})`);
 
     const transfer = await prisma.transfer.create({
       data: {
@@ -102,16 +103,23 @@ router.post("/", async (req, res, next) => {
       `Transfer ${transfer.transferCode} incoming. Confirm receipt in SCM Solution.`
     );
 
+    await createShipmentForTransfer({
+      transferId: transfer.id,
+      sourceFacilityId: batch.facilityId,
+      destinationFacilityId: data.toFacilityId,
+      userId: req.user!.userId,
+    });
+
     res.status(201).json(transfer);
   } catch (e) {
     next(e);
   }
 });
 
-router.post("/receive", async (req, res, next) => {
+router.post("/receive", transferApprove, async (req, res, next) => {
   try {
     const { transferCode, quantityReceived } = z
-      .object({ transferCode: z.string(), quantityReceived: z.number().positive() })
+      .object({ transferCode: z.string(), quantityReceived: positiveWholeNumber })
       .parse(req.body);
 
     const transfer = await prisma.transfer.findUnique({
@@ -122,69 +130,88 @@ router.post("/receive", async (req, res, next) => {
     if (transfer.status === TransferStatus.RECEIVED) {
       return res.status(400).json({ error: "Already received" });
     }
+    // Legacy endpoint only handles single-item transfers
+    if (!transfer.medicineId || !transfer.batchNumber || !transfer.expiryDate) {
+      return res.status(400).json({ error: "Use /receive-multi for multi-line transfers" });
+    }
 
     const facilityId = getFacilityId(req, undefined);
     if (facilityId && facilityId !== transfer.toFacilityId) {
       return res.status(403).json({ error: "Wrong receiving facility" });
     }
 
-    let batch = await prisma.stockBatch.findUnique({
-      where: {
-        medicineId_facilityId_batchNumber: {
-          medicineId: transfer.medicineId,
-          facilityId: transfer.toFacilityId,
-          batchNumber: transfer.batchNumber,
-        },
-      },
-    });
-
-    if (batch) {
-      batch = await prisma.stockBatch.update({
-        where: { id: batch.id },
-        data: { quantity: { increment: quantityReceived } },
-      });
-    } else {
-      batch = await prisma.stockBatch.create({
-        data: {
-          medicineId: transfer.medicineId,
-          facilityId: transfer.toFacilityId,
-          batchNumber: transfer.batchNumber,
-          expiryDate: transfer.expiryDate,
-          quantity: quantityReceived,
-        },
+    // C-1: never receive more than was shipped (cumulative across receipts).
+    const alreadyReceived = transfer.quantityReceived ?? 0;
+    const shipped = transfer.quantity ?? 0;
+    const remaining = shipped - alreadyReceived;
+    if (quantityReceived > remaining) {
+      return res.status(400).json({
+        error: `Cannot receive ${quantityReceived} — only ${remaining} remaining (shipped ${shipped}, already received ${alreadyReceived}).`,
       });
     }
 
-    const updated = await prisma.transfer.update({
-      where: { id: transfer.id },
-      data: {
-        status: TransferStatus.RECEIVED,
-        quantityReceived,
-        receivedById: req.user!.userId,
-        receivedAt: new Date(),
-      },
-    });
+    const { updated, batch } = await prisma.$transaction(async (tx) => {
+      const before = await getMedicineBalanceTx(tx, transfer.medicineId!, transfer.toFacilityId);
+      let b = await tx.stockBatch.findUnique({
+        where: {
+          medicineId_facilityId_batchNumber: {
+            medicineId: transfer.medicineId!,
+            facilityId: transfer.toFacilityId,
+            batchNumber: transfer.batchNumber!,
+          },
+        },
+      });
+      if (b) {
+        b = await tx.stockBatch.update({ where: { id: b.id }, data: { quantity: { increment: quantityReceived } } });
+      } else {
+        b = await tx.stockBatch.create({
+          data: {
+            medicineId: transfer.medicineId!,
+            facilityId: transfer.toFacilityId,
+            batchNumber: transfer.batchNumber!,
+            expiryDate: transfer.expiryDate!,
+            quantity: quantityReceived,
+          },
+        });
+      }
 
-    await prisma.stockTransaction.create({
-      data: {
-        facilityId: transfer.toFacilityId,
-        medicineId: transfer.medicineId,
-        batchId: batch.id,
-        type: StockTransactionType.TRANSFER_IN,
-        quantity: quantityReceived,
-        transferId: transfer.id,
-        performedById: req.user!.userId,
-      },
+      const newTotal = alreadyReceived + quantityReceived;
+      // C-2: accumulate and only close when fully received.
+      const u = await tx.transfer.update({
+        where: { id: transfer.id },
+        data: {
+          status: newTotal >= shipped ? TransferStatus.RECEIVED : TransferStatus.PARTIALLY_RECEIVED,
+          quantityReceived: newTotal,
+          receivedById: req.user!.userId,
+          receivedAt: new Date(),
+        },
+      });
+
+      await tx.stockTransaction.create({
+        data: {
+          facilityId: transfer.toFacilityId,
+          medicineId: transfer.medicineId!,
+          batchId: b.id,
+          type: StockTransactionType.TRANSFER_IN,
+          quantity: quantityReceived,
+          balanceBefore: before,
+          balanceAfter: before + quantityReceived,
+          transferId: transfer.id,
+          performedById: req.user!.userId,
+          reason: `Transfer ${transfer.transferCode}`,
+        },
+      });
+      return { updated: u, batch: b };
     });
 
     await prisma.medicineReturn.create({
       data: {
         returnType: "INTER_FACILITY",
         facilityId: transfer.fromFacilityId,
-        medicineId: transfer.medicineId,
-        batchId: transfer.batchId,
-        batchNumber: transfer.batchNumber,
-        expiryDate: transfer.expiryDate,
+        medicineId: transfer.medicineId!,
+        batchId: transfer.batchId ?? undefined,
+        batchNumber: transfer.batchNumber!,
+        expiryDate: transfer.expiryDate!,
         quantity: quantityReceived,
         returnReason: "Inter-facility transfer received",
         transferCode: transfer.transferCode,
@@ -209,18 +236,410 @@ router.post("/receive", async (req, res, next) => {
   }
 });
 
-router.get("/", async (req, res, next) => {
+router.get("/", transferView, async (req, res, next) => {
   try {
     const facilityId = getFacilityId(req, req.query.facilityId as string);
+    const status = req.query.status as string | undefined;
     const transfers = await prisma.transfer.findMany({
-      where: facilityId
-        ? { OR: [{ fromFacilityId: facilityId }, { toFacilityId: facilityId }] }
-        : undefined,
-      include: { fromFacility: true, toFacility: true, medicine: true },
+      where: {
+        ...(facilityId ? { OR: [{ fromFacilityId: facilityId }, { toFacilityId: facilityId }] } : {}),
+        ...(status ? { status: status as TransferStatus } : {}),
+      },
+      include: {
+        fromFacility: { select: { id: true, name: true, code: true } },
+        toFacility: { select: { id: true, name: true, code: true } },
+        medicine: { select: { id: true, medicineName: true } },
+        lines: { include: { medicine: { select: { id: true, medicineName: true } }, batch: { select: { batchNumber: true, expiryDate: true } } } },
+        createdBy: { select: { firstName: true, lastName: true } },
+        authorizedBy: { select: { firstName: true, lastName: true } },
+      },
       orderBy: { createdAt: "desc" },
-      take: 50,
+      take: 100,
     });
     res.json(transfers);
+  } catch (e) {
+    next(e);
+  }
+});
+
+router.get("/:id", transferView, async (req, res, next) => {
+  try {
+    const transfer = await prisma.transfer.findUnique({
+      where: { id: req.params.id },
+      include: {
+        fromFacility: true, toFacility: true,
+        medicine: true, batch: true,
+        lines: { include: { medicine: true, batch: true } },
+        createdBy: { select: { firstName: true, lastName: true } },
+        authorizedBy: { select: { firstName: true, lastName: true } },
+        receivedBy: { select: { firstName: true, lastName: true } },
+      },
+    });
+    if (!transfer) return res.status(404).json({ error: "Not found" });
+    res.json(transfer);
+  } catch (e) {
+    next(e);
+  }
+});
+
+// POST /transfers/new — create + send a multi-line transfer in one step.
+// Mirrors the simple Order→Receipt flow: there is no separate authorize/dispatch
+// stage. Creating a transfer immediately deducts the stock from the sending
+// facility and puts the transfer IN_TRANSIT, ready for the destination to receive.
+const newTransferSchema = z.object({
+  fromFacilityId: z.string().optional(),
+  toFacilityId: z.string(),
+  priority: z.enum(["ROUTINE", "URGENT", "EMERGENCY"]).default("ROUTINE"),
+  authorizationNotes: z.string().optional(),
+  lines: z.array(z.object({
+    batchId: z.string(),
+    quantityTransferred: positiveWholeNumber,
+  })).min(1),
+});
+
+router.post("/new", transferCreate, async (req, res, next) => {
+  try {
+    const data = newTransferSchema.parse(req.body);
+    const userId = req.user!.userId;
+    const isCrossAdminUser = req.user!.role === UserRole.PROVINCIAL_MANAGER || req.user!.role === UserRole.SUPER_ADMIN;
+
+    const effectiveFromFacilityId = (isCrossAdminUser && data.fromFacilityId)
+      ? data.fromFacilityId
+      : req.user!.facilityId;
+    if (!effectiveFromFacilityId) return res.status(400).json({ error: "From-facility required" });
+    if (effectiveFromFacilityId === data.toFacilityId) return res.status(400).json({ error: "From and to facility must differ" });
+
+    // Validate all batches belong to the from-facility and have sufficient stock.
+    const batchIds = data.lines.map((l) => l.batchId);
+    const batches = await prisma.stockBatch.findMany({
+      where: { id: { in: batchIds }, facilityId: effectiveFromFacilityId },
+      include: { medicine: true },
+    });
+    if (batches.length !== new Set(batchIds).size) return res.status(400).json({ error: "One or more batches not found at the sending facility" });
+
+    for (const line of data.lines) {
+      const batch = batches.find((b) => b.id === line.batchId);
+      if (!batch) return res.status(400).json({ error: "Batch not found" });
+      if (batch.quantity < line.quantityTransferred) return res.status(400).json({ error: `Insufficient stock in batch ${batch.batchNumber}` });
+      // Expired / quarantined stock can never be transferred.
+      assertBatchAvailable(batch, `${batch.medicine.medicineName} (batch ${batch.batchNumber})`);
+    }
+
+    // Create the transfer (IN_TRANSIT) and deduct source stock atomically.
+    const transfer = await prisma.$transaction(async (tx) => {
+      const created = await tx.transfer.create({
+        data: {
+          transferCode: generateTransferCode(),
+          fromFacilityId: effectiveFromFacilityId,
+          toFacilityId: data.toFacilityId,
+          status: TransferStatus.IN_TRANSIT,
+          priority: data.priority,
+          authorizationNotes: data.authorizationNotes,
+          createdById: userId,
+          dispatchedAt: new Date(),
+          lines: {
+            create: data.lines.map((l) => {
+              const batch = batches.find((b) => b.id === l.batchId)!;
+              return {
+                medicineId: batch.medicineId,
+                batchId: batch.id,
+                batchNumber: batch.batchNumber,
+                expiryDate: batch.expiryDate,
+                quantityTransferred: l.quantityTransferred,
+              };
+            }),
+          },
+        },
+        include: { lines: true },
+      });
+
+      for (const line of created.lines) {
+        const batch = await tx.stockBatch.findUnique({ where: { id: line.batchId } });
+        if (!batch) throw new Error(`Batch ${line.batchNumber} not found`);
+        assertBatchAvailable(batch, `batch ${line.batchNumber}`);
+        const before = await getMedicineBalanceTx(tx, line.medicineId, effectiveFromFacilityId);
+        await decrementBatchOrThrow(tx, line.batchId, line.quantityTransferred, `batch ${line.batchNumber}`);
+        await tx.stockTransaction.create({
+          data: {
+            facilityId: effectiveFromFacilityId,
+            medicineId: line.medicineId,
+            batchId: line.batchId,
+            type: StockTransactionType.TRANSFER_OUT,
+            quantity: -line.quantityTransferred,
+            balanceBefore: before,
+            balanceAfter: before - line.quantityTransferred,
+            transferId: created.id,
+            performedById: userId,
+            reason: `Transfer ${created.transferCode}`,
+          },
+        });
+      }
+      return created;
+    });
+
+    // Best-effort notify the destination that stock is on the way.
+    await createAlert({
+      facilityId: data.toFacilityId,
+      type: AlertType.TRANSFER_PENDING,
+      severity: AlertSeverity.INFO,
+      title: "Incoming transfer",
+      message: `Transfer ${transfer.transferCode} is in transit — confirm receipt in SCM Solution.`,
+    }).catch(() => {});
+    await whatsappService
+      .sendToFacilityPhones(data.toFacilityId, `Transfer ${transfer.transferCode} incoming. Confirm receipt in SCM Solution.`)
+      .catch(() => {});
+
+    await logAudit({ facilityId: effectiveFromFacilityId, userId, action: "TRANSFER_SEND", entityType: "Transfer", entityId: transfer.id, details: { code: transfer.transferCode } });
+    const full = await prisma.transfer.findUnique({
+      where: { id: transfer.id },
+      include: { fromFacility: true, toFacility: true, lines: { include: { medicine: true, batch: true } } },
+    });
+    res.status(201).json(full);
+  } catch (e) {
+    next(e);
+  }
+});
+
+// POST /transfers/:id/receive-multi — receive (cumulatively) while IN_TRANSIT or
+// PARTIALLY_RECEIVED. Closes to RECEIVED only when every line is fully received,
+// or when the receiver finalizes a short shipment (the shortfall is documented).
+const receiveMultiSchema = z.object({
+  lines: z.array(z.object({
+    lineId: z.string(),
+    quantityReceived: z.number().min(0),
+    mismatchReason: z.string().optional(),
+    remarks: z.string().optional(),
+  })),
+  // When true, close the transfer even if short; the undelivered remainder is
+  // recorded as a documented loss (lost in transit) rather than left stranded.
+  finalizeShortfall: z.boolean().optional(),
+});
+
+const RECEIVABLE_STATUSES: TransferStatus[] = [TransferStatus.IN_TRANSIT, TransferStatus.PARTIALLY_RECEIVED];
+
+router.post("/:id/receive-multi", transferApprove, async (req, res, next) => {
+  try {
+    const transfer = await prisma.transfer.findUnique({ where: { id: req.params.id }, include: { lines: true } });
+    if (!transfer) return res.status(404).json({ error: "Not found" });
+    if (!RECEIVABLE_STATUSES.includes(transfer.status)) {
+      return res.status(400).json({ error: "Transfer must be IN_TRANSIT or PARTIALLY_RECEIVED to receive" });
+    }
+
+    const userId = req.user!.userId;
+    const userFacilityId = req.user!.facilityId;
+    const isCrossAdmin = req.user!.role === UserRole.PROVINCIAL_MANAGER || req.user!.role === UserRole.SUPER_ADMIN;
+    if (!isCrossAdmin && userFacilityId !== transfer.toFacilityId) {
+      return res.status(403).json({ error: "Only the receiving facility can confirm receipt" });
+    }
+
+    const data = receiveMultiSchema.parse(req.body);
+
+    // C-1: validate every line against its REMAINING quantity before mutating.
+    for (const receipt of data.lines) {
+      const line = transfer.lines.find((l) => l.id === receipt.lineId);
+      if (!line) return res.status(400).json({ error: `Unknown transfer line ${receipt.lineId}` });
+      const already = line.quantityReceived ?? 0;
+      const remaining = line.quantityTransferred - already;
+      if (receipt.quantityReceived > remaining) {
+        return res.status(400).json({
+          error: `Cannot receive ${receipt.quantityReceived} for batch ${line.batchNumber} — only ${remaining} remaining (shipped ${line.quantityTransferred}, already received ${already}).`,
+        });
+      }
+    }
+
+    // C-2: when finalizing with a shortfall, mismatch reason + remarks are required
+    // for every line that will end with a quantity variance.
+    if (data.finalizeShortfall) {
+      for (const line of transfer.lines) {
+        const receipt = data.lines.find((r) => r.lineId === line.id);
+        const newTotal = (line.quantityReceived ?? 0) + (receipt?.quantityReceived ?? 0);
+        if (newTotal < line.quantityTransferred) {
+          if (!receipt?.mismatchReason) {
+            return res.status(400).json({
+              error: `Mismatch reason required for batch ${line.batchNumber}: ${newTotal} received of ${line.quantityTransferred} issued.`,
+            });
+          }
+          if (!receipt?.remarks) {
+            return res.status(400).json({
+              error: `Remarks are required when received quantity differs from issued quantity for batch ${line.batchNumber}.`,
+            });
+          }
+        }
+      }
+    }
+
+    await prisma.$transaction(async (tx) => {
+      for (const receipt of data.lines) {
+        if (receipt.quantityReceived <= 0) continue;
+        const line = transfer.lines.find((l) => l.id === receipt.lineId)!;
+
+        const before = await getMedicineBalanceTx(tx, line.medicineId, transfer.toFacilityId);
+        let batch = await tx.stockBatch.findUnique({
+          where: { medicineId_facilityId_batchNumber: { medicineId: line.medicineId, facilityId: transfer.toFacilityId, batchNumber: line.batchNumber } },
+        });
+        if (batch) {
+          batch = await tx.stockBatch.update({ where: { id: batch.id }, data: { quantity: { increment: receipt.quantityReceived } } });
+        } else {
+          batch = await tx.stockBatch.create({
+            data: { medicineId: line.medicineId, facilityId: transfer.toFacilityId, batchNumber: line.batchNumber, expiryDate: line.expiryDate, quantity: receipt.quantityReceived },
+          });
+        }
+
+        await tx.stockTransaction.create({
+          data: {
+            facilityId: transfer.toFacilityId,
+            medicineId: line.medicineId,
+            batchId: batch.id,
+            type: StockTransactionType.TRANSFER_IN,
+            quantity: receipt.quantityReceived,
+            balanceBefore: before,
+            balanceAfter: before + receipt.quantityReceived,
+            transferId: transfer.id,
+            performedById: userId,
+            reason: `Transfer ${transfer.transferCode}`,
+          },
+        });
+
+        // C-2: accumulate received quantity rather than overwrite.
+        const newTotal = (line.quantityReceived ?? 0) + receipt.quantityReceived;
+        await tx.transferLine.update({
+          where: { id: line.id },
+          data: {
+            quantityReceived: newTotal,
+            shortfallFlag: newTotal < line.quantityTransferred,
+            ...(receipt.mismatchReason ? { mismatchReason: receipt.mismatchReason } : {}),
+            ...(receipt.remarks ? { remarks: receipt.remarks } : {}),
+          },
+        });
+      }
+
+      const fresh = await tx.transferLine.findMany({ where: { transferId: transfer.id } });
+      const allFull = fresh.every((l) => (l.quantityReceived ?? 0) >= l.quantityTransferred);
+      const anyReceived = fresh.some((l) => (l.quantityReceived ?? 0) > 0);
+
+      let newStatus: TransferStatus;
+      if (allFull) {
+        newStatus = TransferStatus.RECEIVED;
+      } else if (data.finalizeShortfall) {
+        // Close short: document the undelivered remainder as a loss (the source was
+        // already debited at dispatch, so conservation holds: source − = dest + + loss).
+        newStatus = TransferStatus.RECEIVED;
+        const lossLines: { medicineId: string; batchNumber: string; shortfall: number }[] = [];
+        for (const l of fresh) {
+          const shortfall = l.quantityTransferred - (l.quantityReceived ?? 0);
+          if (shortfall > 0) {
+            await tx.transferLine.update({ where: { id: l.id }, data: { shortfallFlag: true } });
+            lossLines.push({ medicineId: l.medicineId, batchNumber: l.batchNumber, shortfall });
+          }
+        }
+        await tx.auditLog.create({
+          data: {
+            facilityId: transfer.fromFacilityId,
+            userId,
+            action: "TRANSFER_SHORTFALL_LOSS",
+            entityType: "Transfer",
+            entityId: transfer.id,
+            details: { transferCode: transfer.transferCode, lostInTransit: lossLines },
+          },
+        });
+      } else {
+        newStatus = anyReceived ? TransferStatus.PARTIALLY_RECEIVED : transfer.status;
+      }
+
+      await tx.transfer.update({
+        where: { id: transfer.id },
+        data: { status: newStatus, receivedById: userId, receivedAt: new Date() },
+      });
+    });
+
+    await logAudit({
+      facilityId: transfer.toFacilityId,
+      userId,
+      action: "TRANSFER_RECEIVE",
+      entityType: "Transfer",
+      entityId: transfer.id,
+      details: {
+        transferCode: transfer.transferCode,
+        finalizeShortfall: data.finalizeShortfall ?? false,
+        lines: data.lines.map((r) => {
+          const line = transfer.lines.find((l) => l.id === r.lineId);
+          const newTotal = (line?.quantityReceived ?? 0) + r.quantityReceived;
+          const variance = line ? newTotal - line.quantityTransferred : null;
+          return {
+            lineId: r.lineId,
+            batchNumber: line?.batchNumber,
+            issuedQty: line?.quantityTransferred,
+            receivedQty: r.quantityReceived,
+            totalReceived: newTotal,
+            variance,
+            mismatchReason: r.mismatchReason ?? null,
+            remarks: r.remarks ?? null,
+          };
+        }),
+      },
+    });
+    const updated = await prisma.transfer.findUnique({ where: { id: transfer.id }, include: { lines: { include: { medicine: true } }, fromFacility: true, toFacility: true } });
+    res.json(updated);
+  } catch (e) {
+    next(e);
+  }
+});
+
+// POST /transfers/:id/cancel — recall an in-transit transfer before it is received.
+// Stock was deducted from the source when the transfer was sent, so cancelling
+// returns it to the source. Only allowed while IN_TRANSIT with nothing received.
+router.post("/:id/cancel", transferEdit, async (req, res, next) => {
+  try {
+    const transfer = await prisma.transfer.findUnique({ where: { id: req.params.id }, include: { lines: true } });
+    if (!transfer) return res.status(404).json({ error: "Not found" });
+    if (transfer.status !== TransferStatus.IN_TRANSIT) {
+      return res.status(400).json({ error: "Only in-transit transfers can be cancelled." });
+    }
+    if (transfer.lines.some((l) => (l.quantityReceived ?? 0) > 0)) {
+      return res.status(400).json({ error: "Cannot cancel — some items have already been received." });
+    }
+
+    const userId = req.user!.userId;
+    const isCrossAdmin = req.user!.role === UserRole.PROVINCIAL_MANAGER || req.user!.role === UserRole.SUPER_ADMIN;
+    if (!isCrossAdmin && req.user!.facilityId !== transfer.fromFacilityId) {
+      return res.status(403).json({ error: "Only the sending facility can cancel this transfer." });
+    }
+
+    await prisma.$transaction(async (tx) => {
+      // Return each line's stock to the source facility's batch.
+      for (const line of transfer.lines) {
+        const before = await getMedicineBalanceTx(tx, line.medicineId, transfer.fromFacilityId);
+        let batch = await tx.stockBatch.findUnique({
+          where: { medicineId_facilityId_batchNumber: { medicineId: line.medicineId, facilityId: transfer.fromFacilityId, batchNumber: line.batchNumber } },
+        });
+        if (batch) {
+          batch = await tx.stockBatch.update({ where: { id: batch.id }, data: { quantity: { increment: line.quantityTransferred } } });
+        } else {
+          batch = await tx.stockBatch.create({
+            data: { medicineId: line.medicineId, facilityId: transfer.fromFacilityId, batchNumber: line.batchNumber, expiryDate: line.expiryDate, quantity: line.quantityTransferred },
+          });
+        }
+        await tx.stockTransaction.create({
+          data: {
+            facilityId: transfer.fromFacilityId,
+            medicineId: line.medicineId,
+            batchId: batch.id,
+            type: StockTransactionType.TRANSFER_IN,
+            quantity: line.quantityTransferred,
+            balanceBefore: before,
+            balanceAfter: before + line.quantityTransferred,
+            transferId: transfer.id,
+            performedById: userId,
+            reason: `Transfer ${transfer.transferCode} cancelled — stock returned`,
+          },
+        });
+      }
+      await tx.transfer.update({ where: { id: transfer.id }, data: { status: TransferStatus.CANCELLED } });
+    });
+
+    await logAudit({ facilityId: transfer.fromFacilityId, userId, action: "TRANSFER_CANCEL", entityType: "Transfer", entityId: transfer.id });
+    const updated = await prisma.transfer.findUnique({ where: { id: transfer.id }, include: { lines: { include: { medicine: true } }, fromFacility: true, toFacility: true } });
+    res.json(updated);
   } catch (e) {
     next(e);
   }

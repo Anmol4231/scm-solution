@@ -1,5 +1,22 @@
-import { StockTransactionType } from "@prisma/client";
+import { Prisma, StockTransactionType } from "@prisma/client";
 import { prisma } from "../lib/prisma";
+
+/**
+ * Facility-level on-hand balance for a medicine, computed inside a transaction so
+ * it reflects mutations already made in the same `$transaction`. Used to stamp
+ * balanceBefore / balanceAfter on the ledger for full reconstruction.
+ */
+export async function getMedicineBalanceTx(
+  tx: Prisma.TransactionClient,
+  medicineId: string,
+  facilityId: string
+): Promise<number> {
+  const agg = await tx.stockBatch.aggregate({
+    _sum: { quantity: true },
+    where: { medicineId, facilityId },
+  });
+  return agg._sum.quantity ?? 0;
+}
 
 export const INBOUND_TYPES: StockTransactionType[] = [
   StockTransactionType.RECEIPT,
@@ -52,10 +69,10 @@ export async function getBatchSupplyTotals(
 
 export async function getMedicineBalance(
   medicineId: string,
-  facilityId: string
+  facilityId: string | null
 ): Promise<number> {
   const batches = await prisma.stockBatch.findMany({
-    where: { medicineId, facilityId, quantity: { gt: 0 } },
+    where: { medicineId, ...(facilityId ? { facilityId } : {}), quantity: { gt: 0 } },
   });
   return batches.reduce((sum, b) => sum + b.quantity, 0);
 }

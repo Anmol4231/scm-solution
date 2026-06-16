@@ -1,9 +1,13 @@
 import app from "./app";
 import { config } from "./utils/config";
+import { validateEmailConfig } from "./utils/email";
 
-const server = app.listen(config.port, () => {
-  console.log(`SCM Solution API running on http://localhost:${config.port}`);
-  console.log(`Health check: http://localhost:${config.port}/health`);
+const HOST = process.env.HOST || "0.0.0.0";
+
+const server = app.listen(config.port, HOST, () => {
+  console.log(`SCM Solution API running on http://${HOST}:${config.port}`);
+  console.log(`Local health check: http://localhost:${config.port}/health`);
+  validateEmailConfig();
 });
 
 server.on("error", (err: NodeJS.ErrnoException) => {

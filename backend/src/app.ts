@@ -5,6 +5,10 @@ import { config } from "./utils/config";
 import { errorHandler } from "./middleware/errorHandler";
 
 import authRoutes from "./routes/auth";
+import userRoutes from "./routes/users";
+import roleRoutes from "./routes/roles";
+import facilityRoutes from "./routes/facilities";
+import auditRoutes from "./routes/audit";
 import healthcareWorkerRoutes from "./routes/healthcare-workers";
 import patientRoutes from "./routes/patients";
 import prescriptionRoutes from "./routes/prescriptions";
@@ -18,11 +22,19 @@ import returnRoutes from "./routes/returns";
 import transferRoutes from "./routes/transfers";
 import alertRoutes from "./routes/alerts";
 import dashboardRoutes from "./routes/dashboard";
+import adminRoutes from "./routes/admin";
+import searchRoutes from "./routes/search";
+import chatRoutes from "./routes/chat";
+import requisitionRoutes from "./routes/requisitions";
+import issueVoucherRoutes from "./routes/issue-vouchers";
+import shipmentRoutes from "./routes/shipments";
 import whatsappRoutes from "./routes/whatsapp";
 
 const app = express();
 
 const allowedOrigins = config.corsOrigin.split(",").map((o) => o.trim());
+const devNetworkOriginPattern =
+  /^https?:\/\/(localhost|127\.0\.0\.1|10\.\d{1,3}\.\d{1,3}\.\d{1,3}|172\.(1[6-9]|2\d|3[0-1])\.\d{1,3}\.\d{1,3}|192\.168\.\d{1,3}\.\d{1,3})(:\d+)?$/;
 
 app.use(
   cors({
@@ -31,7 +43,7 @@ app.use(
       if (allowedOrigins.includes(origin)) return callback(null, true);
       if (
         config.nodeEnv === "development" &&
-        /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/.test(origin)
+        devNetworkOriginPattern.test(origin)
       ) {
         return callback(null, true);
       }
@@ -44,8 +56,15 @@ app.use(express.json());
 app.use("/uploads", express.static(path.join(process.cwd(), "uploads")));
 
 app.get("/health", (_req, res) => res.json({ status: "ok", service: "scm-solution-api" }));
+app.get("/api/config", (_req, res) =>
+  res.json({ emailEnabled: config.email.enabled && !!config.email.smtpHost })
+);
 
 app.use("/api/auth", authRoutes);
+app.use("/api/users", userRoutes);
+app.use("/api/roles", roleRoutes);
+app.use("/api/facilities", facilityRoutes);
+app.use("/api/audit", auditRoutes);
 app.use("/api/healthcare-workers", healthcareWorkerRoutes);
 app.use("/api/patients", patientRoutes);
 app.use("/api/prescriptions", prescriptionRoutes);
@@ -53,12 +72,19 @@ app.use("/api/medicines", medicineRoutes);
 app.use("/api/categories", categoryRoutes);
 app.use("/api/stock", stockRoutes);
 app.use("/api/vendor-orders", vendorOrderRoutes);
+app.use("/api/orders", vendorOrderRoutes);
 app.use("/api/dispensing", dispensingRoutes);
 app.use("/api/expiry", expiryRoutes);
 app.use("/api/returns", returnRoutes);
 app.use("/api/transfers", transferRoutes);
 app.use("/api/alerts", alertRoutes);
 app.use("/api/dashboard", dashboardRoutes);
+app.use("/api/admin", adminRoutes);
+app.use("/api/search", searchRoutes);
+app.use("/api/chat", chatRoutes);
+app.use("/api/requisitions", requisitionRoutes);
+app.use("/api/issue-vouchers", issueVoucherRoutes);
+app.use("/api/shipments", shipmentRoutes);
 app.use("/api/whatsapp", whatsappRoutes);
 
 app.use(errorHandler);
