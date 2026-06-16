@@ -31,12 +31,10 @@ interface ReturnRecord {
 const STORE_TYPES = ["AMS_CENTRAL", "MEDICAL_STORE", "WAREHOUSE", "REGIONAL_STORE"];
 
 const TYPE_LABEL: Record<string, string> = {
-  PATIENT_RETURN: "Patient Return",
   FACILITY_TO_AMS: "→ AMS",
   INTER_FACILITY: "Transfer Return",
 };
 const TYPE_COLOR: Record<string, string> = {
-  PATIENT_RETURN: "bg-blue-100 text-blue-700",
   FACILITY_TO_AMS: "bg-purple-100 text-purple-700",
   INTER_FACILITY: "bg-teal-100 text-teal-700",
 };
@@ -64,7 +62,7 @@ export default function ReturnsPage() {
   const load = () => {
     const params = new URLSearchParams();
     if (isAdmin && facilityFilter) params.set("facilityId", facilityFilter);
-    api<ReturnRecord[]>(`/returns?${params}`).then(setReturns).catch(() => {});
+    api<ReturnRecord[]>(`/returns?${params}`).then((r) => setReturns(r.filter((x) => x.returnType !== "PATIENT_RETURN"))).catch(() => {});
   };
 
   useEffect(() => { load(); }, [facilityFilter, isAdmin]);

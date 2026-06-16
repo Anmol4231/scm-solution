@@ -709,10 +709,6 @@ export default function ExpiryPage() {
                 )}
               </div>
 
-              <p className="text-sm text-slate-500">
-                This will reduce stock by <strong>{disposeTarget.quantity}</strong> units and create an audit entry.
-              </p>
-
               <div className="flex gap-2 pt-1">
                 <Button type="submit" disabled={disposeBusy} className="flex-1 bg-red-600 hover:bg-red-700 text-white">
                   {disposeBusy ? "Processing…" : "Confirm Dispose Off"}
