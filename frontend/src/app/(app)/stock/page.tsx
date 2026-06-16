@@ -63,7 +63,7 @@ const HUB_ITEMS: HubItem[] = [
   {
     href: "/returns",
     label: "Returns",
-    description: "Process patient and facility returns",
+    description: "Process facility returns",
     icon: RotateCcw,
     color: "text-rose-600 bg-rose-50",
     module: "returns",

@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { Syringe, Users, ClipboardList, BarChart3, RotateCcw } from "lucide-react";
+import { Syringe, Users, ClipboardList, BarChart3 } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
 import { cn } from "@/lib/utils";
 
@@ -10,7 +10,6 @@ const TABS: { href: string; label: string; icon: LucideIcon }[] = [
   { href: "/dispense", label: "Dispense", icon: Syringe },
   { href: "/patients", label: "Patient Log", icon: Users },
   { href: "/prescriptions", label: "Prescription Log", icon: ClipboardList },
-  { href: "/patient-returns", label: "Patient Returns", icon: RotateCcw },
   { href: "/dispense/log", label: "Dispensing Report", icon: BarChart3 },
 ];
 

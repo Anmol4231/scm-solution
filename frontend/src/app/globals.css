@@ -25,6 +25,12 @@
   }
 }
 
+@media screen {
+  body {
+    zoom: 1.1;
+  }
+}
+
 body {
   @apply bg-background text-foreground antialiased;
   overflow-x: hidden;
