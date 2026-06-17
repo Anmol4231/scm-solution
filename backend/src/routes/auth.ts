@@ -39,8 +39,11 @@ router.post("/login", async (req, res, next) => {
       where: { email },
       include: { facility: true },
     });
-    if (!user || !user.isActive) {
-      return res.status(401).json({ error: "Invalid credentials" });
+    if (!user) {
+      return res.status(401).json({ error: "No account found with this email address." });
+    }
+    if (!user.isActive) {
+      return res.status(401).json({ error: "Your account has been deactivated. Contact your administrator." });
     }
 
     // Check active lockout
@@ -275,8 +278,7 @@ router.post("/forgot-password", async (req, res, next) => {
       }
     }
 
-    // Always the same response regardless of whether the account exists.
-    res.json({ message: "If an account exists, a password reset link has been sent." });
+    res.json({ found: !!user, message: user ? "Password reset link has been sent." : "No account found." });
   } catch (e) {
     next(e);
   }

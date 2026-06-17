@@ -106,12 +106,14 @@ export async function api<T = any>(path: string, options: RequestInit = {}): Pro
 
   try {
     const res = await fetch(`${resolveApiUrl()}${path}`, { ...options, headers });
-    if (res.status === 401) {
-      clearAuth();
-      if (typeof window !== "undefined") window.location.href = "/login";
-      throw new Error("Unauthorized");
-    }
     const data = await res.json().catch(() => ({}));
+    if (res.status === 401) {
+      if (path !== "/auth/login") {
+        clearAuth();
+        if (typeof window !== "undefined") window.location.href = "/login";
+      }
+      throw new Error(data.error || data.message || "Unauthorized");
+    }
     if (!res.ok) {
       const msg = data.error || data.message || `Request failed (${res.status})`;
       throw new Error(msg);
