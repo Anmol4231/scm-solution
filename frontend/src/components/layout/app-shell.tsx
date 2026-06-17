@@ -126,7 +126,25 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   const { user, logout } = useAuth();
   const pathname = usePathname();
   const [open, setOpen] = useState(false);
+  // Bumping this remounts the page subtree (see <main> below), wiping all
+  // local component state for the target module — a fresh/default view on
+  // every nav click, even when the route is unchanged. Auth/offline state
+  // lives above <main>, so it is untouched.
+  const [resetNonce, setResetNonce] = useState(0);
   const { isOnline, pendingCount } = useOffline();
+
+  // Shared by every in-shell nav control (sidebar items, section headers,
+  // mobile tabs). The <Link> still navigates to the clean, param-less href
+  // (clearing URL query state); this additionally forces a module reset.
+  function resetModule(e: React.MouseEvent) {
+    setOpen(false);
+    // Let the browser handle "open in new tab" / modified clicks without
+    // resetting the view the user is leaving behind.
+    if (e.defaultPrevented || e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) {
+      return;
+    }
+    setResetNonce((n) => n + 1);
+  }
   const isMasterAdmin = isMasterDataAdminRole(user?.role);
   const isCrossFacilityAdmin = isAdminDashboardRole(user?.role);
   const sections = buildNav(isMasterAdmin, isCrossFacilityAdmin, user?.permissions);
@@ -203,13 +221,32 @@ export function AppShell({ children }: { children: React.ReactNode }) {
           )}
         >
           <nav className="flex max-h-[calc(100vh-4rem)] flex-col gap-0.5 overflow-y-auto p-3 pb-24 md:max-h-none md:pb-3">
-            {sections.map((section, si) => (
+            {sections.map((section, si) => {
+              // The section's default landing page: the first item the user can
+              // actually reach. buildNav already filtered items by RBAC and keeps
+              // the intended default first, so items[0] is the default — or the
+              // first accessible fallback when the default is denied.
+              const sectionTarget = section.items.find((i) => !i.soon)?.href ?? null;
+              const sectionActive = section.items.some((i) => !i.soon && i.href === activeHref);
+              return (
               <div key={section.title ?? `section-${si}`} className="flex flex-col gap-0.5">
-                {section.title && (
-                  <p className="px-3 pb-1 pt-4 text-[10px] font-semibold uppercase tracking-wider text-slate-400">
-                    {section.title}
-                  </p>
-                )}
+                {section.title &&
+                  (sectionTarget ? (
+                    <Link
+                      href={sectionTarget}
+                      onClick={resetModule}
+                      className={cn(
+                        "rounded-md px-3 pb-1 pt-4 text-[10px] font-semibold uppercase tracking-wider transition-colors",
+                        sectionActive ? "text-medflow-600" : "text-slate-400 hover:text-slate-600"
+                      )}
+                    >
+                      {section.title}
+                    </Link>
+                  ) : (
+                    <p className="px-3 pb-1 pt-4 text-[10px] font-semibold uppercase tracking-wider text-slate-400">
+                      {section.title}
+                    </p>
+                  ))}
                 {section.items.map((item) => {
                   const Icon = item.icon;
                   if (item.soon) {
@@ -232,7 +269,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
                     <Link
                       key={item.href}
                       href={item.href}
-                      onClick={() => setOpen(false)}
+                      onClick={resetModule}
                       className={cn(
                         "flex items-center gap-3 rounded-lg px-3 py-2.5 text-sm font-medium transition-colors",
                         active ? "bg-medflow-50 text-medflow-700" : "text-slate-600 hover:bg-slate-100"
@@ -249,14 +286,21 @@ export function AppShell({ children }: { children: React.ReactNode }) {
                   );
                 })}
               </div>
-            ))}
+              );
+            })}
             <Button variant="ghost" className="mt-3 justify-start gap-3" onClick={logout}>
               <LogOut className="h-5 w-5" /> Logout
             </Button>
           </nav>
         </aside>
 
-        <main className="min-h-[calc(100vh-4rem)] min-w-0 flex-1 p-3 pb-28 sm:p-4 md:p-6 md:pb-6">{children}</main>
+        <main className="min-h-[calc(100vh-4rem)] min-w-0 flex-1 p-3 pb-28 sm:p-4 md:p-6 md:pb-6">
+          {/* key={resetNonce} → a nav click remounts this subtree, resetting
+              every module's local state. `contents` keeps <main>'s layout. */}
+          <div key={resetNonce} className="contents">
+            {children}
+          </div>
+        </main>
       </div>
 
       <nav className="fixed inset-x-0 bottom-0 z-40 border-t border-slate-200 bg-white/95 px-2 pb-[calc(0.35rem+env(safe-area-inset-bottom))] pt-1.5 shadow-[0_-8px_24px_rgba(15,23,42,0.08)] backdrop-blur md:hidden">
@@ -268,6 +312,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
               <Link
                 key={item.href}
                 href={item.href}
+                onClick={resetModule}
                 className={cn(
                   "flex min-h-14 flex-col items-center justify-center gap-1 rounded-lg px-1 text-[10px] font-medium leading-tight transition-colors",
                   active ? "bg-medflow-50 text-medflow-700" : "text-slate-500 hover:bg-slate-100"
