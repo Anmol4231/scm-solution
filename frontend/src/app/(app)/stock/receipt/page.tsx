@@ -10,7 +10,8 @@ import { isAdminDashboardRole } from "@/lib/roles";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Card, CardContent } from "@/components/ui/card";
-import { formatDateTime } from "@/lib/datetime";
+import { formatDateTime, dateInputMin, dateInputMax } from "@/lib/datetime";
+import { DateInput } from "@/components/ui/date-input";
 
 interface OrderLine {
   id: string;
@@ -220,21 +221,23 @@ export default function ReceiveStockPage() {
             {/* Unified date-range control */}
             <div className="flex h-10 items-center gap-2 self-center rounded-lg border border-input bg-background px-3">
               <CalendarDays className="h-4 w-4 shrink-0 text-slate-400" />
-              <input
-                type="date"
+              <DateInput
+                bare
                 aria-label="From date"
-                className="w-[130px] bg-transparent text-sm text-slate-700 outline-none"
+                className="w-[100px]"
                 value={fromDate}
-                max={toDate || undefined}
+                min={dateInputMin()}
+                max={toDate || dateInputMax()}
                 onChange={(e) => setFromDate(e.target.value)}
               />
               <span className="text-slate-400">→</span>
-              <input
-                type="date"
+              <DateInput
+                bare
                 aria-label="To date"
-                className="w-[130px] bg-transparent text-sm text-slate-700 outline-none"
+                className="w-[100px]"
                 value={toDate}
-                min={fromDate || undefined}
+                min={fromDate || dateInputMin()}
+                max={dateInputMax()}
                 onChange={(e) => setToDate(e.target.value)}
               />
               {(fromDate || toDate) && (

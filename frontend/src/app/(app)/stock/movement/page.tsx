@@ -3,6 +3,8 @@
 import { useState } from "react";
 import Link from "next/link";
 import { api } from "@/lib/api";
+import { dateInputMin, dateInputMax } from "@/lib/datetime";
+import { DateInput } from "@/components/ui/date-input";
 import { useAuth } from "@/lib/auth-context";
 import { isAdminDashboardRole } from "@/lib/roles";
 import { Button } from "@/components/ui/button";
@@ -89,12 +91,12 @@ export default function StockMovementPage() {
       {/* Filters */}
       <div className="flex flex-wrap items-end gap-3 rounded-lg border bg-slate-50 p-4">
         <div>
-          <label className="mb-1 block text-sm font-medium text-slate-600">From</label>
-          <input type="date" value={from} onChange={(e) => setFrom(e.target.value)} className="h-9 rounded-lg border px-2 text-sm" />
+          <label htmlFor="movement-from" className="mb-1 block text-sm font-medium text-slate-600">From</label>
+          <DateInput id="movement-from" value={from} min={dateInputMin()} max={to || dateInputMax()} onChange={(e) => setFrom(e.target.value)} className="h-9" />
         </div>
         <div>
-          <label className="mb-1 block text-sm font-medium text-slate-600">To</label>
-          <input type="date" value={to} onChange={(e) => setTo(e.target.value)} className="h-9 rounded-lg border px-2 text-sm" />
+          <label htmlFor="movement-to" className="mb-1 block text-sm font-medium text-slate-600">To</label>
+          <DateInput id="movement-to" value={to} min={from || dateInputMin()} max={dateInputMax()} onChange={(e) => setTo(e.target.value)} className="h-9" />
         </div>
         {isAdmin && (
           <div onFocus={loadFacilities}>

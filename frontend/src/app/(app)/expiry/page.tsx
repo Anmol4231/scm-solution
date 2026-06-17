@@ -4,6 +4,8 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { AlertTriangle, Clock, PackageX, ChevronDown, ChevronUp, X, ArrowLeftRight, Eye, Trash2 } from "lucide-react";
 import { api } from "@/lib/api";
+import { dateInputMin, dateInputMax } from "@/lib/datetime";
+import { DateInput } from "@/components/ui/date-input";
 import { useAuth } from "@/lib/auth-context";
 import { isCrossFacilityRole } from "@/lib/roles";
 import { useRequirePermission } from "@/hooks/useRequirePermission";
@@ -609,8 +611,8 @@ export default function ExpiryPage() {
               </div>
 
               <div>
-                <Label>Expiry date <span className="text-red-500">*</span></Label>
-                <Input className="mt-1 h-9" type="date" value={recordForm.expiryDate} onChange={(e) => setRecordForm({ ...recordForm, expiryDate: e.target.value })} required />
+                <Label htmlFor="dispose-expiry-date">Expiry date <span className="text-red-500">*</span></Label>
+                <DateInput id="dispose-expiry-date" className="mt-1 h-9" min={dateInputMin()} max={dateInputMax()} value={recordForm.expiryDate} onChange={(e) => setRecordForm({ ...recordForm, expiryDate: e.target.value })} required />
               </div>
 
               <div>

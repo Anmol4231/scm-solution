@@ -12,7 +12,8 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { MedicineCombobox } from "@/components/ui/medicine-combobox";
-import { formatDateTime } from "@/lib/datetime";
+import { formatDateTime, dateInputMin, dateInputMax } from "@/lib/datetime";
+import { DateInput } from "@/components/ui/date-input";
 
 interface Facility { id: string; name: string; code: string; facilityType: string }
 interface Medicine { id: string; medicineName: string }
@@ -146,7 +147,7 @@ export default function ReturnsPage() {
               </div>
               <div className="grid grid-cols-2 gap-3">
                 <div><Label>Batch Number *</Label><Input value={ams.batchNumber} onChange={(e) => setAms({ ...ams, batchNumber: e.target.value })} required /></div>
-                <div><Label>Expiry Date *</Label><Input type="date" value={ams.expiryDate} onChange={(e) => setAms({ ...ams, expiryDate: e.target.value })} required /></div>
+                <div><Label htmlFor="ams-expiry-date">Expiry Date *</Label><DateInput id="ams-expiry-date" min={dateInputMin()} max={dateInputMax()} value={ams.expiryDate} onChange={(e) => setAms({ ...ams, expiryDate: e.target.value })} required /></div>
                 <div><Label>Quantity *</Label><Input type="number" min={1} value={ams.quantity || ""} onChange={(e) => setAms({ ...ams, quantity: +e.target.value })} required /></div>
               </div>
               <div>

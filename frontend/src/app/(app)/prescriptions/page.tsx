@@ -3,6 +3,8 @@
 import { Fragment, useCallback, useEffect, useState } from "react";
 import Link from "next/link";
 import { api } from "@/lib/api";
+import { dateInputMin, dateInputMax } from "@/lib/datetime";
+import { DateInput } from "@/components/ui/date-input";
 import { useRequirePermission } from "@/hooks/useRequirePermission";
 import { useAuth } from "@/lib/auth-context";
 import { can } from "@/lib/permissions";
@@ -206,17 +208,21 @@ export default function PrescriptionLogPage() {
                 </select>
               </div>
               <div>
-                <label className="mb-1 block text-xs text-slate-500">Date From</label>
-                <Input
-                  type="date"
+                <label htmlFor="rx-date-from" className="mb-1 block text-xs text-slate-500">Date From</label>
+                <DateInput
+                  id="rx-date-from"
+                  min={dateInputMin()}
+                  max={filters.dateTo || dateInputMax()}
                   value={filters.dateFrom}
                   onChange={(e) => setFilters((f) => ({ ...f, dateFrom: e.target.value }))}
                 />
               </div>
               <div>
-                <label className="mb-1 block text-xs text-slate-500">Date To</label>
-                <Input
-                  type="date"
+                <label htmlFor="rx-date-to" className="mb-1 block text-xs text-slate-500">Date To</label>
+                <DateInput
+                  id="rx-date-to"
+                  min={filters.dateFrom || dateInputMin()}
+                  max={dateInputMax()}
                   value={filters.dateTo}
                   onChange={(e) => setFilters((f) => ({ ...f, dateTo: e.target.value }))}
                 />
