@@ -1,8 +1,9 @@
-﻿"use client";
+"use client";
 
 import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { Plus, Pencil, Trash2, Building2, Search } from "lucide-react";
+import { SkeletonRows } from "@/components/ui/page-skeleton";
 import { api } from "@/lib/api";
 import { useAuth } from "@/lib/auth-context";
 import { isMasterDataAdminRole } from "@/lib/roles";
@@ -15,25 +16,14 @@ import { sanitizeCode, sanitizeLocationName, sanitizeAddress, validators } from 
 const FACILITY_TYPES = [
   "HOSPITAL",
   "CLINIC",
-  "WAREHOUSE",
-  "REGIONAL_STORE",
   "MEDICAL_STORE",
-  "AMS_CENTRAL",
-  "OTHER",
 ] as const;
 
 const TYPE_LABELS: Record<string, string> = {
   HOSPITAL: "Hospital",
   CLINIC: "Clinic",
-  PHARMACY: "Pharmacy",
-  WAREHOUSE: "Warehouse",
-  REGIONAL_STORE: "Regional Store",
-  MEDICAL_STORE: "Medical Store",
-  AMS_CENTRAL: "AMS Central",
-  OTHER: "Other",
+  MEDICAL_STORE: "Store",
 };
-
-const INVENTORY_TYPES = ["WAREHOUSE", "REGIONAL_STORE", "MEDICAL_STORE", "AMS_CENTRAL"];
 
 const typeLabel = (t?: string | null, custom?: string | null) => {
   if (!t) return "—";
@@ -77,6 +67,7 @@ export default function FacilityMasterPage() {
   const isAdmin = isMasterDataAdminRole(user?.role);
 
   const [facilities, setFacilities] = useState<Facility[]>([]);
+  const [isLoading, setIsLoading] = useState(true);
   const [q, setQ] = useState("");
   const [editingId, setEditingId] = useState<string | "new" | null>(null);
   const [form, setForm] = useState<FacForm>(EMPTY);
@@ -88,12 +79,15 @@ export default function FacilityMasterPage() {
     if (!loading && !isAdmin) router.replace("/dashboard");
   }, [isAdmin, loading, router]);
 
-  const load = () =>
+  const load = () => {
+    setIsLoading(true);
     api<Facility[]>(`/facilities${q ? `?q=${encodeURIComponent(q)}` : ""}`)
       .then(setFacilities)
-      .catch((e) => setError(e.message));
+      .catch((e) => setError(e.message))
+      .finally(() => setIsLoading(false));
+  };
 
-  useEffect(() => { if (isAdmin) load(); }, [isAdmin]);
+  useEffect(() => { if (isAdmin) load(); }, [isAdmin]); // eslint-disable-line react-hooks/exhaustive-deps
 
   if (!isAdmin) return null;
 
@@ -121,6 +115,8 @@ export default function FacilityMasterPage() {
       if (!/[A-Za-z]/.test(custom)) return setError("Custom facility type must be alphanumeric");
       if (!/^[A-Za-z ]+$/.test(custom)) return setError("Custom facility type may only contain letters and spaces");
     }
+    if (!form.province.trim()) return setError("Province / State is required");
+    if (!form.district.trim()) return setError("District is required");
     if (editingId === "new") {
       const codeErr = validators.code(form.code, "Facility code");
       if (codeErr) return setError(codeErr);
@@ -132,8 +128,8 @@ export default function FacilityMasterPage() {
         ...(editingId === "new" ? { code: form.code.trim().toUpperCase() } : {}),
         facilityType: form.facilityType,
         ...(form.facilityType === "OTHER" ? { customFacilityType: form.customFacilityType.trim() } : {}),
-        province: form.province.trim() || undefined,
-        district: form.district.trim() || undefined,
+        province: form.province.trim(),
+        district: form.district.trim(),
         address: form.address.trim() || undefined,
         isActive: form.isActive,
       };
@@ -153,7 +149,7 @@ export default function FacilityMasterPage() {
   };
 
   const remove = async (f: Facility) => {
-    if (!window.confirm(`Delete facility "${f.name}"? This cannot be undone.`)) return;
+    if (!window.confirm(`Delete facility "${f.name}"? It can be restored from Audit Logs.`)) return;
     setError(""); setSuccess("");
     try {
       await api(`/facilities/${f.id}`, { method: "DELETE" });
@@ -168,9 +164,14 @@ export default function FacilityMasterPage() {
 
   return (
     <div className="space-y-5">
+      {editingId && (
+        <button type="button" onClick={cancel} className="text-sm text-medflow-600 hover:underline">
+          ← Facility Master
+        </button>
+      )}
       <div className="flex flex-wrap items-center justify-between gap-3">
         <h1 className="flex items-center gap-2 text-2xl font-bold">
-          <Building2 className="h-6 w-6 text-medflow-600" /> Facility Master
+          <Building2 className="h-6 w-6 text-medflow-600" /> {editingId ? (editingId === "new" ? "New Facility" : `Edit Facility`) : "Facility Master"}
         </h1>
         {!editingId && <Button onClick={startAdd}><Plus className="mr-2 h-4 w-4" /> New Facility</Button>}
       </div>
@@ -180,11 +181,11 @@ export default function FacilityMasterPage() {
 
       {editingId ? (
         <Card>
-          <CardHeader>
-            <CardTitle className="text-base">
-              {editingId === "new" ? "New Facility" : `Edit: ${editingFacility?.name}`}
-            </CardTitle>
-          </CardHeader>
+          {editingId !== "new" && (
+            <CardHeader>
+              <CardTitle className="text-base">{editingFacility?.name}</CardTitle>
+            </CardHeader>
+          )}
           <CardContent>
             <div className="grid gap-3 md:grid-cols-2">
               <div>
@@ -203,38 +204,24 @@ export default function FacilityMasterPage() {
               </div>
               <div>
                 <Label>Type</Label>
-                <select className="h-11 w-full rounded-lg border px-3 text-sm" value={form.facilityType} onChange={(e) => setForm({ ...form, facilityType: e.target.value, customFacilityType: "" })}>
+                <select className="h-11 w-full rounded-lg border bg-white px-3 text-sm" value={form.facilityType} onChange={(e) => setForm({ ...form, facilityType: e.target.value, customFacilityType: "" })}>
                   {FACILITY_TYPES.map((t) => <option key={t} value={t}>{TYPE_LABELS[t]}</option>)}
                 </select>
-                {INVENTORY_TYPES.includes(form.facilityType) && (
-                  <p className="mt-1 text-sm text-medflow-600">This type is linked to supply/vendor records automatically.</p>
-                )}
+                <p className="mt-1 text-sm text-slate-400">Only a hospital or clinic can place orders.</p>
               </div>
-              {form.facilityType === "OTHER" && (
-                <div>
-                  <Label>Custom Type <span className="text-red-500">*</span></Label>
-                  <Input
-                    value={form.customFacilityType}
-                    onChange={(e) => setForm({ ...form, customFacilityType: e.target.value.replace(/[^A-Za-z ]/g, "") })}
-                    placeholder="Custom type"
-                    maxLength={100}
-                  />
-                  <p className="mt-1 text-sm text-slate-400">Letters and spaces only.</p>
-                </div>
-              )}
               <div>
                 <Label>Status</Label>
-                <select className="h-11 w-full rounded-lg border px-3 text-sm" value={form.isActive ? "active" : "inactive"} onChange={(e) => setForm({ ...form, isActive: e.target.value === "active" })}>
+                <select className="h-11 w-full rounded-lg border bg-white px-3 text-sm" value={form.isActive ? "active" : "inactive"} onChange={(e) => setForm({ ...form, isActive: e.target.value === "active" })}>
                   <option value="active">Active</option>
                   <option value="inactive">Inactive</option>
                 </select>
               </div>
               <div>
-                <Label>Province / State</Label>
+                <Label>Province / State <span className="text-red-500">*</span></Label>
                 <Input value={form.province} onChange={(e) => setForm({ ...form, province: sanitizeLocationName(e.target.value) })} />
               </div>
               <div>
-                <Label>District</Label>
+                <Label>District <span className="text-red-500">*</span></Label>
                 <Input value={form.district} onChange={(e) => setForm({ ...form, district: sanitizeLocationName(e.target.value) })} />
               </div>
               <div className="md:col-span-2">
@@ -242,9 +229,6 @@ export default function FacilityMasterPage() {
                 <Input value={form.address} onChange={(e) => setForm({ ...form, address: sanitizeAddress(e.target.value) })} placeholder="Street, building, block" />
               </div>
             </div>
-            <p className="mt-2 text-sm text-slate-400">
-              Warehouse, Regional Store, Medical Store and AMS Central facilities are linked to vendor/supply records automatically.
-            </p>
             <div className="mt-4 flex gap-2">
               <Button onClick={save} disabled={busy}>{busy ? "Saving…" : "Save Facility"}</Button>
               <Button variant="outline" onClick={cancel}>Cancel</Button>
@@ -267,8 +251,8 @@ export default function FacilityMasterPage() {
                     <th className="p-3 font-medium">Type</th>
                     <th className="p-3 font-medium">Province</th>
                     <th className="p-3 font-medium">District</th>
-                    <th className="p-3 font-medium">Users</th>
-                    <th className="p-3 font-medium">Active</th>
+                    <th className="p-3 font-medium">Total Staff</th>
+                    <th className="p-3 font-medium">Active Staff</th>
                     <th className="p-3 font-medium">Status</th>
                     <th className="p-3 font-medium">Actions</th>
                   </tr>
@@ -289,25 +273,32 @@ export default function FacilityMasterPage() {
                         </span>
                       </td>
                       <td className="p-3">
-                        <div className="flex gap-1">
-                          <Button size="sm" variant="outline" onClick={() => startEdit(f)}>
-                            <Pencil className="mr-1 h-3.5 w-3.5" /> Edit
+                        <div className="flex gap-0.5">
+                          <Button
+                            size="sm" variant="ghost"
+                            className="h-8 w-8 p-0 text-slate-500 hover:bg-slate-100 hover:text-slate-700"
+                            title="Edit facility" aria-label="Edit facility"
+                            onClick={() => startEdit(f)}
+                          >
+                            <Pencil className="h-4 w-4" aria-hidden="true" />
                           </Button>
                           <Button
-                            size="sm"
-                            variant="outline"
+                            size="sm" variant="ghost"
+                            className="h-8 w-8 p-0 text-slate-400 hover:bg-red-50 hover:text-red-600"
                             onClick={() => remove(f)}
                             disabled={(f._count?.users ?? 0) > 0}
-                            title={(f._count?.users ?? 0) > 0 ? "Reassign users before deleting" : ""}
+                            title={(f._count?.users ?? 0) > 0 ? "Reassign users before deleting" : "Delete facility"}
+                            aria-label="Delete facility"
                           >
-                            <Trash2 className="mr-1 h-3.5 w-3.5" /> Delete
+                            <Trash2 className="h-4 w-4" aria-hidden="true" />
                           </Button>
                         </div>
                       </td>
                     </tr>
                   ))}
-                  {facilities.length === 0 && (
-                    <tr><td colSpan={9} className="p-6 text-center text-muted-foreground">No facilities found.</td></tr>
+                  {isLoading && <SkeletonRows rows={5} cols={9} />}
+                  {!isLoading && facilities.length === 0 && (
+                    <tr><td colSpan={9} className="p-6 text-center text-muted-foreground">No facilities found</td></tr>
                   )}
                 </tbody>
               </table>
