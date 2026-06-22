@@ -80,6 +80,14 @@ router.post("/login", async (req, res, next) => {
           locked: true,
         });
       }
+      await logAudit({
+        facilityId: user.facilityId,
+        userId: user.id,
+        action: "LOGIN_FAIL",
+        entityType: "User",
+        entityId: user.id,
+        details: { email: user.email, attempt: newAttempts },
+      });
       // Still have attempts left — show countdown warning
       const attemptsLeft = LOCKOUT_THRESHOLD - newAttempts;
       return res.status(401).json({
@@ -101,7 +109,7 @@ router.post("/login", async (req, res, next) => {
       await prisma.user.update({ where: { id: user.id }, data: { mustChangePassword: true } });
     }
 
-    const signOptions: SignOptions = { expiresIn: config.jwtExpiresIn as SignOptions["expiresIn"] };
+    const signOptions: SignOptions = { algorithm: "HS256", expiresIn: config.jwtExpiresIn as SignOptions["expiresIn"] };
     const token = jwt.sign(
       {
         userId: user.id,
@@ -115,6 +123,15 @@ router.post("/login", async (req, res, next) => {
     );
 
     const permissions = await getEffectiveMatrix(user);
+
+    await logAudit({
+      facilityId: user.facilityId,
+      userId: user.id,
+      action: "LOGIN_SUCCESS",
+      entityType: "User",
+      entityId: user.id,
+      details: { email: user.email },
+    });
 
     res.json({
       token,
@@ -239,7 +256,7 @@ router.post("/switch-facility", authenticate, async (req, res, next) => {
     // Re-issue a fresh token. req.user is the decoded JWT and still carries iat/exp,
     // so we rebuild a clean payload — passing exp alongside expiresIn throws.
     const { userId, email, role, roleId } = req.user!;
-    const signOptions: SignOptions = { expiresIn: config.jwtExpiresIn as SignOptions["expiresIn"] };
+    const signOptions: SignOptions = { algorithm: "HS256", expiresIn: config.jwtExpiresIn as SignOptions["expiresIn"] };
     const token = jwt.sign({ userId, email, role, roleId, facilityId }, config.jwtSecret, signOptions);
     res.json({ token, facility });
   } catch (e) {
@@ -259,6 +276,10 @@ router.post("/forgot-password", async (req, res, next) => {
     const user = await prisma.user.findUnique({ where: { email, isActive: true } });
 
     if (user) {
+      // Invalidate any prior unused tokens for this user before issuing a new one.
+      await prisma.passwordResetToken.deleteMany({
+        where: { userId: user.id, usedAt: null },
+      });
       const token = crypto.randomBytes(32).toString("hex");
       const expiresAt = new Date(Date.now() + 60 * 60 * 1000);
       await prisma.passwordResetToken.create({
@@ -276,6 +297,14 @@ router.post("/forgot-password", async (req, res, next) => {
         // eslint-disable-next-line no-console
         console.info(`[password-reset] ${email} → ${resetUrl} (expires ${expiresAt.toISOString()})`);
       }
+      await logAudit({
+        facilityId: user.facilityId,
+        userId: user.id,
+        action: "FORGOT_PASSWORD",
+        entityType: "User",
+        entityId: user.id,
+        details: { email: user.email, emailSent: emailResult.sent },
+      });
     }
 
     res.json({ found: !!user, message: user ? "Password reset link has been sent." : "No account found." });
@@ -302,11 +331,21 @@ router.post("/reset-password", async (req, res, next) => {
         where: { id: resetRecord.userId },
         data: { passwordHash, mustChangePassword: false, passwordChangedAt: new Date() },
       }),
-      prisma.passwordResetToken.update({
-        where: { id: resetRecord.id },
+      // Mark this token used and void all remaining unused tokens for the account.
+      prisma.passwordResetToken.updateMany({
+        where: { userId: resetRecord.userId, usedAt: null },
         data: { usedAt: new Date() },
       }),
     ]);
+
+    await logAudit({
+      facilityId: resetRecord.user.facilityId,
+      userId: resetRecord.userId,
+      action: "PASSWORD_RESET_COMPLETE",
+      entityType: "User",
+      entityId: resetRecord.userId,
+      details: { email: resetRecord.user.email },
+    });
 
     res.json({ message: "Password reset successfully. You can now sign in." });
   } catch (e) {

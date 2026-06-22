@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 import { AlertTriangle, Plus, Search, UserCheck, UserX, Copy, Check, Pencil, KeyRound } from "lucide-react";
+import { SkeletonRows } from "@/components/ui/page-skeleton";
 import { api } from "@/lib/api";
 import { useAuth } from "@/lib/auth-context";
 import { isMasterDataAdminRole } from "@/lib/roles";
@@ -78,10 +79,13 @@ export default function UsersAccessPage() {
   const isAdmin = isMasterDataAdminRole(user?.role);
 
   const [users, setUsers] = useState<ManagedUser[]>([]);
+  const [isLoading, setIsLoading] = useState(true);
   const [facilities, setFacilities] = useState<Facility[]>([]);
   const [roles, setRoles] = useState<RoleOption[]>([]);
   const [query, setQuery] = useState("");
   const [statusFilter, setStatusFilter] = useState<"all" | "active" | "inactive">("all");
+  const [roleFilter, setRoleFilter] = useState<string>("");
+  const [facilityFilter, setFacilityFilter] = useState<string>("");
 
   const [editingId, setEditingId] = useState<string | "new" | null>(null);
   const [form, setForm] = useState<UserForm>(EMPTY_FORM);
@@ -89,7 +93,11 @@ export default function UsersAccessPage() {
   const [tempPassword, setTempPassword] = useState<{ name: string; password: string; emailSent: boolean; emailWarning?: string } | null>(null);
   const [copied, setCopied] = useState(false);
   const load = () => {
-    api<ManagedUser[]>("/users").then(setUsers).catch((e) => setError(e instanceof Error ? e.message : "Failed to load users"));
+    setIsLoading(true);
+    api<ManagedUser[]>("/users")
+      .then(setUsers)
+      .catch((e) => setError(e instanceof Error ? e.message : "Failed to load users"))
+      .finally(() => setIsLoading(false));
   };
 
   useEffect(() => {
@@ -101,15 +109,26 @@ export default function UsersAccessPage() {
     }
   }, [isAdmin, loading, router]); // eslint-disable-line react-hooks/exhaustive-deps
 
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const role = params.get("role");
+    if (role) setRoleFilter(role);
+  }, []);
+
   const visible = useMemo(() => {
     const q = query.trim().toLowerCase();
     return users.filter((u) => {
       if (statusFilter === "active" && !u.isActive) return false;
       if (statusFilter === "inactive" && u.isActive) return false;
+      if (roleFilter && u.roleId !== roleFilter) return false;
+      if (facilityFilter && u.facilityId !== facilityFilter) return false;
       if (!q) return true;
       return `${u.firstName} ${u.lastName}`.toLowerCase().includes(q) || u.email.toLowerCase().includes(q);
     });
-  }, [users, query, statusFilter]);
+  }, [users, query, statusFilter, roleFilter, facilityFilter]);
+
+  const hasActiveFilters = query !== "" || statusFilter !== "all" || roleFilter !== "" || facilityFilter !== "";
+  const clearFilters = () => { setQuery(""); setStatusFilter("all"); setRoleFilter(""); setFacilityFilter(""); };
 
   const spansAll = form.facilityAccess === "all";
 
@@ -126,6 +145,7 @@ export default function UsersAccessPage() {
       mustChangePassword: u.mustChangePassword, expiryPreset: preset, customExpiry: custom,
     });
     setEditingId(u.id);
+    window.scrollTo({ top: 0, behavior: "smooth" });
   };
   const cancel = () => { setEditingId(null); setForm(EMPTY_FORM); };
 
@@ -206,10 +226,17 @@ export default function UsersAccessPage() {
 
   return (
     <div className="space-y-5">
+      {editingId && (
+        <button type="button" onClick={cancel} className="text-sm text-medflow-600 hover:underline">
+          ← Users &amp; Access
+        </button>
+      )}
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div>
-          <h1 className="text-2xl font-bold">Users &amp; Access</h1>
-          <p className="text-sm text-muted-foreground">Manage system user accounts, roles, and access levels.</p>
+          <h1 className="text-2xl font-bold">
+            {editingId ? (editingId === "new" ? "Add User" : "Edit User") : "Users & Access"}
+          </h1>
+          {!editingId && <p className="text-sm text-muted-foreground">Manage system user accounts, roles, and access levels.</p>}
         </div>
         {!editingId && (
           <Button onClick={startAdd}>
@@ -245,10 +272,7 @@ export default function UsersAccessPage() {
 
       {editingId && (
         <Card>
-          <CardHeader>
-            <CardTitle className="text-base">{editingId === "new" ? "Register User" : "Edit User"}</CardTitle>
-          </CardHeader>
-          <CardContent>
+          <CardContent className="pt-6">
             <form onSubmit={submit} className="grid gap-3 md:grid-cols-2">
               <div>
                 <Label>First name *</Label>
@@ -269,7 +293,7 @@ export default function UsersAccessPage() {
               <div>
                 <Label>Role *</Label>
                 <select
-                  className="h-11 w-full rounded-lg border px-3 text-sm"
+                  className="h-11 w-full rounded-lg border bg-white px-3 text-sm"
                   value={form.roleId}
                   onChange={(e) => setForm({ ...form, roleId: e.target.value })}
                 >
@@ -280,7 +304,7 @@ export default function UsersAccessPage() {
               <div>
                 <Label>Facility Access *</Label>
                 <select
-                  className="h-11 w-full rounded-lg border px-3 text-sm"
+                  className="h-11 w-full rounded-lg border bg-white px-3 text-sm"
                   value={form.facilityAccess}
                   onChange={(e) => {
                     const val = e.target.value as "assigned" | "all";
@@ -295,7 +319,7 @@ export default function UsersAccessPage() {
                 <div className="md:col-span-2">
                   <Label>Assigned Facility *</Label>
                   <select
-                    className="h-11 w-full rounded-lg border px-3 text-sm"
+                    className="h-11 w-full rounded-lg border bg-white px-3 text-sm"
                     value={form.facilityId}
                     onChange={(e) => setForm({ ...form, facilityId: e.target.value })}
                   >
@@ -308,7 +332,7 @@ export default function UsersAccessPage() {
                 <Label>Password expiry</Label>
                 <div className="flex gap-2">
                   <select
-                    className="h-11 w-full rounded-lg border px-3 text-sm"
+                    className="h-11 w-full rounded-lg border bg-white px-3 text-sm"
                     value={form.expiryPreset}
                     onChange={(e) => setForm({ ...form, expiryPreset: e.target.value })}
                   >
@@ -346,24 +370,59 @@ export default function UsersAccessPage() {
       )}
 
       {/* Filters */}
-      <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
-        <div className="relative sm:max-w-xs sm:flex-1">
-          <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
-          <Input className="pl-9" placeholder="" value={query} onChange={(e) => setQuery(e.target.value)} />
+      <div className="flex flex-col gap-2">
+        <div className="flex flex-wrap items-center gap-2">
+          <div className="relative min-w-[180px] flex-1 sm:max-w-xs">
+            <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
+            <Input className="pl-9" placeholder="Search name or email" value={query} onChange={(e) => setQuery(e.target.value)} />
+          </div>
+          <div className="flex gap-1">
+            {(["all", "active", "inactive"] as const).map((s) => (
+              <button
+                key={s}
+                type="button"
+                onClick={() => setStatusFilter(s)}
+                className={`rounded-full border px-3 py-1 text-sm font-medium capitalize transition ${
+                  statusFilter === s ? "border-medflow-300 bg-medflow-50 text-medflow-700" : "border-slate-200 text-slate-500 hover:bg-slate-50"
+                }`}
+              >
+                {s}
+              </button>
+            ))}
+          </div>
         </div>
-        <div className="flex gap-1">
-          {(["all", "active", "inactive"] as const).map((s) => (
+        <div className="flex flex-wrap items-center gap-2">
+          <select
+            className="h-9 min-w-[160px] flex-1 rounded-lg border bg-white px-3 text-sm text-slate-700 sm:max-w-[220px]"
+            value={facilityFilter}
+            onChange={(e) => setFacilityFilter(e.target.value)}
+            aria-label="Filter by facility"
+          >
+            <option value="">All facilities</option>
+            {facilities.map((f) => (
+              <option key={f.id} value={f.id}>{f.name}</option>
+            ))}
+          </select>
+          <select
+            className="h-9 min-w-[160px] flex-1 rounded-lg border bg-white px-3 text-sm text-slate-700 sm:max-w-[220px]"
+            value={roleFilter}
+            onChange={(e) => setRoleFilter(e.target.value)}
+            aria-label="Filter by role"
+          >
+            <option value="">All roles</option>
+            {roles.map((r) => (
+              <option key={r.id} value={r.id}>{r.name}</option>
+            ))}
+          </select>
+          {hasActiveFilters && (
             <button
-              key={s}
               type="button"
-              onClick={() => setStatusFilter(s)}
-              className={`rounded-full border px-3 py-1 text-sm font-medium capitalize transition ${
-                statusFilter === s ? "border-medflow-300 bg-medflow-50 text-medflow-700" : "border-slate-200 text-slate-500 hover:bg-slate-50"
-              }`}
+              onClick={clearFilters}
+              className="rounded-full border border-slate-200 px-3 py-1 text-sm font-medium text-slate-500 transition hover:bg-slate-50"
             >
-              {s}
+              Clear filters
             </button>
-          ))}
+          )}
         </div>
       </div>
 
@@ -399,30 +458,42 @@ export default function UsersAccessPage() {
                     </span>
                   </td>
                   <td className="p-3">
-                    <div className="flex justify-end gap-1">
-                      <Button size="sm" variant="outline" onClick={() => startEdit(u)}>
-                        <Pencil className="mr-1 h-3.5 w-3.5" /> Edit
-                      </Button>
-                      <Button size="sm" variant="outline" onClick={() => resetPassword(u)}>
-                        <KeyRound className="mr-1 h-3.5 w-3.5" /> Reset
+                    <div className="flex justify-end gap-0.5">
+                      <Button
+                        size="sm" variant="ghost"
+                        className="h-8 w-8 p-0 text-slate-500 hover:bg-slate-100 hover:text-slate-700"
+                        title="Edit user" aria-label="Edit user"
+                        onClick={() => startEdit(u)}
+                      >
+                        <Pencil className="h-4 w-4" aria-hidden="true" />
                       </Button>
                       <Button
-                        size="sm"
-                        variant="outline"
+                        size="sm" variant="ghost"
+                        className="h-8 w-8 p-0 text-slate-500 hover:bg-slate-100 hover:text-slate-700"
+                        title="Reset password" aria-label="Reset password"
+                        onClick={() => resetPassword(u)}
+                      >
+                        <KeyRound className="h-4 w-4" aria-hidden="true" />
+                      </Button>
+                      <Button
+                        size="sm" variant="ghost"
+                        className="h-8 w-8 p-0 text-slate-500 hover:bg-slate-100 hover:text-slate-700"
                         onClick={() => toggleStatus(u)}
                         disabled={u.id === user?.id}
-                        title={u.id === user?.id ? "You cannot deactivate yourself" : undefined}
+                        title={u.id === user?.id ? "You cannot deactivate yourself" : u.isActive ? "Deactivate user" : "Activate user"}
+                        aria-label={u.isActive ? "Deactivate user" : "Activate user"}
                       >
                         {u.isActive
-                          ? <><UserX className="mr-1 h-3.5 w-3.5" /> Deactivate</>
-                          : <><UserCheck className="mr-1 h-3.5 w-3.5" /> Activate</>}
+                          ? <UserX className="h-4 w-4" aria-hidden="true" />
+                          : <UserCheck className="h-4 w-4" aria-hidden="true" />}
                       </Button>
                     </div>
                   </td>
                 </tr>
               ))}
-              {visible.length === 0 && (
-                <tr><td colSpan={6} className="p-6 text-center text-muted-foreground">No users found.</td></tr>
+              {isLoading && <SkeletonRows rows={6} cols={6} />}
+              {!isLoading && visible.length === 0 && (
+                <tr><td colSpan={6} className="p-6 text-center text-muted-foreground">No users found</td></tr>
               )}
             </tbody>
           </table>
