@@ -410,9 +410,8 @@ const receiveMultiSchema = z.object({
     mismatchReason: z.string().optional(),
     remarks: z.string().optional(),
   })),
-  // When true, close the transfer even if short; the undelivered remainder is
-  // recorded as a documented loss (lost in transit) rather than left stranded.
   finalizeShortfall: z.boolean().optional(),
+  notes: z.string().optional(),
 });
 
 const RECEIVABLE_STATUSES: TransferStatus[] = [TransferStatus.IN_TRANSIT, TransferStatus.PARTIALLY_RECEIVED];
@@ -548,7 +547,12 @@ router.post("/:id/receive-multi", transferApprove, async (req, res, next) => {
 
       await tx.transfer.update({
         where: { id: transfer.id },
-        data: { status: newStatus, receivedById: userId, receivedAt: new Date() },
+        data: {
+          status: newStatus,
+          receivedById: userId,
+          receivedAt: new Date(),
+          ...(data.notes?.trim() ? { receiptNotes: data.notes.trim() } : {}),
+        },
       });
     });
 

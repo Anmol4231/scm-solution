@@ -151,6 +151,28 @@ router.get("/received", ordersOrReceiveView, async (req, res, next) => {
   }
 });
 
+router.get("/deleted", ordersDelete, async (req, res, next) => {
+  try {
+    const facilityWhere = orderFacilityWhere(req, req.query.facilityId as string | undefined);
+    const orders = await prisma.stockOrder.findMany({
+      where: { ...facilityWhere, deletedAt: { not: null } },
+      include: {
+        ...orderListInclude,
+        deletedBy: { select: { firstName: true, lastName: true, email: true } },
+      },
+      orderBy: { deletedAt: "desc" },
+    });
+    res.json(orders.map((o) => ({
+      ...o,
+      deletedBy: o.deletedBy
+        ? `${o.deletedBy.firstName} ${o.deletedBy.lastName}`.trim() || o.deletedBy.email
+        : null,
+    })));
+  } catch (e) {
+    next(e);
+  }
+});
+
 router.get("/:id", ordersOrReceiveView, async (req, res, next) => {
   try {
     const facilityWhere = orderFacilityWhere(req, req.query.facilityId as string | undefined);
@@ -897,6 +919,36 @@ router.post("/:id/cancel", ordersEdit, async (req, res, next) => {
   }
 });
 
+router.post("/:id/restore", ordersDelete, async (req, res, next) => {
+  try {
+    const facilityWhere = orderFacilityWhere(req, req.query.facilityId as string | undefined);
+    const order = await prisma.stockOrder.findFirst({
+      where: { id: req.params.id, ...facilityWhere },
+    });
+    if (!order) return res.status(404).json({ error: "Order not found" });
+    if (!order.deletedAt) return res.status(400).json({ error: "Order is not deleted" });
+
+    const restored = await prisma.stockOrder.update({
+      where: { id: order.id },
+      data: { deletedAt: null, deletedById: null },
+      include: orderDetailInclude,
+    });
+
+    await logAudit({
+      facilityId: order.facilityId,
+      userId: req.user!.userId,
+      action: "RESTORE",
+      entityType: "StockOrder",
+      entityId: order.id,
+      details: { name: order.orderCode, previousValues: { deletedAt: order.deletedAt }, currentValues: { deletedAt: null }, changeDetails: "Restored soft-deleted stock order" },
+    });
+
+    res.json(restored);
+  } catch (e) {
+    next(e);
+  }
+});
+
 router.delete("/:id", ordersDelete, async (req, res, next) => {
   try {
     const facilityWhere = orderFacilityWhere(req, req.query.facilityId as string | undefined);
@@ -909,6 +961,16 @@ router.delete("/:id", ordersDelete, async (req, res, next) => {
       data: { deletedAt: new Date(), deletedById: req.user!.userId },
       include: { vendor: true, lines: { include: { medicine: true } } },
     });
+
+    await logAudit({
+      facilityId: order.facilityId,
+      userId: req.user!.userId,
+      action: "SOFT_DELETE",
+      entityType: "StockOrder",
+      entityId: order.id,
+      details: { name: order.orderCode, previousValues: { deletedAt: null }, currentValues: { deletedAt: new Date() }, changeDetails: "Soft-deleted stock order" },
+    });
+
     res.json(deleted);
   } catch (e) {
     next(e);

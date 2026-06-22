@@ -94,13 +94,26 @@ router.get("/", async (req, res, next) => {
     const LOCATION_HIDDEN_ENTITIES = new Set(["Medicine", "MedicineCategory", "Role", "Facility"]);
 
     const formatted = logs.map((log) => {
-      const details = log.details as {
-        name?: string; email?: string; title?: string;
-        previousValues?: Record<string, unknown>;
-        currentValues?: Record<string, unknown>;
-        changeDetails?: string;
-      } | null;
+      const details = log.details as Record<string, unknown> | null;
       const hideLocation = LOCATION_HIDDEN_ENTITIES.has(log.entityType);
+
+      const previousValues = (details?.previousValues as Record<string, unknown>) ?? null;
+      const currentValues  = (details?.currentValues  as Record<string, unknown>) ?? null;
+      const changeDetails  = (details?.changeDetails  as string) ?? null;
+
+      // For CREATE entries logged with only flat fields (e.g. { name, code }),
+      // surface the extra fields as currentValues so the View panel shows something.
+      // We only do this for CREATE because for UPDATE the flat fields don't tell us
+      // what actually changed; those get "No additional details" until re-logged.
+      const STANDARD_KEYS = new Set(["name", "email", "title", "action", "previousValues", "currentValues", "changeDetails"]);
+      const inferredCurrent: Record<string, unknown> | null = (() => {
+        if (currentValues || log.action !== "CREATE" || !details) return null;
+        const extra = Object.fromEntries(
+          Object.entries(details).filter(([k]) => !STANDARD_KEYS.has(k))
+        );
+        return Object.keys(extra).length ? extra : null;
+      })();
+
       return {
         id: log.id,
         timestamp: log.createdAt,
@@ -108,14 +121,14 @@ router.get("/", async (req, res, next) => {
         actionLabel: ACTION_LABELS[log.action] ?? humanizeAction(log.action),
         entityType: log.entityType,
         entityId: log.entityId,
-        recordName: details?.name ?? details?.title ?? details?.email ?? "—",
+        recordName: (details?.name ?? details?.title ?? details?.email ?? "—") as string,
         changedBy: log.user
           ? `${log.user.firstName} ${log.user.lastName}`.trim() || log.user.email
           : "System",
         facility: hideLocation ? null : log.facility?.name ?? null,
-        previousValues: details?.previousValues ?? null,
-        currentValues: details?.currentValues ?? null,
-        changeDetails: details?.changeDetails ?? null,
+        previousValues,
+        currentValues: currentValues ?? inferredCurrent,
+        changeDetails,
       };
     });
 

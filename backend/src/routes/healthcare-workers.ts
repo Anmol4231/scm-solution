@@ -4,6 +4,7 @@ import { WorkerStatus } from "@prisma/client";
 import { prisma } from "../lib/prisma";
 import { authenticate, getFacilityId, requireFacility } from "../middleware/auth";
 import { logAudit } from "../services/audit";
+import { logChangeHistory } from "../services/changeHistory";
 
 const router = Router();
 router.use(authenticate, requireFacility);
@@ -19,12 +20,75 @@ const workerSchema = z.object({
   facilityId: z.string().optional(),
 });
 
+router.get("/deleted", async (req, res, next) => {
+  try {
+    const facilityId = getFacilityId(req);
+    const workers = await prisma.healthcareWorker.findMany({
+      where: {
+        deletedAt: { not: null },
+        ...(facilityId ? { facilityId } : {}),
+      },
+      include: {
+        facility: { select: { id: true, name: true } },
+        deletedBy: { select: { firstName: true, lastName: true, email: true } },
+      },
+      orderBy: { deletedAt: "desc" },
+    });
+    res.json(workers.map((w) => ({
+      ...w,
+      deletedBy: w.deletedBy
+        ? `${w.deletedBy.firstName} ${w.deletedBy.lastName}`.trim() || w.deletedBy.email
+        : null,
+    })));
+  } catch (e) {
+    next(e);
+  }
+});
+
+router.post("/:id/restore", async (req, res, next) => {
+  try {
+    const facilityId = getFacilityId(req);
+    const worker = await prisma.healthcareWorker.findFirst({
+      where: { id: req.params.id, ...(facilityId ? { facilityId } : {}) },
+    });
+    if (!worker) return res.status(404).json({ error: "Worker not found" });
+    if (!worker.deletedAt) return res.status(400).json({ error: "Worker is not deleted" });
+
+    const clash = await prisma.healthcareWorker.findFirst({
+      where: { workerId: worker.workerId, id: { not: worker.id }, deletedAt: null },
+    });
+    if (clash) return res.status(409).json({ error: "Cannot restore: an active staff member with this ID already exists" });
+
+    const restored = await prisma.healthcareWorker.update({
+      where: { id: worker.id },
+      data: { deletedAt: null, deletedById: null },
+    });
+
+    await logChangeHistory({
+      facilityId: worker.facilityId,
+      userId: req.user!.userId,
+      action: "RESTORE",
+      entityType: "HealthcareWorker",
+      entityId: restored.id,
+      entityName: `${restored.firstName} ${restored.lastName}`,
+      previousValues: { deletedAt: worker.deletedAt },
+      currentValues: { deletedAt: null },
+      changeDetails: "Restored soft-deleted staff member",
+    });
+
+    res.json(restored);
+  } catch (e) {
+    next(e);
+  }
+});
+
 router.get("/", async (req, res, next) => {
   try {
     const facilityId = getFacilityId(req, req.query.facilityId as string);
     const q = (req.query.q as string) || "";
     const workers = await prisma.healthcareWorker.findMany({
       where: {
+        deletedAt: null,
         ...(facilityId ? { facilityId } : {}),
         ...(q
           ? {
@@ -39,6 +103,7 @@ router.get("/", async (req, res, next) => {
       },
       include: { facility: { select: { id: true, name: true } } },
       orderBy: [{ lastName: "asc" }, { firstName: "asc" }],
+      take: 200,
     });
     res.json(workers);
   } catch (e) {
@@ -50,7 +115,7 @@ router.get("/:id", async (req, res, next) => {
   try {
     const facilityId = getFacilityId(req);
     const worker = await prisma.healthcareWorker.findFirst({
-      where: { id: req.params.id, ...(facilityId ? { facilityId } : {}) },
+      where: { id: req.params.id, deletedAt: null, ...(facilityId ? { facilityId } : {}) },
       include: {
         dispensingRecords: {
           include: { medicine: true },
@@ -96,7 +161,7 @@ router.patch("/:id", async (req, res, next) => {
   try {
     const facilityId = getFacilityId(req);
     const worker = await prisma.healthcareWorker.findFirst({
-      where: { id: req.params.id, ...(facilityId ? { facilityId } : {}) },
+      where: { id: req.params.id, deletedAt: null, ...(facilityId ? { facilityId } : {}) },
     });
     if (!worker) return res.status(404).json({ error: "Worker not found" });
 
@@ -123,19 +188,27 @@ router.delete("/:id", async (req, res, next) => {
   try {
     const facilityId = getFacilityId(req);
     const worker = await prisma.healthcareWorker.findFirst({
-      where: { id: req.params.id, ...(facilityId ? { facilityId } : {}) },
+      where: { id: req.params.id, deletedAt: null, ...(facilityId ? { facilityId } : {}) },
     });
     if (!worker) return res.status(404).json({ error: "Worker not found" });
 
-    await prisma.healthcareWorker.delete({ where: { id: worker.id } });
-    await logAudit({
+    await prisma.healthcareWorker.update({
+      where: { id: worker.id },
+      data: { deletedAt: new Date(), deletedById: req.user!.userId },
+    });
+
+    await logChangeHistory({
       facilityId: worker.facilityId,
       userId: req.user!.userId,
-      action: "DELETE",
+      action: "SOFT_DELETE",
       entityType: "HealthcareWorker",
       entityId: worker.id,
-      details: { name: `${worker.firstName} ${worker.lastName}`, workerId: worker.workerId },
+      entityName: `${worker.firstName} ${worker.lastName}`,
+      previousValues: { deletedAt: null },
+      currentValues: { deletedAt: new Date() },
+      changeDetails: "Soft-deleted staff member",
     });
+
     res.json({ message: "Staff member deleted" });
   } catch (e) {
     next(e);

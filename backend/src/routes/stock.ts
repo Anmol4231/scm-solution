@@ -580,66 +580,73 @@ router.get("/in-hand", stockView, async (req, res, next) => {
     const expiryStatus = req.query.expiryStatus as string | undefined; // "expired"|"expiring"|"ok"
     const sortBy = (req.query.sortBy as string | undefined) ?? "medicineName";
     const sortDir = req.query.sortDir === "desc" ? "desc" : "asc";
+    const page = Math.max(1, parseInt(req.query.page as string, 10) || 1);
+    const pageSize = Math.min(500, Math.max(1, parseInt(req.query.pageSize as string, 10) || 100));
 
-    const batches = await prisma.stockBatch.findMany({
-      where: {
-        ...(facilityId ? { facilityId } : {}),
-        ...(batchNumber ? { batchNumber: { contains: batchNumber, mode: "insensitive" } } : {}),
-        quantity: { gt: 0 },
-        medicine: {
-          isActive: true,
-          deletedAt: null,
-          ...(medicineId ? { id: medicineId } : {}),
-          ...(categoryId ? { categoryId } : {}),
-          ...(q
-            ? {
-                OR: [
-                  { medicineName: { contains: q, mode: "insensitive" } },
-                  { genericName: { contains: q, mode: "insensitive" } },
-                ],
-              }
-            : {}),
-        },
+    const where = {
+      ...(facilityId ? { facilityId } : {}),
+      ...(batchNumber ? { batchNumber: { contains: batchNumber, mode: "insensitive" as const } } : {}),
+      quantity: { gt: 0 },
+      medicine: {
+        isActive: true,
+        deletedAt: null,
+        ...(medicineId ? { id: medicineId } : {}),
+        ...(categoryId ? { categoryId } : {}),
+        ...(q
+          ? {
+              OR: [
+                { medicineName: { contains: q, mode: "insensitive" as const } },
+                { genericName: { contains: q, mode: "insensitive" as const } },
+              ],
+            }
+          : {}),
       },
-      include: {
-        medicine: {
-          include: { category: { select: { id: true, name: true, coldStorage: true, controlledDrug: true } } },
-        },
-        facility: { select: { id: true, name: true, code: true } },
+    };
+    const orderBy = (() => {
+      if (sortBy === "expiryDate") return { expiryDate: sortDir } as const;
+      if (sortBy === "quantity") return { quantity: sortDir } as const;
+      if (sortBy === "batchNumber") return { batchNumber: sortDir } as const;
+      return { medicine: { medicineName: sortDir } } as const;
+    })();
+    const include = {
+      medicine: {
+        include: { category: { select: { id: true, name: true, coldStorage: true, controlledDrug: true } } },
       },
-      orderBy: (() => {
-        if (sortBy === "expiryDate") return { expiryDate: sortDir } as const;
-        if (sortBy === "quantity") return { quantity: sortDir } as const;
-        if (sortBy === "batchNumber") return { batchNumber: sortDir } as const;
-        return { medicine: { medicineName: sortDir } } as const;
-      })(),
-    });
+      facility: { select: { id: true, name: true, code: true } },
+    };
+
+    // Fetch all matching batches for expiry-status post-filter, then paginate in memory.
+    // This is necessary because daysLeft is computed after fetch (expiryStatus is a derived field).
+    const allBatches = await prisma.stockBatch.findMany({ where, include, orderBy });
 
     const now = new Date();
     const warningDays = config.expiryWarningDays;
 
-    const result = batches
-      .map((b) => {
-        const daysLeft = Math.ceil((b.expiryDate.getTime() - now.getTime()) / 86400000);
-        const status =
-          daysLeft <= 0
-            ? "Expired"
-            : daysLeft <= config.expiryCriticalDays
-              ? "Expiring Soon (Critical)"
-              : daysLeft <= warningDays
-                ? "Expiring Soon"
-                : "OK";
-        return { ...b, daysLeft, status };
-      })
-      .filter((b) => {
-        if (!expiryStatus) return true;
-        if (expiryStatus === "expired") return b.daysLeft <= 0;
-        if (expiryStatus === "expiring") return b.daysLeft > 0 && b.daysLeft <= warningDays;
-        if (expiryStatus === "ok") return b.daysLeft > warningDays;
-        return true;
-      });
+    const decorated = allBatches.map((b) => {
+      const daysLeft = Math.ceil((b.expiryDate.getTime() - now.getTime()) / 86400000);
+      const status =
+        daysLeft <= 0
+          ? "Expired"
+          : daysLeft <= config.expiryCriticalDays
+            ? "Expiring Soon (Critical)"
+            : daysLeft <= warningDays
+              ? "Expiring Soon"
+              : "OK";
+      return { ...b, daysLeft, status };
+    });
 
-    res.json(result);
+    const filtered = decorated.filter((b) => {
+      if (!expiryStatus) return true;
+      if (expiryStatus === "expired") return b.daysLeft <= 0;
+      if (expiryStatus === "expiring") return b.daysLeft > 0 && b.daysLeft <= warningDays;
+      if (expiryStatus === "ok") return b.daysLeft > warningDays;
+      return true;
+    });
+
+    const total = filtered.length;
+    const data = filtered.slice((page - 1) * pageSize, page * pageSize);
+
+    res.json({ data, total, page, pageSize });
   } catch (e) {
     next(e);
   }

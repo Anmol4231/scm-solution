@@ -257,25 +257,40 @@ router.get("/", medicineView, async (req, res, next) => {
   try {
     const q = (req.query.q as string) || "";
     const categoryId = req.query.categoryId as string | undefined;
+    const pageParam = req.query.page as string | undefined;
+
+    const where = {
+      isActive: true,
+      deletedAt: null,
+      ...(categoryId ? { categoryId } : {}),
+      OR: q
+        ? [
+            { medicineName: { contains: q, mode: "insensitive" as const } },
+            { genericName: { contains: q, mode: "insensitive" as const } },
+            { dosageForm: { contains: q, mode: "insensitive" as const } },
+            { strength: { contains: q, mode: "insensitive" as const } },
+            { strengths: { some: { strength: { contains: q, mode: "insensitive" as const }, isActive: true } } },
+            { category: { name: { contains: q, mode: "insensitive" as const } } },
+          ]
+        : undefined,
+    };
+    const orderBy = [{ category: { name: "asc" as const } }, { medicineName: "asc" as const }];
+
+    if (pageParam !== undefined) {
+      const page = Math.max(1, parseInt(pageParam, 10) || 1);
+      const pageSize = Math.min(200, Math.max(1, parseInt(req.query.pageSize as string, 10) || 50));
+      const [total, data] = await Promise.all([
+        prisma.medicine.count({ where }),
+        prisma.medicine.findMany({ where, include: medicineInclude(), orderBy, skip: (page - 1) * pageSize, take: pageSize }),
+      ]);
+      return res.json({ data, total, page, pageSize });
+    }
 
     const medicines = await prisma.medicine.findMany({
-      where: {
-        isActive: true,
-        deletedAt: null,
-        ...(categoryId ? { categoryId } : {}),
-        OR: q
-          ? [
-              { medicineName: { contains: q, mode: "insensitive" } },
-              { genericName: { contains: q, mode: "insensitive" } },
-              { dosageForm: { contains: q, mode: "insensitive" } },
-              { strength: { contains: q, mode: "insensitive" } },
-              { strengths: { some: { strength: { contains: q, mode: "insensitive" }, isActive: true } } },
-              { category: { name: { contains: q, mode: "insensitive" } } },
-            ]
-          : undefined,
-      },
+      where,
       include: medicineInclude(),
-      orderBy: [{ category: { name: "asc" } }, { medicineName: "asc" }],
+      orderBy,
+      take: 500,
     });
     res.json(medicines);
   } catch (e) {
