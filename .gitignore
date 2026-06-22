@@ -16,3 +16,12 @@ uploads/
 medflow_backup.sql
 backend/prisma/schema.zip
 backend/scripts/seed-patients.sql
+
+# Local data dumps / exports — may contain sensitive data (e.g. password hashes). Never commit.
+db-backups/
+*.csv
+master-data.sql
+
+# Build artifacts
+tsconfig.tsbuildinfo
+**/tsconfig.tsbuildinfo
