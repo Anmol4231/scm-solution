@@ -2,8 +2,9 @@
 
 import { useEffect, useState, useMemo, Suspense } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
-import { Pencil, Plus, ScrollText, Search, Trash2 } from "lucide-react";
+import { Pencil, Plus, Search, Trash2 } from "lucide-react";
 import { api } from "@/lib/api";
+import { invalidateMedicinesCache } from "@/lib/medicines-cache";
 import { useAuth } from "@/lib/auth-context";
 import { isMasterDataAdminRole } from "@/lib/roles";
 import { useRequirePermission } from "@/hooks/useRequirePermission";
@@ -142,7 +143,7 @@ function StrengthSelector({
       </datalist>
       <input
         list="strength-datalist"
-        className="mt-1 h-11 w-full rounded-lg border px-3 text-sm focus:outline-none focus:ring-2 focus:ring-medflow-400"
+        className="mt-1 h-11 w-full rounded-lg border bg-white px-3 text-sm focus:outline-none focus:ring-2 focus:ring-medflow-400"
         placeholder={predefined.length > 0 ? `e.g. ${predefined[0]}` : "e.g. 500 mg, 250mg/5ml"}
         value={value}
         onChange={(e) => onChange(e.target.value)}
@@ -216,6 +217,58 @@ function MedicineCard({
   );
 }
 
+// ─── Pagination ───────────────────────────────────────────────────────────────
+
+function MedicinePagination({ page, total, pageSize, onChange }: {
+  page: number; total: number; pageSize: number; onChange: (p: number) => void;
+}) {
+  const totalPages = Math.ceil(total / pageSize);
+  if (totalPages <= 1) return null;
+
+  const pages: (number | "...")[] = [];
+  if (totalPages <= 7) {
+    for (let i = 1; i <= totalPages; i++) pages.push(i);
+  } else {
+    pages.push(1);
+    if (page > 4) pages.push("...");
+    for (let i = Math.max(2, page - 2); i <= Math.min(totalPages - 1, page + 2); i++) pages.push(i);
+    if (page < totalPages - 3) pages.push("...");
+    pages.push(totalPages);
+  }
+
+  return (
+    <div className="flex items-center justify-center gap-1 pt-4">
+      <button
+        onClick={() => onChange(page - 1)}
+        disabled={page === 1}
+        className="rounded px-3 py-1 text-sm text-muted-foreground hover:bg-accent disabled:opacity-40"
+      >
+        Previous
+      </button>
+      {pages.map((p, i) =>
+        p === "..." ? (
+          <span key={`ellipsis-${i}`} className="px-2 text-sm text-muted-foreground">…</span>
+        ) : (
+          <button
+            key={p}
+            onClick={() => onChange(p as number)}
+            className={`min-w-[2rem] rounded px-2 py-1 text-sm ${p === page ? "bg-primary text-primary-foreground font-medium" : "text-muted-foreground hover:bg-accent"}`}
+          >
+            {p}
+          </button>
+        )
+      )}
+      <button
+        onClick={() => onChange(page + 1)}
+        disabled={page === totalPages}
+        className="rounded px-3 py-1 text-sm text-muted-foreground hover:bg-accent disabled:opacity-40"
+      >
+        Next
+      </button>
+    </div>
+  );
+}
+
 // ─── Main page ────────────────────────────────────────────────────────────────
 
 function MedicinesInner() {
@@ -229,6 +282,9 @@ function MedicinesInner() {
   const [medicines, setMedicines] = useState<Medicine[]>([]);
   const [categories, setCategories] = useState<Category[]>([]);
   const [categoryFilter, setCategoryFilter] = useState(() => searchParams.get("category") ?? "");
+  const [page, setPage] = useState(1);
+  const [total, setTotal] = useState(0);
+  const PAGE_SIZE = 50;
 
   // ── Loading / error ──
   const [catLoading, setCatLoading] = useState(true);
@@ -279,15 +335,16 @@ function MedicinesInner() {
       .catch(() => setCatLoading(false));
   };
 
-  const loadMedicines = (cat: string, q: string) => {
+  const loadMedicines = (cat: string, q: string, pg = 1) => {
     setMedLoading(true);
     setMedError("");
     const params = new URLSearchParams();
     if (cat) params.set("categoryId", cat);
     if (q) params.set("q", q);
-    const qs = params.toString() ? `?${params.toString()}` : "";
-    api<Medicine[]>(`/medicines${qs}`)
-      .then((m) => { setMedicines(m); setMedLoading(false); })
+    params.set("page", String(pg));
+    params.set("pageSize", String(PAGE_SIZE));
+    api<{ data: Medicine[]; total: number; page: number; pageSize: number }>(`/medicines?${params.toString()}`)
+      .then((r) => { setMedicines(r.data); setTotal(r.total); setMedLoading(false); })
       .catch((err) => {
         setMedError(err instanceof Error ? err.message : "Failed to load medicines");
         setMedLoading(false);
@@ -302,9 +359,9 @@ function MedicinesInner() {
     return () => clearTimeout(t);
   }, [searchQ]);
 
-  // Reload the medicine list when the category filter OR the search query changes.
+  // Reload the medicine list when the category filter OR the search query changes (reset to page 1).
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  useEffect(() => { loadMedicines(categoryFilter, debouncedQ); }, [categoryFilter, debouncedQ]);
+  useEffect(() => { setPage(1); loadMedicines(categoryFilter, debouncedQ, 1); }, [categoryFilter, debouncedQ]);
 
   // ── Medicine form helpers ────────────────────────────────────────────────────
 
@@ -378,17 +435,19 @@ function MedicinesInner() {
         method: editingMedId ? "PATCH" : "POST", body: JSON.stringify(payload),
       });
       setSuccess(editingMedId ? "Medicine updated" : `${medForm.medicineName} ${strengthValue} added`);
-      resetMedForm(); loadCategories(); loadMedicines(categoryFilter, debouncedQ);
+      invalidateMedicinesCache();
+      resetMedForm(); loadCategories(); loadMedicines(categoryFilter, debouncedQ, page);
     } catch (err) { setError(err instanceof Error ? err.message : "Failed to save medicine"); }
   };
 
   const deleteMedicine = async (m: Medicine) => {
-    if (!window.confirm(`Delete "${m.medicineName}"? This can be restored from Audit Trail & Restore.`)) return;
+    if (!window.confirm(`Delete "${m.medicineName}"? This can be restored from Audit Logs.`)) return;
     setError(""); setSuccess("");
     try {
       await api(`/medicines/${m.id}`, { method: "DELETE" });
       setSuccess(`"${m.medicineName}" deleted`);
-      loadMedicines(categoryFilter, debouncedQ);
+      invalidateMedicinesCache();
+      loadMedicines(categoryFilter, debouncedQ, page);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to delete medicine");
     }
@@ -403,23 +462,28 @@ function MedicinesInner() {
   return (
     <div className="space-y-8">
 
+      {showMedForm && (
+        <button type="button" onClick={resetMedForm} className="text-sm text-medflow-600 hover:underline">
+          ← Medicine Master
+        </button>
+      )}
+
       {/* ── Header ── */}
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div>
-          <h1 className="text-2xl font-bold">Medicine Master</h1>
+          <h1 className="text-2xl font-bold">
+            {showMedForm ? (editingMedId ? "Edit Medicine" : "Add Medicine") : "Medicine Master"}
+          </h1>
         </div>
-        <div className="flex flex-wrap items-center gap-2">
-          {isAdmin && (
-            <>
-              <Button variant="outline" size="sm" onClick={() => router.push("/settings/audit")}>
-                <ScrollText className="mr-1.5 h-3.5 w-3.5" /> Audit Trail &amp; Restore
-              </Button>
+        {!showMedForm && (
+          <div className="flex flex-wrap items-center gap-2">
+            {isAdmin && (
               <Button onClick={() => startAddMedicine()}>
                 <Plus className="mr-2 h-4 w-4" /> Add Medicine
               </Button>
-            </>
-          )}
-        </div>
+            )}
+          </div>
+        )}
       </div>
 
       {error && <p className="rounded-lg bg-red-50 p-3 text-sm text-red-700">{error}</p>}
@@ -434,7 +498,7 @@ function MedicinesInner() {
               {/* 1. Category */}
               <div className="md:col-span-2">
                 <Label>Category *</Label>
-                <select className="h-11 w-full rounded-lg border px-3 text-sm" value={medForm.categoryId}
+                <select className="h-11 w-full rounded-lg border bg-white px-3 text-sm" value={medForm.categoryId}
                   onChange={(e) => setMedForm({ ...medForm, categoryId: e.target.value })} required>
                   <option value="">Select category</option>
                   {categories.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
@@ -456,7 +520,7 @@ function MedicinesInner() {
               <div>
                 <Label>Dosage Form *</Label>
                 <select
-                  className="h-11 w-full rounded-lg border px-3 text-sm"
+                  className="h-11 w-full rounded-lg border bg-white px-3 text-sm"
                   value={medForm.dosageForm}
                   onChange={(e) => {
                     setMedForm({ ...medForm, dosageForm: e.target.value, dosageFormOther: "", strength: "" });
@@ -505,85 +569,99 @@ function MedicinesInner() {
         </Card>
       )}
 
-      {/* ── Search ── */}
-      <div className="relative">
-        <Search className="pointer-events-none absolute left-3 top-3 h-4 w-4 text-slate-400" />
-        <Input
-          className="pl-9"
-          placeholder=""
-          value={searchQ}
-          onChange={(e) => setSearchQ(e.target.value)}
-        />
-      </div>
+      {/* ── Search + medicines list (hidden while form is open) ── */}
+      {!showMedForm && (
+        <>
+          <div className="relative">
+            <Search className="pointer-events-none absolute left-3 top-3 h-4 w-4 text-slate-400" />
+            <Input
+              className="pl-9"
+              placeholder=""
+              value={searchQ}
+              onChange={(e) => setSearchQ(e.target.value)}
+            />
+          </div>
 
-      {/* ── Category filter dropdown + medicines list ── */}
-      <div>
-        <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
-          <div className="flex items-center gap-2">
-            <h2 className="text-lg font-semibold text-slate-800">
-              {debouncedQ ? `Results for "${debouncedQ}"` : activeCategoryName ?? "All Medicines"}
-            </h2>
-            {!medLoading && (
-              <span className="text-sm text-muted-foreground">· {medicines.length}</span>
-            )}
-          </div>
-          <div className="flex items-center gap-2">
-            {!debouncedQ && !catLoading && categories.length > 0 && (
-              <select
-                className="h-9 rounded-lg border border-slate-200 bg-white px-3 text-sm text-slate-700 focus:outline-none focus:ring-2 focus:ring-medflow-400"
-                value={categoryFilter}
-                onChange={(e) => setCategoryFilter(e.target.value)}
-              >
-                <option value="">All Categories ({categories.reduce((s, c) => s + (c._count?.medicines ?? 0), 0)})</option>
-                {categories.map((c) => (
-                  <option key={c.id} value={c.id}>
-                    {c.name} ({c._count?.medicines ?? 0})
-                  </option>
-                ))}
-              </select>
-            )}
-            {isAdmin && categoryFilter && (
-              <Button size="sm" variant="ghost" onClick={() => startAddMedicine(categoryFilter)}>
-                <Plus className="mr-1 h-3.5 w-3.5" /> Add here
-              </Button>
-            )}
-          </div>
-        </div>
+          {/* ── Category filter dropdown + medicines list ── */}
+          <div>
+            <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
+              <div className="flex items-center gap-2">
+                <h2 className="text-lg font-semibold text-slate-800">
+                  {debouncedQ ? `Results for "${debouncedQ}"` : activeCategoryName ?? "All Medicines"}
+                </h2>
+                {!medLoading && (
+                  <span className="text-sm text-muted-foreground">· {medicines.length}</span>
+                )}
+              </div>
+              <div className="flex items-center gap-2">
+                {!debouncedQ && !catLoading && categories.length > 0 && (
+                  <select
+                    className="h-9 rounded-lg border border-slate-200 bg-white px-3 text-sm text-slate-700 focus:outline-none focus:ring-2 focus:ring-medflow-400"
+                    value={categoryFilter}
+                    onChange={(e) => setCategoryFilter(e.target.value)}
+                  >
+                    <option value="">All Categories ({categories.reduce((s, c) => s + (c._count?.medicines ?? 0), 0)})</option>
+                    {categories.map((c) => (
+                      <option key={c.id} value={c.id}>
+                        {c.name} ({c._count?.medicines ?? 0})
+                      </option>
+                    ))}
+                  </select>
+                )}
+                {isAdmin && categoryFilter && (
+                  <Button size="sm" variant="ghost" onClick={() => startAddMedicine(categoryFilter)}>
+                    <Plus className="mr-1 h-3.5 w-3.5" /> Add here
+                  </Button>
+                )}
+              </div>
+            </div>
 
-        {medLoading ? (
-          <div className="flex items-center gap-2 py-8 text-sm text-muted-foreground">
-            <Spinner /> Loading medicines…
-          </div>
-        ) : medError ? (
-          <div className="rounded-lg border border-red-200 bg-red-50 p-4 text-sm text-red-700">
-            {medError}
-          </div>
-        ) : medicines.length === 0 ? (
-          <div className="rounded-lg border border-dashed py-10 text-center">
-            <p className="text-sm text-muted-foreground">
-              No medicines found{categoryFilter ? " in this category" : ""}.
-            </p>
-            {isAdmin && (
-              <Button size="sm" className="mt-3" onClick={() => startAddMedicine(categoryFilter)}>
-                <Plus className="mr-2 h-4 w-4" /> Add Medicine
-              </Button>
+            {medLoading ? (
+              <div className="flex items-center gap-2 py-8 text-sm text-muted-foreground">
+                <Spinner /> Loading medicines…
+              </div>
+            ) : medError ? (
+              <div className="rounded-lg border border-red-200 bg-red-50 p-4 text-sm text-red-700">
+                {medError}
+              </div>
+            ) : medicines.length === 0 ? (
+              <div className="rounded-lg border border-dashed py-10 text-center">
+                <p className="text-sm text-muted-foreground">
+                  No medicines found{categoryFilter ? " in this category" : ""}.
+                </p>
+                {isAdmin && (
+                  <Button size="sm" className="mt-3" onClick={() => startAddMedicine(categoryFilter)}>
+                    <Plus className="mr-2 h-4 w-4" /> Add Medicine
+                  </Button>
+                )}
+              </div>
+            ) : (
+              <>
+                <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
+                  {medicines.map((m) => (
+                    <MedicineCard
+                      key={m.id}
+                      medicine={m}
+                      isAdmin={isAdmin}
+                      showCategory={!categoryFilter || !!debouncedQ}
+                      onEdit={startEditMedicine}
+                      onDelete={deleteMedicine}
+                    />
+                  ))}
+                </div>
+                {total > PAGE_SIZE && (
+                  <MedicinePagination
+                    page={page}
+                    total={total}
+                    pageSize={PAGE_SIZE}
+                    onChange={(p) => { setPage(p); loadMedicines(categoryFilter, debouncedQ, p); }}
+                  />
+                )}
+              </>
             )}
           </div>
-        ) : (
-          <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
-            {medicines.map((m) => (
-              <MedicineCard
-                key={m.id}
-                medicine={m}
-                isAdmin={isAdmin}
-                showCategory={!categoryFilter || !!debouncedQ}
-                onEdit={startEditMedicine}
-                onDelete={deleteMedicine}
-              />
-            ))}
-          </div>
-        )}
-      </div>
+        </>
+      )}
 
     </div>
   );

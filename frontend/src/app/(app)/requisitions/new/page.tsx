@@ -4,6 +4,7 @@ import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
 import { api } from "@/lib/api";
+import { useMedicines } from "@/lib/medicines-cache";
 import { useAuth } from "@/lib/auth-context";
 import { isCrossFacilityRole } from "@/lib/roles";
 import { Button } from "@/components/ui/button";
@@ -24,7 +25,7 @@ export default function NewRequisitionPage() {
 
   const [allFacilities, setAllFacilities] = useState<Facility[]>([]);
   const [issuingFacilities, setIssuingFacilities] = useState<Facility[]>([]);
-  const [medicines, setMedicines] = useState<Medicine[]>([]);
+  const { data: medicines = [] } = useMedicines();
 
   const [requestingFacilityId, setRequestingFacilityId] = useState(user?.facilityId ?? "");
   const [issuingFacilityId, setIssuingFacilityId] = useState("");
@@ -36,7 +37,6 @@ export default function NewRequisitionPage() {
   const [busy, setBusy] = useState(false);
 
   useEffect(() => {
-    api<Medicine[]>("/medicines").then(setMedicines);
     api<Facility[]>("/requisitions/issuing-facilities").then(setIssuingFacilities);
     if (isAdmin) {
       api<Facility[]>("/auth/facilities").then(setAllFacilities);
@@ -89,7 +89,7 @@ export default function NewRequisitionPage() {
           {isAdmin && (
             <div>
               <Label>Requesting Facility *</Label>
-              <select className="mt-1 h-10 w-full rounded-lg border px-3 text-sm" value={requestingFacilityId} onChange={(e) => setRequestingFacilityId(e.target.value)}>
+              <select className="mt-1 h-10 w-full rounded-lg border bg-white px-3 text-sm" value={requestingFacilityId} onChange={(e) => setRequestingFacilityId(e.target.value)}>
                 <option value="">Select facility…</option>
                 {allFacilities.map((f) => <option key={f.id} value={f.id}>{f.name} ({f.code})</option>)}
               </select>
@@ -97,7 +97,7 @@ export default function NewRequisitionPage() {
           )}
           <div>
             <Label>Issuing Store (AMS / Medical Store) *</Label>
-            <select className="mt-1 h-10 w-full rounded-lg border px-3 text-sm" value={issuingFacilityId} onChange={(e) => setIssuingFacilityId(e.target.value)}>
+            <select className="mt-1 h-10 w-full rounded-lg border bg-white px-3 text-sm" value={issuingFacilityId} onChange={(e) => setIssuingFacilityId(e.target.value)}>
               <option value="">Select issuing store…</option>
               {issuingFacilities.map((f) => <option key={f.id} value={f.id}>{f.name} ({f.code}) — {f.facilityType}</option>)}
             </select>
@@ -105,7 +105,7 @@ export default function NewRequisitionPage() {
           <div className="grid grid-cols-2 gap-4">
             <div>
               <Label>Priority</Label>
-              <select className="mt-1 h-10 w-full rounded-lg border px-3 text-sm" value={priority} onChange={(e) => setPriority(e.target.value)}>
+              <select className="mt-1 h-10 w-full rounded-lg border bg-white px-3 text-sm" value={priority} onChange={(e) => setPriority(e.target.value)}>
                 <option value="ROUTINE">Routine</option>
                 <option value="URGENT">Urgent</option>
                 <option value="EMERGENCY">Emergency</option>
@@ -114,7 +114,7 @@ export default function NewRequisitionPage() {
           </div>
           <div>
             <Label>Notes</Label>
-            <textarea className="mt-1 w-full rounded-lg border px-3 py-2 text-sm" rows={2} value={notes} onChange={(e) => setNotes(e.target.value)} />
+            <textarea className="mt-1 w-full rounded-lg border bg-white px-3 py-2 text-sm" rows={2} value={notes} onChange={(e) => setNotes(e.target.value)} />
           </div>
         </CardContent>
       </Card>

@@ -67,6 +67,9 @@ function digitsToDisplay(digits: string): string {
   return `${dd}-${mm}-${yyyy}`;
 }
 
+// Suffix of the "dd-mm-yyyy" mask that hasn't been typed yet, indexed by digit count (0–8).
+const GHOST_SUFFIX = ["", "_-mm-yyyy", "-mm-yyyy", "_-yyyy", "-yyyy", "___", "__", "_", ""];
+
 const MONTHS = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
 const WEEKDAYS = ["Su", "Mo", "Tu", "We", "Th", "Fr", "Sa"];
 
@@ -146,6 +149,7 @@ export function DateInput({
   };
 
   const showError = text.replace(/\D/g, "").length === 8 && !value;
+  const ghost = GHOST_SUFFIX[Math.min(text.replace(/\D/g, "").length, 8)];
 
   const fieldClasses = bare
     ? cn("bg-transparent text-sm text-slate-700 outline-none placeholder:text-slate-400 disabled:cursor-not-allowed disabled:opacity-50", className)
@@ -180,6 +184,7 @@ export function DateInput({
 
   return (
     <div ref={wrapRef} className={fieldClasses}>
+      {/* Transparent input captures keyboard/focus; the overlay below renders visible text. */}
       <input
         id={id}
         name={name}
@@ -191,17 +196,23 @@ export function DateInput({
         aria-label={ariaLabel}
         aria-invalid={showError || undefined}
         placeholder={placeholder}
-        className="h-full w-full rounded-lg bg-transparent px-3 pr-9 text-base outline-none placeholder:text-muted-foreground disabled:cursor-not-allowed disabled:opacity-50"
+        className="h-full w-full rounded-lg bg-transparent px-3 pr-9 text-base outline-none text-transparent caret-slate-900 placeholder:text-slate-400 disabled:cursor-not-allowed disabled:opacity-50"
         value={text}
         onFocus={() => { focusedRef.current = true; }}
         onBlur={() => {
           focusedRef.current = false;
-          // On leaving, snap the display back to the committed value so a partial
-          // or invalid entry never lingers in the field.
           setText(isoToDisplay(value));
         }}
         onChange={onTextChange}
       />
+      {/* Ghost overlay: typed text (dark) + remaining format hint (dim) */}
+      <div
+        aria-hidden="true"
+        className="pointer-events-none select-none absolute inset-0 flex items-center px-3 pr-9 text-base"
+      >
+        <span className="text-slate-800">{text}</span>
+        <span className="text-slate-300">{ghost}</span>
+      </div>
       <button
         type="button"
         tabIndex={-1}
@@ -344,7 +355,7 @@ function CalendarPopup({
           <ChevronRight className="h-4 w-4" />
         </button>
       </div>
-      <div className="grid grid-cols-7 gap-0.5 text-center text-xs text-slate-400">
+      <div className="grid grid-cols-7 gap-0.5 text-center text-xs text-slate-500 font-medium">
         {WEEKDAYS.map((w) => <div key={w} className="py-1">{w}</div>)}
       </div>
       <div className="grid grid-cols-7 gap-0.5">
@@ -360,7 +371,7 @@ function CalendarPopup({
               disabled={dis}
               onClick={() => onSelect(iso)}
               className={cn(
-                "h-8 rounded text-sm hover:bg-medflow-50",
+                "h-8 rounded text-sm text-slate-700 hover:bg-medflow-50",
                 selected && "bg-medflow-500 text-white hover:bg-medflow-500",
                 dis && "cursor-not-allowed text-slate-300 hover:bg-transparent"
               )}

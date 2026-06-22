@@ -1,9 +1,11 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
+import { SkeletonRows } from "@/components/ui/page-skeleton";
 import Link from "next/link";
 import { AlertTriangle, Clock, PackageX, ChevronDown, ChevronUp, X, ArrowLeftRight, Eye, Trash2 } from "lucide-react";
 import { api } from "@/lib/api";
+import { useMedicines } from "@/lib/medicines-cache";
 import { dateInputMin, dateInputMax } from "@/lib/datetime";
 import { DateInput } from "@/components/ui/date-input";
 import { useAuth } from "@/lib/auth-context";
@@ -104,7 +106,7 @@ function StatCard({ label, value, accent, icon: Icon }: { label: string; value: 
 function WitnessSelect({ witnesses, value, onChange }: { witnesses: Witness[]; value: string; onChange: (v: string) => void }) {
   return (
     <select
-      className="mt-1 h-9 w-full rounded-lg border px-3 text-sm"
+      className="mt-1 h-9 w-full rounded-lg border bg-white px-3 text-sm"
       value={value}
       onChange={(e) => onChange(e.target.value)}
     >
@@ -130,9 +132,10 @@ export default function ExpiryPage() {
 
   // Data
   const [data, setData] = useState<ExpiryResponse | null>(null);
+  const [loadingAlerts, setLoadingAlerts] = useState(true);
   const [categories, setCategories] = useState<Category[]>([]);
   const [facilities, setFacilities] = useState<{ id: string; name: string }[]>([]);
-  const [medicines, setMedicines] = useState<{ id: string; medicineName: string }[]>([]);
+  const { data: medicines = [] } = useMedicines();
   const [witnesses, setWitnesses] = useState<Witness[]>([]);
 
   // Secondary panels
@@ -163,12 +166,16 @@ export default function ExpiryPage() {
   const [disposeSuccess, setDisposeSuccess] = useState("");
 
   const loadAlerts = useCallback(() => {
+    setLoadingAlerts(true);
     const params = new URLSearchParams();
     params.set("withinDays", withinDays);
     params.set("status", status);
     if (categoryId) params.set("categoryId", categoryId);
     if (facilityFilter) params.set("facilityFilter", facilityFilter);
-    api<ExpiryResponse>(`/expiry/alerts?${params}`).then(setData).catch(console.error);
+    api<ExpiryResponse>(`/expiry/alerts?${params}`)
+      .then(setData)
+      .catch(console.error)
+      .finally(() => setLoadingAlerts(false));
   }, [withinDays, categoryId, facilityFilter, status]);
 
   const loadHistory = useCallback(() => {
@@ -186,7 +193,6 @@ export default function ExpiryPage() {
 
   useEffect(() => {
     api<Category[]>("/categories").then(setCategories);
-    api<{ id: string; medicineName: string }[]>("/medicines").then(setMedicines);
     if (isAdmin) api<{ id: string; name: string }[]>("/auth/facilities").then(setFacilities);
     loadWitnesses(user?.facilityId ?? undefined);
   }, [isAdmin, user?.facilityId, loadWitnesses]);
@@ -357,7 +363,11 @@ export default function ExpiryPage() {
       {/* ── Primary: Expiry table ── */}
       <Card>
         <CardContent className="p-0 overflow-x-auto">
-          {batches.length === 0 ? (
+          {loadingAlerts ? (
+            <table className="w-full min-w-[700px] text-sm">
+              <tbody><SkeletonRows rows={6} cols={isAdmin ? 8 : 7} /></tbody>
+            </table>
+          ) : batches.length === 0 ? (
             <div className="px-6 py-12 text-center">
               <Clock className="mx-auto mb-3 h-10 w-10 text-slate-300" />
               <p className="text-sm font-medium text-slate-500">No batches match the current filters</p>
@@ -410,9 +420,10 @@ export default function ExpiryPage() {
                         {batch.severity === "expired" && (
                           <Button
                             size="sm"
-                            variant="outline"
-                            className="h-7 border-red-200 px-2 text-red-700 hover:bg-red-50"
+                            variant="ghost"
+                            className="h-7 w-7 p-0 text-red-500 hover:bg-red-50 hover:text-red-700"
                             title="Dispose off"
+                            aria-label="Dispose off"
                             onClick={() => {
                               setDisposeTarget(batch);
                               setDisposeForm({ disposalMethod: "Incineration", witness: "", comment: "" });
@@ -420,7 +431,7 @@ export default function ExpiryPage() {
                               loadWitnesses(batch.facilityId);
                             }}
                           >
-                            <Trash2 className="mr-1 h-3.5 w-3.5" /> Dispose
+                            <Trash2 className="h-3.5 w-3.5" aria-hidden="true" />
                           </Button>
                         )}
                       </div>
@@ -575,7 +586,7 @@ export default function ExpiryPage() {
                 <div>
                   <Label>Facility <span className="text-red-500">*</span></Label>
                   <select
-                    className="mt-1 h-9 w-full rounded-lg border px-3 text-sm"
+                    className="mt-1 h-9 w-full rounded-lg border bg-white px-3 text-sm"
                     value={recordForm.facilityId}
                     onChange={(e) => {
                       setRecordForm({ ...recordForm, facilityId: e.target.value });
@@ -617,7 +628,7 @@ export default function ExpiryPage() {
 
               <div>
                 <Label>Disposal method <span className="text-red-500">*</span></Label>
-                <select className="mt-1 h-9 w-full rounded-lg border px-3 text-sm" value={recordForm.disposalMethod} onChange={(e) => setRecordForm({ ...recordForm, disposalMethod: e.target.value, comment: "" })} required>
+                <select className="mt-1 h-9 w-full rounded-lg border bg-white px-3 text-sm" value={recordForm.disposalMethod} onChange={(e) => setRecordForm({ ...recordForm, disposalMethod: e.target.value, comment: "" })} required>
                   {DISPOSAL_METHODS.map((m) => <option key={m}>{m}</option>)}
                 </select>
               </div>
@@ -626,7 +637,7 @@ export default function ExpiryPage() {
                 <div>
                   <Label>Describe disposal method <span className="text-red-500">*</span></Label>
                   <textarea
-                    className="mt-1 w-full rounded-lg border px-3 py-2 text-sm resize-none"
+                    className="mt-1 w-full rounded-lg border bg-white px-3 py-2 text-sm resize-none"
                     rows={2}
                     placeholder="Describe how the stock will be disposed…"
                     value={recordForm.comment}
@@ -679,7 +690,7 @@ export default function ExpiryPage() {
               <div>
                 <Label>Disposal method <span className="text-red-500">*</span></Label>
                 <select
-                  className="mt-1 h-9 w-full rounded-lg border px-3 text-sm"
+                  className="mt-1 h-9 w-full rounded-lg border bg-white px-3 text-sm"
                   value={disposeForm.disposalMethod}
                   onChange={(e) => setDisposeForm({ ...disposeForm, disposalMethod: e.target.value, comment: "" })}
                   required
@@ -692,7 +703,7 @@ export default function ExpiryPage() {
                 <div>
                   <Label>Describe disposal method <span className="text-red-500">*</span></Label>
                   <textarea
-                    className="mt-1 w-full rounded-lg border px-3 py-2 text-sm resize-none"
+                    className="mt-1 w-full rounded-lg border bg-white px-3 py-2 text-sm resize-none"
                     rows={2}
                     placeholder="Describe how the stock will be disposed…"
                     value={disposeForm.comment}

@@ -3,10 +3,12 @@
 import { useEffect, useState } from "react";
 import Link from "next/link";
 import { api } from "@/lib/api";
+import { useMedicines } from "@/lib/medicines-cache";
 import { useAuth } from "@/lib/auth-context";
 import { isAdminDashboardRole } from "@/lib/roles";
 import { can } from "@/lib/permissions";
 import { useRequirePermission } from "@/hooks/useRequirePermission";
+import { SkeletonRows } from "@/components/ui/page-skeleton";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -49,7 +51,8 @@ export default function ReturnsPage() {
   const canCreate = can(user?.permissions, "returns", "create");
 
   const [returns, setReturns] = useState<ReturnRecord[]>([]);
-  const [medicines, setMedicines] = useState<Medicine[]>([]);
+  const [loadingReturns, setLoadingReturns] = useState(true);
+  const { data: medicines = [] } = useMedicines();
   const [allFacilities, setAllFacilities] = useState<Facility[]>([]);
   const [facilityFilter, setFacilityFilter] = useState("");
 
@@ -61,14 +64,17 @@ export default function ReturnsPage() {
   const [ams, setAms] = useState(emptyAms);
 
   const load = () => {
+    setLoadingReturns(true);
     const params = new URLSearchParams();
     if (isAdmin && facilityFilter) params.set("facilityId", facilityFilter);
-    api<ReturnRecord[]>(`/returns?${params}`).then((r) => setReturns(r.filter((x) => x.returnType !== "PATIENT_RETURN"))).catch(() => {});
+    api<ReturnRecord[]>(`/returns?${params}`)
+      .then((r) => setReturns(r.filter((x) => x.returnType !== "PATIENT_RETURN")))
+      .catch(() => {})
+      .finally(() => setLoadingReturns(false));
   };
 
   useEffect(() => { load(); }, [facilityFilter, isAdmin]);
   useEffect(() => {
-    api<Medicine[]>("/medicines").then(setMedicines).catch(() => {});
     api<Facility[]>("/auth/facilities").then(setAllFacilities).catch(() => {});
   }, []);
 
@@ -111,7 +117,7 @@ export default function ReturnsPage() {
         </div>
         <div className="flex flex-wrap items-center gap-2">
           {isAdmin && (
-            <select className="h-10 rounded-lg border px-3 text-sm" value={facilityFilter} onChange={(e) => setFacilityFilter(e.target.value)}>
+            <select className="h-10 rounded-lg border bg-white px-3 text-sm" value={facilityFilter} onChange={(e) => setFacilityFilter(e.target.value)}>
               <option value="">All Facilities</option>
               {allFacilities.map((f) => <option key={f.id} value={f.id}>{f.name} ({f.code})</option>)}
             </select>
@@ -136,7 +142,7 @@ export default function ReturnsPage() {
             <form onSubmit={submit} className="space-y-3">
               <div>
                 <Label>Receiving AMS / Medical Store *</Label>
-                <select className="mt-1 h-10 w-full rounded-lg border px-3 text-sm" value={ams.receivingFacilityId} onChange={(e) => setAms({ ...ams, receivingFacilityId: e.target.value })} required>
+                <select className="mt-1 h-10 w-full rounded-lg border bg-white px-3 text-sm" value={ams.receivingFacilityId} onChange={(e) => setAms({ ...ams, receivingFacilityId: e.target.value })} required>
                   <option value="">Select AMS…</option>
                   {amsFacilities.map((f) => <option key={f.id} value={f.id}>{f.name} ({f.facilityType})</option>)}
                 </select>
@@ -152,7 +158,7 @@ export default function ReturnsPage() {
               </div>
               <div>
                 <Label>Return Reason *</Label>
-                <select className="mt-1 h-10 w-full rounded-lg border px-3 text-sm" value={ams.returnReason} onChange={(e) => setAms({ ...ams, returnReason: e.target.value })}>
+                <select className="mt-1 h-10 w-full rounded-lg border bg-white px-3 text-sm" value={ams.returnReason} onChange={(e) => setAms({ ...ams, returnReason: e.target.value })}>
                   <option>Near expiry</option>
                   <option>Surplus stock</option>
                   <option>Product recall</option>
@@ -182,7 +188,9 @@ export default function ReturnsPage() {
               </tr>
             </thead>
             <tbody>
-              {returns.map((r) => (
+              {loadingReturns ? (
+                <SkeletonRows rows={5} cols={6} />
+              ) : returns.map((r) => (
                 <tr key={r.id} className="border-b align-middle">
                   <td className="p-3">
                     <span className={`rounded-full px-2 py-0.5 text-sm font-medium ${TYPE_COLOR[r.returnType] ?? "bg-slate-100 text-slate-600"}`}>
@@ -196,7 +204,7 @@ export default function ReturnsPage() {
                   <td className="p-3 whitespace-nowrap text-slate-500">{formatDateTime(r.createdAt)}</td>
                 </tr>
               ))}
-              {returns.length === 0 && (
+              {!loadingReturns && returns.length === 0 && (
                 <tr><td colSpan={6} className="p-6 text-center text-muted-foreground">No returns recorded yet.</td></tr>
               )}
             </tbody>

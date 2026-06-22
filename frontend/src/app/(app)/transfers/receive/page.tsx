@@ -8,6 +8,7 @@ import { isCrossFacilityRole } from "@/lib/roles";
 import { useRequirePermission } from "@/hooks/useRequirePermission";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
+import { SkeletonRows } from "@/components/ui/page-skeleton";
 
 interface Transfer {
   id: string;
@@ -64,7 +65,11 @@ export default function ReceiveTransferPage() {
       <Card>
         <CardContent className="p-0">
           {loading ? (
-            <p className="p-6 text-center text-sm text-slate-500">Loading…</p>
+            <div className="overflow-x-auto">
+              <table className="w-full text-sm">
+                <tbody><SkeletonRows rows={5} cols={6} /></tbody>
+              </table>
+            </div>
           ) : transfers.length === 0 ? (
             <p className="p-6 text-center text-sm text-slate-400">No incoming transfers awaiting receipt.</p>
           ) : (

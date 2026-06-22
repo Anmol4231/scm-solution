@@ -2,13 +2,15 @@
 
 import { useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
-import { Pencil, Plus, ScrollText, Search, Tags, Thermometer, Trash2, FileText } from "lucide-react";
+import { Pencil, Plus, Search, Tags, Thermometer, Trash2, FileText } from "lucide-react";
 import { api } from "@/lib/api";
+import { invalidateMedicinesCache } from "@/lib/medicines-cache";
 import { useAuth } from "@/lib/auth-context";
 import { isMasterDataAdminRole } from "@/lib/roles";
 import { useRequirePermission } from "@/hooks/useRequirePermission";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { CardSkeletons } from "@/components/ui/page-skeleton";
 import { Label } from "@/components/ui/label";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { sanitizeCategoryName } from "@/lib/validation";
@@ -226,6 +228,7 @@ export default function CategoriesPage() {
         body: JSON.stringify(payload),
       });
       setSuccess(editingId ? "Category updated" : `Category "${form.name}" created`);
+      invalidateMedicinesCache();
       resetForm();
       loadCategories();
     } catch (err) {
@@ -236,10 +239,11 @@ export default function CategoriesPage() {
   const deleteCategory = async (c: Category, e: React.MouseEvent) => {
     e.stopPropagation();
     if (!isAdmin) return;
-    if (!window.confirm(`Delete category "${c.name}"? It can be restored from Recovery.`)) return;
+    if (!window.confirm(`Delete category "${c.name}"? It can be restored from Archived Records.`)) return;
     try {
       await api(`/categories/${c.id}`, { method: "DELETE" });
       setSuccess(`Category "${c.name}" deleted`);
+      invalidateMedicinesCache();
       loadCategories();
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to delete category");
@@ -256,26 +260,29 @@ export default function CategoriesPage() {
 
   return (
     <div className="space-y-6">
+      {showForm && (
+        <button type="button" onClick={resetForm} className="text-sm text-medflow-600 hover:underline">
+          ← Stock Categories
+        </button>
+      )}
+
       {/* ── Header ── */}
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div>
-          <h1 className="text-2xl font-bold">Stock Categories</h1>
-          <p className="text-sm text-muted-foreground">
-            {isAdmin ? "Manage stock categories. Click a card to open its medicines." : "Browse categories. Click a card to open its medicines."}
-          </p>
+          <h1 className="text-2xl font-bold">
+            {showForm ? (editingId ? "Edit Category" : "Add Category") : "Stock Categories"}
+          </h1>
+
         </div>
-        <div className="flex flex-wrap items-center gap-2">
-          {isAdmin && (
-            <>
-              <Button variant="outline" size="sm" onClick={() => router.push("/settings/audit")}>
-                <ScrollText className="mr-1.5 h-3.5 w-3.5" /> Audit Trail &amp; Restore
-              </Button>
+        {!showForm && (
+          <div className="flex flex-wrap items-center gap-2">
+            {isAdmin && (
               <Button onClick={startAdd}>
                 <Plus className="mr-2 h-4 w-4" /> Add Category
               </Button>
-            </>
-          )}
-        </div>
+            )}
+          </div>
+        )}
       </div>
 
       {error && <p className="rounded-lg bg-red-50 p-3 text-sm text-red-700">{error}</p>}
@@ -332,64 +339,67 @@ export default function CategoriesPage() {
       )}
 
       {/* ── Search + Filter ── */}
-      <div className="flex flex-wrap items-center gap-3">
-        <div className="relative max-w-sm flex-1">
-          <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
-          <Input
-            className="pl-9"
-            placeholder=""
-            value={query}
-            onChange={(e) => setQuery(e.target.value)}
-          />
-        </div>
-        <div className="flex gap-1.5">
-          {FILTER_OPTIONS.map((f) => (
-            <button
-              key={f.key}
-              type="button"
-              onClick={() => setActiveFilter(f.key)}
-              className={`rounded-full border px-3 py-1 text-sm font-medium transition ${
-                activeFilter === f.key
-                  ? "border-medflow-400 bg-medflow-50 text-medflow-700"
-                  : "border-slate-200 text-slate-600 hover:bg-slate-50"
-              }`}
-            >
-              {f.label}
-            </button>
-          ))}
-        </div>
-      </div>
+      {!showForm && (
+        <>
+          <div className="flex flex-wrap items-center gap-3">
+            <div className="relative max-w-sm flex-1">
+              <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
+              <Input
+                className="pl-9"
+                placeholder=""
+                value={query}
+                onChange={(e) => setQuery(e.target.value)}
+              />
+            </div>
+            <div className="flex gap-1.5">
+              {FILTER_OPTIONS.map((f) => (
+                <button
+                  key={f.key}
+                  type="button"
+                  onClick={() => setActiveFilter(f.key)}
+                  className={`rounded-full border px-3 py-1 text-sm font-medium transition ${
+                    activeFilter === f.key
+                      ? "border-medflow-400 bg-medflow-50 text-medflow-700"
+                      : "border-slate-200 text-slate-600 hover:bg-slate-50"
+                  }`}
+                >
+                  {f.label}
+                </button>
+              ))}
+            </div>
+          </div>
 
-      {/* ── Cards ── */}
-      {loading ? (
-        <div className="flex items-center gap-2 py-8 text-sm text-muted-foreground">
-          <div className="h-4 w-4 animate-spin rounded-full border-2 border-medflow-400 border-t-transparent" />
-          Loading categories…
-        </div>
-      ) : visible.length === 0 ? (
-        <div className="rounded-lg border border-dashed py-10 text-center">
-          <p className="text-sm text-muted-foreground">
-            {query || activeFilter !== "all" ? "No categories match your search." : "No categories found."}
-          </p>
-          {isAdmin && !query && activeFilter === "all" && (
-            <Button size="sm" className="mt-3" onClick={startAdd}>
-              <Plus className="mr-2 h-4 w-4" /> Add Category
-            </Button>
+          {/* ── Cards ── */}
+          {loading ? (
+            <div className="grid gap-4 sm:grid-cols-2 md:grid-cols-3 xl:grid-cols-4">
+              <CardSkeletons count={8} />
+            </div>
+          ) : visible.length === 0 ? (
+            <div className="rounded-lg border border-dashed py-10 text-center">
+              <p className="text-sm text-muted-foreground">
+                {query || activeFilter !== "all" ? "No categories match your search." : "No categories found."}
+              </p>
+              {isAdmin && !query && activeFilter === "all" && (
+                <Button size="sm" className="mt-3" onClick={startAdd}>
+                  <Plus className="mr-2 h-4 w-4" /> Add Category
+                </Button>
+              )}
+            </div>
+          ) : (
+            <div className="grid gap-4 sm:grid-cols-2 md:grid-cols-3 xl:grid-cols-4">
+              {visible.map((c) => (
+                <CategoryCard
+                  key={c.id}
+                  category={c}
+                  isAdmin={isAdmin}
+                  onOpen={() => openCategory(c)}
+                  onEdit={startEdit}
+                  onDelete={deleteCategory}
+                />
+              ))}
+            </div>
           )}
-        </div>
-      ) : (
-        <div className="grid gap-4 sm:grid-cols-2 md:grid-cols-3 xl:grid-cols-4">
-          {visible.map((c) => (
-            <CategoryCard
-              key={c.id}
-              category={c}
-              isAdmin={isAdmin}
-              onOpen={() => openCategory(c)}
-              onEdit={startEdit}
-              onDelete={deleteCategory}
-            />
-          ))}
-        </div>
+        </>
       )}
     </div>
   );

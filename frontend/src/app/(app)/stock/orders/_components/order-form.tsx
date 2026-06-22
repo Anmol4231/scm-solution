@@ -5,6 +5,7 @@ import { useRouter } from "next/navigation";
 import Link from "next/link";
 import { Plus, X } from "lucide-react";
 import { api } from "@/lib/api";
+import { useMedicines } from "@/lib/medicines-cache";
 import { useAuth } from "@/lib/auth-context";
 import { useRequirePermission } from "@/hooks/useRequirePermission";
 import { isAdminDashboardRole } from "@/lib/roles";
@@ -62,7 +63,7 @@ export function OrderForm({ orderId }: { orderId?: string }) {
 
   const [sources, setSources] = useState<OrderSource[]>([]);
   const [facilities, setFacilities] = useState<{ id: string; name: string; code: string }[]>([]);
-  const [medicines, setMedicines] = useState<MedicineOption[]>([]);
+  const { data: medicines = [] } = useMedicines();
   const [loadingOrder, setLoadingOrder] = useState(!!orderId);
   const [submitting, setSubmitting] = useState(false);
   const [formError, setFormError] = useState("");
@@ -72,7 +73,6 @@ export function OrderForm({ orderId }: { orderId?: string }) {
 
   useEffect(() => {
     api<OrderSource[]>("/orders/sources").then(setSources);
-    api<MedicineOption[]>("/medicines").then(setMedicines);
     if (isAdmin) {
       api<{ id: string; name: string; code: string }[]>("/auth/facilities")
         .then(setFacilities)
@@ -238,7 +238,7 @@ export function OrderForm({ orderId }: { orderId?: string }) {
               <div>
                 <Label>Receiving Facility *</Label>
                 <select
-                  className="mt-1 h-11 w-full rounded-lg border px-3 text-sm"
+                  className="mt-1 h-11 w-full rounded-lg border bg-white px-3 text-sm"
                   value={form.facilityId}
                   onChange={(e) => setForm({ ...form, facilityId: e.target.value })}
                   required
@@ -256,7 +256,7 @@ export function OrderForm({ orderId }: { orderId?: string }) {
               <div>
                 <Label>Source / Supplier</Label>
                 <select
-                  className="mt-1 h-11 w-full rounded-lg border px-3 text-sm"
+                  className="mt-1 h-11 w-full rounded-lg border bg-white px-3 text-sm"
                   value={form.sourceId}
                   onChange={(e) => setForm({ ...form, sourceId: e.target.value })}
                 >

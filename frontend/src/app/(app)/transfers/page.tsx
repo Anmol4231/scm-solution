@@ -6,6 +6,8 @@ import { api } from "@/lib/api";
 import { useAuth } from "@/lib/auth-context";
 import { isCrossFacilityRole } from "@/lib/roles";
 import { useRequirePermission } from "@/hooks/useRequirePermission";
+import { SkeletonRows } from "@/components/ui/page-skeleton";
+import { Eye } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { formatDate } from "@/lib/datetime";
@@ -123,7 +125,7 @@ export default function TransfersPage() {
             </thead>
             <tbody className="divide-y">
               {loading ? (
-                <tr><td colSpan={7} className="p-6 text-center text-slate-400">Loading…</td></tr>
+                <SkeletonRows rows={6} cols={7} />
               ) : visible.length === 0 ? (
                 <tr><td colSpan={7} className="p-8 text-center text-slate-400">No transfers.</td></tr>
               ) : (
@@ -145,7 +147,12 @@ export default function TransfersPage() {
                       <td className="p-3 whitespace-nowrap text-slate-500">{formatDate(t.createdAt)}</td>
                       <td className="p-3">
                         <Link href={`/transfers/${t.id}`}>
-                          <Button size="sm" variant="outline">Details</Button>
+                          <Button size="sm" variant="ghost"
+                            className="h-8 w-8 p-0 text-slate-500 hover:bg-slate-100 hover:text-slate-700"
+                            title="View transfer details" aria-label="View transfer details"
+                          >
+                            <Eye className="h-4 w-4" aria-hidden="true" />
+                          </Button>
                         </Link>
                       </td>
                     </tr>

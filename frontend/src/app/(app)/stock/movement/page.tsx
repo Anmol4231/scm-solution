@@ -101,7 +101,7 @@ export default function StockMovementPage() {
         {isAdmin && (
           <div onFocus={loadFacilities}>
             <label className="mb-1 block text-sm font-medium text-slate-600">Facility</label>
-            <select value={facilityId} onChange={(e) => setFacilityId(e.target.value)} className="h-9 rounded-lg border px-2 text-sm">
+            <select value={facilityId} onChange={(e) => setFacilityId(e.target.value)} className="h-9 rounded-lg border bg-white px-2 text-sm">
               <option value="">All Facilities</option>
               {facilities.map((f) => <option key={f.id} value={f.id}>{f.name} ({f.code})</option>)}
             </select>

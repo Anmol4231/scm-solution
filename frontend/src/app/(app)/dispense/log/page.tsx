@@ -417,7 +417,7 @@ export default function DispensingReportsPage() {
                 <div>
                   <Label className="text-xs">Facility</Label>
                   <select
-                    className="h-9 w-full rounded-lg border px-3 text-sm"
+                    className="h-9 w-full rounded-lg border bg-white px-3 text-sm"
                     value={filters.facilityId}
                     onChange={(e) => pf({ facilityId: e.target.value })}
                   >
@@ -553,11 +553,13 @@ export default function DispensingReportsPage() {
                     <td className="p-2 pr-4 text-right">
                       <Button
                         size="sm"
-                        variant="outline"
+                        variant="ghost"
                         onClick={() => setDetailGroup(g)}
-                        className="h-7 px-2 text-xs"
+                        className="h-8 w-8 p-0 text-slate-500 hover:bg-slate-100 hover:text-slate-700"
+                        title="View details"
+                        aria-label="View dispensing details"
                       >
-                        <Eye className="mr-1 h-3.5 w-3.5" /> View
+                        <Eye className="h-4 w-4" aria-hidden="true" />
                       </Button>
                     </td>
                   </tr>

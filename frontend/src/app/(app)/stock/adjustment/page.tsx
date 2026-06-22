@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 import Link from "next/link";
 import { api } from "@/lib/api";
+import { useMedicines } from "@/lib/medicines-cache";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -10,14 +11,12 @@ import { Card, CardContent } from "@/components/ui/card";
 import { MedicineCombobox } from "@/components/ui/medicine-combobox";
 
 export default function AdjustmentPage() {
-  const [medicines, setMedicines] = useState<{ id: string; medicineName: string }[]>([]);
+  const { data: medicines = [] } = useMedicines();
   const [systemBalance, setSystemBalance] = useState<number | null>(null);
   const [form, setForm] = useState({ medicineId: "", physicalCount: "", reason: "" });
   const [error, setError] = useState("");
   const [success, setSuccess] = useState("");
   const [busy, setBusy] = useState(false);
-
-  useEffect(() => { api("/medicines").then(setMedicines); }, []);
 
   useEffect(() => {
     setSystemBalance(null);

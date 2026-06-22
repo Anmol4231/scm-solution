@@ -11,6 +11,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { PageSkeleton } from "@/components/ui/page-skeleton";
 import { formatDateTime, formatDate, dateInputMax } from "@/lib/datetime";
 import { DateInput } from "@/components/ui/date-input";
 
@@ -123,7 +124,7 @@ export default function OrderDetailPage() {
   useEffect(() => { if (orderId) load(); }, [orderId]);
 
   if (!hasAccess) return null;
-  if (loading) return <div className="p-8 text-center text-slate-500">Loading…</div>;
+  if (loading) return <PageSkeleton />;
   if (!order) return <div className="p-8 text-center text-red-600">{error || "Order not found"}</div>;
 
   const remaining = (line: OrderLine) => Math.max(line.quantityOrdered - (line.quantityReceived ?? 0), 0);

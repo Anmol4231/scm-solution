@@ -10,6 +10,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { PageSkeleton } from "@/components/ui/page-skeleton";
 
 interface Category {
   id: string;
@@ -96,7 +97,7 @@ export default function MedicineDetailPage() {
     if (isAdmin) api<Category[]>("/categories").then(setCategories).catch(console.error);
   }, [id, user?.facilityId, isAdmin]);
 
-  if (!data) return <p className="text-muted-foreground">Loading medicine details...</p>;
+  if (!data) return <PageSkeleton />;
 
   const m = data.medicine;
 
@@ -143,7 +144,7 @@ export default function MedicineDetailPage() {
   };
 
   const deleteMedicine = async () => {
-    if (!window.confirm(`Delete ${m.medicineName}? It can be restored from Audit Trail & Restore.`)) return;
+    if (!window.confirm(`Delete ${m.medicineName}? It can be restored from Audit Logs.`)) return;
     try {
       await api(`/medicines/${id}`, { method: "DELETE" });
       router.push("/medicines");
@@ -182,7 +183,7 @@ export default function MedicineDetailPage() {
             <form onSubmit={saveMedicine} className="grid gap-3 md:grid-cols-2">
               <div className="md:col-span-2">
                 <Label>Category *</Label>
-                <select className="h-11 w-full rounded-lg border px-3" value={form.categoryId} onChange={(e) => setForm({ ...form, categoryId: e.target.value })} required>
+                <select className="h-11 w-full rounded-lg border bg-white px-3" value={form.categoryId} onChange={(e) => setForm({ ...form, categoryId: e.target.value })} required>
                   <option value="">Select category</option>
                   {categories.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
                 </select>

@@ -3,12 +3,14 @@
 import { useCallback, useEffect, useState } from "react";
 import Link from "next/link";
 import { api } from "@/lib/api";
+import { useMedicines } from "@/lib/medicines-cache";
 import { dateInputMin, dateInputMax } from "@/lib/datetime";
 import { DateInput } from "@/components/ui/date-input";
 import { useAuth } from "@/lib/auth-context";
 import { isAdminDashboardRole } from "@/lib/roles";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { SkeletonRows } from "@/components/ui/page-skeleton";
 
 interface Tx {
   id: string;
@@ -59,11 +61,10 @@ export default function TransactionsPage() {
   const [to, setTo] = useState("");
   const [facilityId, setFacilityId] = useState("");
   const [facilities, setFacilities] = useState<{ id: string; name: string; code: string }[]>([]);
-  const [medicines, setMedicines] = useState<{ id: string; medicineName: string }[]>([]);
+  const { data: medicines = [] } = useMedicines();
 
   useEffect(() => {
     if (isAdmin) api<{ id: string; name: string; code: string }[]>("/auth/facilities").then(setFacilities).catch(() => {});
-    api<{ id: string; medicineName: string }[]>("/medicines").then(setMedicines).catch(() => {});
   }, [isAdmin]);
 
   const load = useCallback(() => {
@@ -96,7 +97,7 @@ export default function TransactionsPage() {
         {isAdmin && (
           <div>
             <label className="mb-1 block text-sm font-medium text-slate-600">Facility</label>
-            <select value={facilityId} onChange={(e) => { setFacilityId(e.target.value); setPage(0); }} className="h-9 rounded-lg border px-2 text-sm">
+            <select value={facilityId} onChange={(e) => { setFacilityId(e.target.value); setPage(0); }} className="h-9 rounded-lg border bg-white px-2 text-sm">
               <option value="">All Facilities</option>
               {facilities.map((f) => <option key={f.id} value={f.id}>{f.name} ({f.code})</option>)}
             </select>
@@ -104,14 +105,14 @@ export default function TransactionsPage() {
         )}
         <div>
           <label className="mb-1 block text-sm font-medium text-slate-600">Type</label>
-          <select value={type} onChange={(e) => { setType(e.target.value); setPage(0); }} className="h-9 rounded-lg border px-2 text-sm">
+          <select value={type} onChange={(e) => { setType(e.target.value); setPage(0); }} className="h-9 rounded-lg border bg-white px-2 text-sm">
             <option value="">All Types</option>
             {ALL_TYPES.map((t) => <option key={t} value={t}>{t.replace(/_/g, " ")}</option>)}
           </select>
         </div>
         <div>
           <label className="mb-1 block text-sm font-medium text-slate-600">Product</label>
-          <select value={medicineId} onChange={(e) => { setMedicineId(e.target.value); setPage(0); }} className="h-9 rounded-lg border px-2 text-sm">
+          <select value={medicineId} onChange={(e) => { setMedicineId(e.target.value); setPage(0); }} className="h-9 rounded-lg border bg-white px-2 text-sm">
             <option value="">All Products</option>
             {medicines.map((m) => <option key={m.id} value={m.id}>{m.medicineName}</option>)}
           </select>
@@ -156,7 +157,7 @@ export default function TransactionsPage() {
           </thead>
           <tbody className="divide-y">
             {loading ? (
-              <tr><td colSpan={isAdmin ? 11 : 10} className="py-8 text-center text-slate-400">Loading…</td></tr>
+              <SkeletonRows rows={8} cols={isAdmin ? 11 : 10} />
             ) : !data?.transactions.length ? (
               <tr><td colSpan={isAdmin ? 11 : 10} className="py-8 text-center text-slate-400">No transactions found.</td></tr>
             ) : (

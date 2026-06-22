@@ -29,6 +29,7 @@ import {
   Stethoscope,
   Building2,
 } from "lucide-react";
+import { StatCardSkeletons } from "@/components/ui/page-skeleton";
 import type { LucideIcon } from "lucide-react";
 
 interface FacilityDashboard {
@@ -97,15 +98,21 @@ export default function DashboardPage() {
       </div>
 
       <div className="grid grid-cols-2 gap-3 md:grid-cols-3 lg:grid-cols-5">
-        <StatCard icon={Pill} label="Medicines" value={w?.totalMedicines ?? 0} />
-        <StatCard icon={Users} label="Patients" value={w?.totalPatients ?? 0} />
-        <StatCard icon={Stethoscope} label="Staff" value={w?.totalHealthcareWorkers ?? 0} />
-        <StatCard icon={Building2} label="Facilities" value={w?.totalFacilities ?? 1} />
-        <StatCard icon={Pill} label="Dispensed today" value={w?.dispensingToday ?? data?.dispensingToday ?? 0} />
-        <StatCard icon={AlertTriangle} label="Low stock" value={w?.lowStockCount ?? data?.lowStock?.length ?? 0} color="text-amber-600" />
-        <StatCard icon={Package} label="Near expiry" value={w?.nearExpiryCount ?? data?.expiring?.length ?? 0} color="text-red-600" />
-        <StatCard icon={ArrowLeftRight} label="Pending transfers" value={w?.pendingTransfers ?? 0} />
-        <StatCard icon={RotateCcw} label="Pending returns" value={w?.pendingReturns ?? 0} />
+        {!data ? (
+          <StatCardSkeletons count={9} />
+        ) : (
+          <>
+            <StatCard icon={Pill} label="Medicines" value={w?.totalMedicines ?? 0} />
+            <StatCard icon={Users} label="Patients" value={w?.totalPatients ?? 0} />
+            <StatCard icon={Stethoscope} label="Staff" value={w?.totalHealthcareWorkers ?? 0} />
+            <StatCard icon={Building2} label="Facilities" value={w?.totalFacilities ?? 1} />
+            <StatCard icon={Pill} label="Dispensed today" value={w?.dispensingToday ?? data?.dispensingToday ?? 0} />
+            <StatCard icon={AlertTriangle} label="Low stock" value={w?.lowStockCount ?? data?.lowStock?.length ?? 0} color="text-amber-600" />
+            <StatCard icon={Package} label="Near expiry" value={w?.nearExpiryCount ?? data?.expiring?.length ?? 0} color="text-red-600" />
+            <StatCard icon={ArrowLeftRight} label="Pending transfers" value={w?.pendingTransfers ?? 0} />
+            <StatCard icon={RotateCcw} label="Pending returns" value={w?.pendingReturns ?? 0} />
+          </>
+        )}
       </div>
 
       <div className="grid gap-4 lg:grid-cols-2">

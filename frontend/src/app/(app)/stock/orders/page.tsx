@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 import Link from "next/link";
 import { Eye, Pencil, Printer, Trash2, Plus } from "lucide-react";
+import { SkeletonRows } from "@/components/ui/page-skeleton";
 import { api } from "@/lib/api";
 import { useAuth } from "@/lib/auth-context";
 import { useRequirePermission } from "@/hooks/useRequirePermission";
@@ -75,15 +76,17 @@ export default function OrdersPage() {
   const [orders, setOrders] = useState<StockOrder[]>([]);
   const [facilities, setFacilities] = useState<{ id: string; name: string; code: string }[]>([]);
   const [facilityFilter, setFacilityFilter] = useState("");
+  const [loading, setLoading] = useState(true);
   const [success, setSuccess] = useState("");
   const [error, setError] = useState("");
 
   const load = () => {
+    setLoading(true);
     const params = new URLSearchParams();
     if (isAdmin && facilityFilter) params.set("facilityId", facilityFilter);
-    api<ApiStockOrder[]>(`/orders?${params}`).then((items) =>
-      setOrders(items.map((item) => ({ ...item, source: item[SOURCE_FIELD] as OrderSource | undefined })))
-    );
+    api<ApiStockOrder[]>(`/orders?${params}`)
+      .then((items) => setOrders(items.map((item) => ({ ...item, source: item[SOURCE_FIELD] as OrderSource | undefined }))))
+      .finally(() => setLoading(false));
     if (isAdmin) api<{ id: string; name: string; code: string }[]>("/auth/facilities").then(setFacilities).catch(() => {});
   };
 
@@ -135,7 +138,7 @@ export default function OrdersPage() {
         <div className="flex flex-wrap items-center gap-2">
           {isAdmin && (
             <select
-              className="h-10 rounded-lg border px-3 text-sm"
+              className="h-10 rounded-lg border bg-white px-3 text-sm"
               value={facilityFilter}
               onChange={(e) => setFacilityFilter(e.target.value)}
             >
@@ -181,7 +184,11 @@ export default function OrdersPage() {
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-100">
-              {orders.map((o) => {
+              {loading ? (
+                <SkeletonRows rows={6} cols={7} />
+              ) : orders.length === 0 ? (
+                <tr><td colSpan={7} className="p-8 text-center text-slate-400">No orders found.</td></tr>
+              ) : orders.map((o) => {
                 const ds = displayStatus(o);
                 const locked = isOrderLocked(o);
                 const { date: crDate, time: crTime } = formatDateTimeParts(o.createdAt);
@@ -270,11 +277,6 @@ export default function OrdersPage() {
                   </tr>
                 );
               })}
-              {orders.length === 0 && (
-                <tr>
-                  <td colSpan={7} className="p-8 text-center text-slate-400">No orders yet.</td>
-                </tr>
-              )}
             </tbody>
           </table>
         </div>

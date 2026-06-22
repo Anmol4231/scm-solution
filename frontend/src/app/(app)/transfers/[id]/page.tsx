@@ -11,6 +11,7 @@ import { useRequirePermission } from "@/hooks/useRequirePermission";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { PageSkeleton } from "@/components/ui/page-skeleton";
 import { formatDateTime, formatDate } from "@/lib/datetime";
 
 interface TransferLine {
@@ -32,6 +33,7 @@ interface TransferDetail {
   transferCode: string;
   status: string;
   authorizationNotes: string | null;
+  receiptNotes: string | null;
   createdAt: string;
   dispatchedAt: string | null;
   receivedAt: string | null;
@@ -68,6 +70,7 @@ export default function TransferDetailPage() {
   const [finalizeShortfall, setFinalizeShortfall] = useState(false);
   const [mismatchReason, setMismatchReason] = useState<Record<string, string>>({});
   const [remarks, setRemarks] = useState<Record<string, string>>({});
+  const [receiptNotes, setReceiptNotes] = useState("");
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -88,7 +91,7 @@ export default function TransferDetailPage() {
   useEffect(() => { if (transferId) load(); }, [transferId, load]);
 
   if (!hasAccess) return null;
-  if (loading) return <div className="p-8 text-center text-slate-500">Loading…</div>;
+  if (loading) return <PageSkeleton />;
   if (!transfer) return <div className="p-8 text-center text-red-600">{error || "Transfer not found"}</div>;
 
   const isCrossAdmin = isCrossFacilityRole(user?.role);
@@ -166,7 +169,7 @@ export default function TransferDetailPage() {
       finalizeShortfall ? "Receipt recorded; transfer closed with documented shortfall." : "Receipt recorded.",
       () => api(`/transfers/${transfer.id}/receive-multi`, {
         method: "POST",
-        body: JSON.stringify({ lines, finalizeShortfall }),
+        body: JSON.stringify({ lines, finalizeShortfall, notes: receiptNotes.trim() || undefined }),
       })
     );
   };
@@ -207,7 +210,8 @@ export default function TransferDetailPage() {
             <div><p className="text-sm font-medium uppercase tracking-wide text-slate-500">Date Received</p><p className="font-medium">{transfer.receivedAt ? formatDateTime(transfer.receivedAt) : "—"}</p></div>
             <div><p className="text-sm font-medium uppercase tracking-wide text-slate-500">Received by</p><p className="font-medium">{personName(transfer.receivedBy)}</p></div>
           </div>
-          {transfer.authorizationNotes && <p className="mt-3 border-t pt-3 text-sm text-slate-600">Notes: {transfer.authorizationNotes}</p>}
+          {transfer.authorizationNotes && <p className="mt-3 border-t pt-3 text-sm text-slate-600">Sender notes: {transfer.authorizationNotes}</p>}
+          {transfer.receiptNotes && <p className="mt-2 text-sm text-slate-600">Receipt notes: {transfer.receiptNotes}</p>}
         </CardContent>
       </Card>
 
@@ -316,6 +320,9 @@ export default function TransferDetailPage() {
                 </tbody>
               </table>
             </div>
+            {transfer.receiptNotes && (
+              <p className="text-sm text-slate-600"><span className="font-medium">Receipt notes:</span> {transfer.receiptNotes}</p>
+            )}
             {transfer.lines.some((l) => l.mismatchReason) && (
               <div className="space-y-1.5 rounded-lg border border-orange-200 bg-orange-50 p-3">
                 <p className="text-xs font-semibold uppercase tracking-wide text-orange-700">Mismatch Notes</p>
@@ -414,9 +421,20 @@ export default function TransferDetailPage() {
               </table>
             </div>
 
+            <div>
+              <label className="mb-1 block text-sm font-medium text-slate-700">Receipt Notes</label>
+              <textarea
+                className="w-full rounded-lg border bg-white px-3 py-2 text-sm resize-none"
+                rows={2}
+                placeholder="Optional — any notes about this receipt"
+                value={receiptNotes}
+                onChange={(e) => setReceiptNotes(e.target.value)}
+              />
+            </div>
+
             <label className="flex items-center gap-2 text-sm text-slate-600">
               <input type="checkbox" className="h-4 w-4 accent-medflow-600" checked={finalizeShortfall} onChange={(e) => setFinalizeShortfall(e.target.checked)} />
-              Close transfer now and record any undelivered remainder as a documented loss (use when no further delivery is expected).
+              Finalize with shortfall — close transfer and document undelivered items as loss
             </label>
             <Button onClick={submitReceive} disabled={busy} className="bg-emerald-600 text-white hover:bg-emerald-700">
               {busy ? "Saving…" : finalizeShortfall ? "Receive & Close" : "Confirm Receipt"}

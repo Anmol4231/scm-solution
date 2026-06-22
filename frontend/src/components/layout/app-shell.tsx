@@ -26,6 +26,7 @@ import { can, type ModuleKey, type PermissionMatrix } from "@/lib/permissions";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { GlobalSearch } from "@/components/layout/global-search";
+import { NavigationProgress } from "@/components/layout/navigation-progress";
 import { useOffline } from "@/lib/offline/offline-context";
 
 type NavItem = {
@@ -43,6 +44,13 @@ type NavItem = {
 };
 
 type NavSection = { title?: string; items: NavItem[] };
+
+/**
+ * Offline/sync UI is built and working but intentionally hidden for now.
+ * Flip to `true` to re-enable the top banner and the nav sync badge.
+ * (The /sync page and offline engine remain fully wired up.)
+ */
+const SHOW_OFFLINE_UI = false;
 
 function buildNav(
   isMasterAdmin: boolean,
@@ -86,7 +94,7 @@ function buildNav(
     {
       title: "Administration",
       items: [
-        { href: "/settings/audit", label: "Audit Trail & Restore", icon: ScrollText, adminOnly: true, module: "audit" as ModuleKey },
+        { href: "/settings/audit", label: "Audit Logs", icon: ScrollText, adminOnly: true, module: "audit" as ModuleKey },
         { href: "/settings", label: "User Settings", icon: Settings },
       ],
     },
@@ -155,7 +163,8 @@ export function AppShell({ children }: { children: React.ReactNode }) {
 
   return (
     <div className="min-h-screen bg-slate-50">
-      {(!isOnline || pendingCount > 0) && (
+      <NavigationProgress />
+      {SHOW_OFFLINE_UI && (!isOnline || pendingCount > 0) && (
         <div
           className={cn(
             "border-b px-4 py-1.5 text-center text-sm font-medium",
@@ -277,7 +286,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
                     >
                       <Icon className="h-5 w-5 shrink-0" />
                       {item.label}
-                      {item.href === "/sync" && pendingCount > 0 && (
+                      {SHOW_OFFLINE_UI && item.href === "/sync" && pendingCount > 0 && (
                         <span className="ml-auto rounded-full bg-amber-500 px-1.5 text-[10px] text-white">
                           {pendingCount}
                         </span>
@@ -294,10 +303,11 @@ export function AppShell({ children }: { children: React.ReactNode }) {
           </nav>
         </aside>
 
-        <main className="min-h-[calc(100vh-4rem)] min-w-0 flex-1 p-3 pb-28 sm:p-4 md:p-6 md:pb-6">
+        <main className="vt-page-content min-h-[calc(100vh-4rem)] min-w-0 flex-1 p-3 pb-28 sm:p-4 md:p-6 md:pb-6">
           {/* key={resetNonce} → a nav click remounts this subtree, resetting
-              every module's local state. `contents` keeps <main>'s layout. */}
-          <div key={resetNonce} className="contents">
+              every module's local state. animate-in gives a subtle fade on
+              every navigation, including same-route resets. */}
+          <div key={resetNonce} className="animate-in fade-in-0 duration-150">
             {children}
           </div>
         </main>

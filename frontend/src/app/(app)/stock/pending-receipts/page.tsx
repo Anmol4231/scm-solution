@@ -5,6 +5,7 @@ import Link from "next/link";
 import { api } from "@/lib/api";
 import { useAuth } from "@/lib/auth-context";
 import { isCrossFacilityRole } from "@/lib/roles";
+import { PageSkeleton } from "@/components/ui/page-skeleton";
 
 interface PendingVoucher {
   id: string;
@@ -45,7 +46,7 @@ export default function PendingReceiptsPage() {
     ]).then(([v, o]) => { setVouchers(v); setOrders(o); }).finally(() => setLoading(false));
   }, []);
 
-  if (loading) return <p className="text-sm text-slate-500 p-4">Loading…</p>;
+  if (loading) return <PageSkeleton />;
 
   return (
     <div className="space-y-6">

@@ -1,6 +1,7 @@
 ﻿"use client";
 
 import { useEffect, useState } from "react";
+import Link from "next/link";
 import { Pencil, Plus, Search, Trash2 } from "lucide-react";
 import { api } from "@/lib/api";
 import { Button } from "@/components/ui/button";
@@ -95,7 +96,7 @@ export default function HealthcareWorkersPage() {
   };
 
   const remove = async (w: Worker) => {
-    if (!window.confirm(`Delete "${w.firstName} ${w.lastName}"? This cannot be undone.`)) return;
+    if (!window.confirm(`Delete "${w.firstName} ${w.lastName}"? It can be restored from Audit Logs.`)) return;
     setError(""); setSuccess("");
     try {
       await api(`/healthcare-workers/${w.id}`, { method: "DELETE" });
@@ -108,6 +109,7 @@ export default function HealthcareWorkersPage() {
 
   return (
     <div className="space-y-4">
+      <Link href="/dispense" className="text-sm text-medflow-600 hover:underline">← Dispensing</Link>
       <div className="flex flex-wrap items-center justify-between gap-3">
         <h1 className="text-2xl font-bold">Staff</h1>
         <Button onClick={startAdd}><Plus className="mr-2 h-4 w-4" /> Register Staff</Button>
@@ -134,7 +136,7 @@ export default function HealthcareWorkersPage() {
               </div>
               <div>
                 <Label>Role / Designation *</Label>
-                <select className="h-11 w-full rounded-lg border px-3 text-sm" value={form.role} onChange={(e) => setForm({ ...form, role: e.target.value })}>
+                <select className="h-11 w-full rounded-lg border bg-white px-3 text-sm" value={form.role} onChange={(e) => setForm({ ...form, role: e.target.value })}>
                   {ROLES.map((r) => <option key={r} value={r}>{r}</option>)}
                 </select>
               </div>
@@ -210,12 +212,22 @@ export default function HealthcareWorkersPage() {
                     </span>
                   </td>
                   <td className="p-3">
-                    <div className="flex gap-1">
-                      <Button size="sm" variant="outline" onClick={() => startEdit(w)}>
-                        <Pencil className="mr-1 h-3.5 w-3.5" /> Edit
+                    <div className="flex gap-0.5">
+                      <Button
+                        size="sm" variant="ghost"
+                        className="h-8 w-8 p-0 text-slate-500 hover:bg-slate-100 hover:text-slate-700"
+                        title="Edit staff member" aria-label="Edit staff member"
+                        onClick={() => startEdit(w)}
+                      >
+                        <Pencil className="h-4 w-4" aria-hidden="true" />
                       </Button>
-                      <Button size="sm" variant="outline" onClick={() => remove(w)}>
-                        <Trash2 className="mr-1 h-3.5 w-3.5" /> Delete
+                      <Button
+                        size="sm" variant="ghost"
+                        className="h-8 w-8 p-0 text-slate-400 hover:bg-red-50 hover:text-red-600"
+                        title="Delete staff member" aria-label="Delete staff member"
+                        onClick={() => remove(w)}
+                      >
+                        <Trash2 className="h-4 w-4" aria-hidden="true" />
                       </Button>
                     </div>
                   </td>

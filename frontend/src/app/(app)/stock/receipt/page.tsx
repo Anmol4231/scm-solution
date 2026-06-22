@@ -10,6 +10,7 @@ import { isAdminDashboardRole } from "@/lib/roles";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Card, CardContent } from "@/components/ui/card";
+import { SkeletonRows } from "@/components/ui/page-skeleton";
 import { formatDateTime, dateInputMin, dateInputMax } from "@/lib/datetime";
 import { DateInput } from "@/components/ui/date-input";
 
@@ -264,7 +265,7 @@ export default function ReceiveStockPage() {
 
             {isAdmin && (
               <select
-                className="h-10 self-center rounded-lg border px-3 text-sm"
+                className="h-10 self-center rounded-lg border bg-white px-3 text-sm"
                 value={facilityFilter}
                 onChange={(e) => setFacilityFilter(e.target.value)}
               >
@@ -306,9 +307,7 @@ export default function ReceiveStockPage() {
             </thead>
             <tbody>
               {loading ? (
-                <tr>
-                  <td colSpan={7} className="p-6 text-center text-slate-400">Loading…</td>
-                </tr>
+                <SkeletonRows rows={6} cols={7} />
               ) : filtered.length === 0 ? (
                 <tr>
                   <td colSpan={7} className="p-6 text-center text-muted-foreground">

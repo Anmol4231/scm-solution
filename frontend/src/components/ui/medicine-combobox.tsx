@@ -8,7 +8,7 @@ export interface MedicineOption {
   id: string;
   medicineName: string;
   strengths?: { strength: string }[];
-  genericName?: string;
+  genericName?: string | null;
 }
 
 function strengthsNotInName(m: MedicineOption): string[] {
