@@ -164,6 +164,9 @@ model Facility {
   latitude           Float?
   longitude          Float?
   isActive           Boolean       @default(true)
+  deletedAt          DateTime?
+  deletedById        String?
+  deletedBy          User?         @relation("FacilityDeletedBy", fields: [deletedById], references: [id])
   createdAt          DateTime      @default(now())
   updatedAt          DateTime      @updatedAt
 
@@ -187,6 +190,8 @@ model Facility {
   requisitionsRequesting   StockRequisition[] @relation("RequisitionRequesting")
   requisitionsIssuing      StockRequisition[] @relation("RequisitionIssuing")
   returnsReceived          MedicineReturn[]   @relation("ReturnReceivingFacility")
+
+  @@index([deletedAt])
 }
 
 model Role {
@@ -198,10 +203,15 @@ model Role {
   isSystem    Boolean  @default(false)
   scopeAllFacilities Boolean @default(false)
   permissions Json     @default("{}")
+  deletedAt   DateTime?
+  deletedById String?
+  deletedBy   User?    @relation("RoleDeletedBy", fields: [deletedById], references: [id])
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
 
   users User[]
+
+  @@index([deletedAt])
 }
 
 model User {
@@ -240,6 +250,9 @@ model User {
   medicinesDeleted         Medicine[]         @relation("MedicineDeletedBy")
   categoriesDeleted        MedicineCategory[] @relation("CategoryDeletedBy")
   stockOrdersDeleted       StockOrder[]       @relation("StockOrderDeletedBy")
+  facilitiesDeleted        Facility[]         @relation("FacilityDeletedBy")
+  rolesDeleted             Role[]             @relation("RoleDeletedBy")
+  workersDeleted           HealthcareWorker[] @relation("WorkerDeletedBy")
   requisitionsRequested    StockRequisition[] @relation("RequisitionRequestedBy")
   requisitionsApproved     StockRequisition[] @relation("RequisitionApprovedBy")
   requisitionsIssued       StockRequisition[] @relation("RequisitionIssuedBy")
@@ -247,6 +260,9 @@ model User {
   vouchersFinalized        IssueVoucher[]     @relation("VoucherFinalizedBy")
   vouchersAcknowledged     IssueVoucher[]     @relation("VoucherAcknowledgedBy")
   vouchersVoided           IssueVoucher[]     @relation("VoucherVoidedBy")
+
+  @@index([facilityId])
+  @@index([roleId])
 }
 
 model PasswordResetToken {
@@ -259,6 +275,7 @@ model PasswordResetToken {
   createdAt DateTime  @default(now())
 
   @@index([token])
+  @@index([userId])
 }
 
 model HealthcareWorker {
@@ -272,12 +289,16 @@ model HealthcareWorker {
   facilityId   String
   facility     Facility     @relation(fields: [facilityId], references: [id])
   status       WorkerStatus @default(ACTIVE)
+  deletedAt    DateTime?
+  deletedById  String?
+  deletedBy    User?        @relation("WorkerDeletedBy", fields: [deletedById], references: [id])
   createdAt    DateTime     @default(now())
   updatedAt    DateTime     @updatedAt
 
   dispensingRecords DispensingRecord[]
 
   @@index([facilityId, status])
+  @@index([deletedAt])
 }
 
 model Patient {
@@ -299,6 +320,8 @@ model Patient {
   prescriptions     Prescription[]
   dispensingRecords DispensingRecord[]
   medicineReturns   MedicineReturn[]
+
+  @@index([facilityId])
 }
 
 model Prescription {
@@ -324,6 +347,9 @@ model Prescription {
 
   medicines           PrescriptionMedicine[]
   dispensingRecords   DispensingRecord[]
+
+  @@index([patientId])
+  @@index([facilityId])
 }
 
 model PrescriptionMedicine {
@@ -337,6 +363,9 @@ model PrescriptionMedicine {
   quantity       Float?
   duration       String?
   notes          String?
+
+  @@index([prescriptionId])
+  @@index([medicineId])
 }
 
 model MedicineCategory {
@@ -397,6 +426,7 @@ model Medicine {
   @@unique([medicineName, strength])
   @@index([medicineName])
   @@index([deletedAt])
+  @@index([categoryId])
 }
 
 model MedicineStrength {
@@ -474,6 +504,8 @@ model StockTransaction {
 
   @@index([facilityId, createdAt])
   @@index([medicineId, type])
+  @@index([batchId])
+  @@index([transferId])
 }
 
 model DispensingRecord {
@@ -508,6 +540,9 @@ model DispensingRecord {
   @@index([healthcareWorkerId, dispensedAt])
   @@index([facilityId, dispensedAt])
   @@index([recipientType, facilityId])
+  @@index([medicineId])
+  @@index([batchId])
+  @@index([prescriptionId])
 }
 
 model MedicineReturn {
@@ -538,6 +573,8 @@ model MedicineReturn {
   createdAt       DateTime           @default(now())
 
   @@index([facilityId, returnType])
+  @@index([medicineId])
+  @@index([batchId])
 }
 
 model Transfer {
@@ -568,6 +605,7 @@ model Transfer {
   receivedById        String?
   receivedBy          User?          @relation("TransferReceivedBy", fields: [receivedById], references: [id])
   receivedAt          DateTime?
+  receiptNotes        String?
   createdAt           DateTime       @default(now())
   updatedAt           DateTime       @updatedAt
   shipment            Shipment?
@@ -595,6 +633,8 @@ model TransferLine {
   remarks            String?
 
   @@index([transferId])
+  @@index([medicineId])
+  @@index([batchId])
 }
 
 model ConsumptionReport {
@@ -629,6 +669,8 @@ model Alert {
 
   @@index([facilityId, isRead, createdAt])
   @@index([facilityId, resolvedAt])
+  @@index([medicineId])
+  @@index([batchId])
 }
 
 model AuditLog {
@@ -644,6 +686,7 @@ model AuditLog {
   createdAt   DateTime @default(now())
 
   @@index([facilityId, createdAt])
+  @@index([userId])
 }
 
 model Vendor {
@@ -741,6 +784,7 @@ model StockOrderLine {
   receiptLines StockReceiptLine[]
 
   @@index([orderId])
+  @@index([medicineId])
 }
 
 model StockReceipt {
@@ -786,6 +830,8 @@ model StockReceiptLine {
 
   @@index([receiptId])
   @@index([orderLineId])
+  @@index([medicineId])
+  @@index([batchId])
 }
 
 model ExpiredMedicineRecord {
@@ -800,6 +846,9 @@ model ExpiredMedicineRecord {
   approvalStatus  String?  @default("APPROVED")
   processedById   String
   createdAt       DateTime @default(now())
+
+  @@index([facilityId])
+  @@index([medicineId])
 }
 
 model StockRequisition {

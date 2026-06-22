@@ -1,0 +1,2 @@
+-- This migration was applied via `prisma db push` before migration tracking was introduced.
+-- The stub exists so Prisma can verify the migration directory is intact.
