@@ -2,7 +2,7 @@
 
 import { useEffect, useState, useMemo } from "react";
 import Link from "next/link";
-import { PackageCheck, Download, Search, CalendarDays, X } from "lucide-react";
+import { PackageCheck, PackagePlus, Eye, Download, Search, CalendarDays, X, ArrowUpDown } from "lucide-react";
 import { api } from "@/lib/api";
 import { useAuth } from "@/lib/auth-context";
 import { useRequirePermission } from "@/hooks/useRequirePermission";
@@ -33,6 +33,7 @@ interface Order {
 }
 
 type StatusFilter = "all" | "SUBMITTED" | "RECEIVED";
+type SortField = "orderCode" | "facility" | "supplier" | "status" | "items" | "createdAt";
 
 const STATUS_FILTERS: { id: StatusFilter; label: string }[] = [
   { id: "all", label: "All Orders" },
@@ -98,6 +99,17 @@ export default function ReceiveStockPage() {
   const [toDate, setToDate] = useState("");
   const [facilities, setFacilities] = useState<{ id: string; name: string; code: string }[]>([]);
   const [facilityFilter, setFacilityFilter] = useState("");
+  const [sortBy, setSortBy] = useState<SortField>("createdAt");
+  const [sortDir, setSortDir] = useState<"asc" | "desc">("desc");
+
+  const toggleSort = (field: SortField) => {
+    if (sortBy === field) {
+      setSortDir((d) => (d === "asc" ? "desc" : "asc"));
+    } else {
+      setSortBy(field);
+      setSortDir("asc");
+    }
+  };
 
   const load = async () => {
     setLoading(true);
@@ -167,6 +179,33 @@ export default function ReceiveStockPage() {
     return result;
   }, [orders, statusFilter, fromDate, toDate, search]);
 
+  const sorted = useMemo(() => {
+    const dir = sortDir === "asc" ? 1 : -1;
+    return [...filtered].sort((a, b) => {
+      let cmp = 0;
+      switch (sortBy) {
+        case "orderCode": cmp = a.orderCode.localeCompare(b.orderCode); break;
+        case "facility": cmp = (a.facility?.name ?? "").localeCompare(b.facility?.name ?? ""); break;
+        case "supplier": cmp = (a.vendor?.name ?? "").localeCompare(b.vendor?.name ?? ""); break;
+        case "status": cmp = statusLabel(a.status).localeCompare(statusLabel(b.status)); break;
+        case "items": cmp = a.lines.length - b.lines.length; break;
+        case "createdAt": cmp = new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime(); break;
+      }
+      return cmp * dir;
+    });
+  }, [filtered, sortBy, sortDir]);
+
+  const SortButton = ({ field, label }: { field: SortField; label: string }) => (
+    <button
+      type="button"
+      onClick={() => toggleSort(field)}
+      className="inline-flex items-center gap-1 font-medium hover:text-medflow-700"
+    >
+      {label}
+      <ArrowUpDown className={`h-3.5 w-3.5 ${sortBy === field ? "text-medflow-600" : "text-slate-300"}`} />
+    </button>
+  );
+
   if (!hasAccess) return null;
 
   return (
@@ -183,8 +222,8 @@ export default function ReceiveStockPage() {
         </div>
         <Button
           variant="outline"
-          onClick={() => exportCsv(filtered)}
-          disabled={filtered.length === 0}
+          onClick={() => exportCsv(sorted)}
+          disabled={sorted.length === 0}
         >
           <Download className="mr-2 h-4 w-4" /> Export CSV
         </Button>
@@ -296,26 +335,26 @@ export default function ReceiveStockPage() {
           <table className="w-full min-w-[650px] text-sm">
             <thead>
               <tr className="border-b bg-slate-50 text-left text-sm text-slate-500">
-                <th className="p-3 font-medium">Order #</th>
-                <th className="p-3 font-medium">Facility</th>
-                <th className="p-3 font-medium">Supplier</th>
-                <th className="p-3 font-medium">Status</th>
-                <th className="p-3 font-medium">Items</th>
-                <th className="p-3 font-medium">Created</th>
+                <th className="p-3 font-medium"><SortButton field="orderCode" label="Order #" /></th>
+                <th className="p-3 font-medium"><SortButton field="facility" label="Facility" /></th>
+                <th className="p-3 font-medium"><SortButton field="supplier" label="Supplier" /></th>
+                <th className="p-3 font-medium"><SortButton field="status" label="Status" /></th>
+                <th className="p-3 font-medium"><SortButton field="items" label="Items" /></th>
+                <th className="p-3 font-medium"><SortButton field="createdAt" label="Created On" /></th>
                 <th className="p-3 font-medium">Action</th>
               </tr>
             </thead>
             <tbody>
               {loading ? (
                 <SkeletonRows rows={6} cols={7} />
-              ) : filtered.length === 0 ? (
+              ) : sorted.length === 0 ? (
                 <tr>
                   <td colSpan={7} className="p-6 text-center text-muted-foreground">
                     No orders found.
                   </td>
                 </tr>
               ) : (
-                filtered.map((o) => {
+                sorted.map((o) => {
                   const canReceiveMore = normalizeStatus(o.status) !== "RECEIVED";
                   return (
                     <tr key={o.id} className="border-b last:border-0 hover:bg-slate-50/60">
@@ -330,14 +369,16 @@ export default function ReceiveStockPage() {
                       <td className="p-3 text-slate-600">{o.lines.length} item(s)</td>
                       <td className="p-3 text-slate-600 whitespace-nowrap">{formatDateTime(o.createdAt)}</td>
                       <td className="p-3">
-                        <Link href={`/stock/receipt/${o.id}`}>
-                          <Button
-                            size="sm"
-                            variant={canReceiveMore ? "default" : "outline"}
-                            className={canReceiveMore ? "bg-emerald-600 text-white hover:bg-emerald-700" : ""}
-                          >
-                            {canReceiveMore ? "Receive" : "View"}
-                          </Button>
+                        <Link
+                          href={`/stock/receipt/${o.id}`}
+                          title={canReceiveMore ? "Receive stock" : "View receipt"}
+                          className={`inline-flex rounded p-1.5 ${
+                            canReceiveMore
+                              ? "text-emerald-600 hover:bg-emerald-50"
+                              : "text-slate-500 hover:bg-slate-100 hover:text-slate-700"
+                          }`}
+                        >
+                          {canReceiveMore ? <PackagePlus className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
                         </Link>
                       </td>
                     </tr>
