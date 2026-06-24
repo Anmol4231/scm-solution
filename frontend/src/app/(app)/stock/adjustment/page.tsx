@@ -4,6 +4,8 @@ import { useEffect, useState } from "react";
 import Link from "next/link";
 import { api } from "@/lib/api";
 import { useMedicines } from "@/lib/medicines-cache";
+import { useAuth } from "@/lib/auth-context";
+import { isCrossFacilityRole } from "@/lib/roles";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -11,19 +13,29 @@ import { Card, CardContent } from "@/components/ui/card";
 import { MedicineCombobox } from "@/components/ui/medicine-combobox";
 
 export default function AdjustmentPage() {
+  const { user } = useAuth();
+  const isAdmin = isCrossFacilityRole(user?.role);
   const { data: medicines = [] } = useMedicines();
+  const [facilities, setFacilities] = useState<{ id: string; name: string; code: string }[]>([]);
   const [systemBalance, setSystemBalance] = useState<number | null>(null);
-  const [form, setForm] = useState({ medicineId: "", physicalCount: "", reason: "" });
+  const [form, setForm] = useState({ medicineId: "", physicalCount: "", reason: "", facilityId: user?.facilityId ?? "" });
   const [error, setError] = useState("");
   const [success, setSuccess] = useState("");
   const [busy, setBusy] = useState(false);
 
   useEffect(() => {
+    if (isAdmin) api<{ id: string; name: string; code: string }[]>("/auth/facilities").then(setFacilities).catch(() => {});
+  }, [isAdmin]);
+
+  // Balance is facility-specific; re-fetch when the medicine or (admin) facility changes.
+  useEffect(() => {
     setSystemBalance(null);
-    if (form.medicineId) {
-      api<{ balance: number }>(`/stock/balance?medicineId=${form.medicineId}`).then((r) => setSystemBalance(r.balance)).catch(() => setSystemBalance(null));
+    const fac = form.facilityId || user?.facilityId;
+    if (form.medicineId && fac) {
+      const facParam = isAdmin && form.facilityId ? `&facilityId=${form.facilityId}` : "";
+      api<{ balance: number }>(`/stock/balance?medicineId=${form.medicineId}${facParam}`).then((r) => setSystemBalance(r.balance)).catch(() => setSystemBalance(null));
     }
-  }, [form.medicineId]);
+  }, [form.medicineId, form.facilityId, isAdmin, user?.facilityId]);
 
   const physical = form.physicalCount === "" ? null : Number(form.physicalCount);
   const discrepancy = systemBalance != null && physical != null ? physical - systemBalance : null;
@@ -31,6 +43,7 @@ export default function AdjustmentPage() {
   const submit = async (e: React.FormEvent) => {
     e.preventDefault();
     setError(""); setSuccess("");
+    if (isAdmin && !form.facilityId) return setError("Select a facility");
     if (!form.medicineId) return setError("Select a medicine");
     if (physical == null) return setError("Enter the physical count");
     if (!form.reason.trim()) return setError("A discrepancy reason is required");
@@ -38,11 +51,16 @@ export default function AdjustmentPage() {
     try {
       await api("/stock/adjustment", {
         method: "POST",
-        body: JSON.stringify({ medicineId: form.medicineId, physicalCount: physical, reason: form.reason.trim() }),
+        body: JSON.stringify({
+          medicineId: form.medicineId,
+          physicalCount: physical,
+          reason: form.reason.trim(),
+          ...(isAdmin && form.facilityId ? { facilityId: form.facilityId } : {}),
+        }),
       });
       const name = medicines.find((m) => m.id === form.medicineId)?.medicineName ?? "medicine";
       setSuccess(`Adjusted ${name} to a balance of ${physical}.`);
-      setForm({ medicineId: "", physicalCount: "", reason: "" });
+      setForm((f) => ({ medicineId: "", physicalCount: "", reason: "", facilityId: f.facilityId }));
       setSystemBalance(null);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to save adjustment");
@@ -62,6 +80,20 @@ export default function AdjustmentPage() {
       <Card>
         <CardContent className="pt-6">
           <form onSubmit={submit} className="space-y-4">
+            {isAdmin && (
+              <div>
+                <Label>Facility *</Label>
+                <select
+                  className="mt-1 h-11 w-full rounded-lg border bg-white px-3 text-sm"
+                  value={form.facilityId}
+                  onChange={(e) => setForm({ ...form, facilityId: e.target.value, medicineId: "" })}
+                  required
+                >
+                  <option value="">Select facility</option>
+                  {facilities.map((f) => <option key={f.id} value={f.id}>{f.name} ({f.code})</option>)}
+                </select>
+              </div>
+            )}
             <div>
               <Label>Medicine *</Label>
               <MedicineCombobox

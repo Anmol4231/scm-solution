@@ -499,6 +499,7 @@ model StockTransaction {
   patientId       String?
   prescriptionId  String?
   transferId      String?
+  transfer        Transfer?            @relation("TransferTransactions", fields: [transferId], references: [id])
   notes           String?
   createdAt       DateTime             @default(now())
 
@@ -611,6 +612,7 @@ model Transfer {
   shipment            Shipment?
 
   lines TransferLine[]
+  transactions StockTransaction[] @relation("TransferTransactions")
 
   @@index([fromFacilityId, status])
   @@index([toFacilityId, status])

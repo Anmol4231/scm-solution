@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useState } from "react";
 import Link from "next/link";
-import { ArrowUpDown, Download, Search, SlidersHorizontal } from "lucide-react";
+import { ArrowUpDown, Download, Search } from "lucide-react";
 import { api } from "@/lib/api";
 import { useMedicines } from "@/lib/medicines-cache";
 import { useAuth } from "@/lib/auth-context";
@@ -42,8 +42,8 @@ interface MedicineOption {
   medicineName: string;
 }
 
-type SortField = "medicineName" | "quantity" | "expiryDate" | "batchNumber";
-type ExpiryFilter = "" | "expired" | "expiring" | "ok";
+type SortField = "medicineName" | "category" | "facility" | "quantity" | "expiryDate" | "batchNumber";
+type ExpiryFilter = "" | "expired" | "not-expired" | "expiring" | "ok";
 
 // ─── Status badge ─────────────────────────────────────────────────────────────
 
@@ -56,9 +56,14 @@ function StatusBadge({ status }: { status: string }) {
         : status.startsWith("Expiring")
           ? "bg-amber-100 text-amber-700"
           : "bg-emerald-100 text-emerald-700";
+  // Friendlier display labels than the raw backend status strings.
+  const label =
+    status === "Expiring Soon (Critical)"
+      ? "Critical — Expiring"
+      : status;
   return (
     <span className={`inline-flex items-center rounded-full px-2 py-0.5 text-[11px] font-medium ${cls}`}>
-      {status}
+      {label}
     </span>
   );
 }
@@ -84,7 +89,6 @@ export default function StockInHandPage() {
   const [expiryFilter, setExpiryFilter] = useState<ExpiryFilter>("");
   const [facilityId, setFacilityId] = useState("");
   const [allFacilities, setAllFacilities] = useState<{ id: string; name: string; code: string }[]>([]);
-  const [showFilters, setShowFilters] = useState(false);
 
   // Sorting
   const [sortBy, setSortBy] = useState<SortField>("medicineName");
@@ -176,9 +180,10 @@ export default function StockInHandPage() {
   );
 
   const EXPIRY_FILTERS: { key: ExpiryFilter; label: string }[] = [
-    { key: "", label: "All" },
-    { key: "ok", label: "In Date" },
-    { key: "expiring", label: "Expiring Soon" },
+    { key: "", label: "All statuses" },
+    { key: "not-expired", label: "Not expired (usable)" },
+    { key: "ok", label: "In date" },
+    { key: "expiring", label: "Expiring soon" },
     { key: "expired", label: "Expired" },
   ];
 
@@ -192,10 +197,6 @@ export default function StockInHandPage() {
           <p className="text-sm text-muted-foreground">Real-time view of current inventory across all batches.</p>
         </div>
         <div className="flex gap-2">
-          <Button variant="outline" size="sm" onClick={() => setShowFilters(!showFilters)}>
-            <SlidersHorizontal className="mr-1.5 h-3.5 w-3.5" />
-            Filters
-          </Button>
           <Button variant="outline" size="sm" onClick={exportCsv} disabled={exporting}>
             <Download className="mr-1.5 h-3.5 w-3.5" />
             {exporting ? "Exporting…" : "Export CSV"}
@@ -211,14 +212,13 @@ export default function StockInHandPage() {
           <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
           <Input
             className="pl-9"
-            placeholder=""
+            placeholder="Search by medicine, generic name, or batch no.…"
             value={search}
             onChange={(e) => setSearch(e.target.value)}
           />
         </div>
 
-        {showFilters && (
-          <div className="flex flex-wrap items-center gap-3 rounded-xl border bg-slate-50/60 p-3">
+        <div className="flex flex-wrap items-center gap-3 rounded-xl border bg-slate-50/60 p-3">
             {isCrossAdmin && (
               <div>
                 <label className="mb-1 block text-sm font-medium text-slate-600">Facility</label>
@@ -254,25 +254,17 @@ export default function StockInHandPage() {
             </div>
             <div>
               <label className="mb-1 block text-sm font-medium text-slate-600">Expiry Status</label>
-              <div className="flex gap-1">
+              <select
+                value={expiryFilter}
+                onChange={(e) => setExpiryFilter(e.target.value as ExpiryFilter)}
+                className="h-9 rounded-lg border bg-white px-2 text-sm"
+              >
                 {EXPIRY_FILTERS.map((f) => (
-                  <button
-                    key={f.key}
-                    type="button"
-                    onClick={() => setExpiryFilter(f.key)}
-                    className={`rounded-full border px-3 py-1 text-sm font-medium transition ${
-                      expiryFilter === f.key
-                        ? "border-medflow-400 bg-medflow-50 text-medflow-700"
-                        : "border-slate-200 text-slate-600 hover:bg-white"
-                    }`}
-                  >
-                    {f.label}
-                  </button>
+                  <option key={f.key} value={f.key}>{f.label}</option>
                 ))}
-              </div>
+              </select>
             </div>
           </div>
-        )}
       </div>
 
       {/* Summary counts */}
@@ -313,8 +305,8 @@ export default function StockInHandPage() {
                 <th className="p-3 pl-4">
                   <SortButton field="medicineName" label="Medicine" />
                 </th>
-                <th className="p-3">Category</th>
-                {isCrossAdmin && <th className="p-3">Facility</th>}
+                <th className="p-3"><SortButton field="category" label="Category" /></th>
+                {isCrossAdmin && <th className="p-3"><SortButton field="facility" label="Facility" /></th>}
                 <th className="p-3">
                   <SortButton field="batchNumber" label="Batch No." />
                 </th>
