@@ -51,7 +51,7 @@ export default function LoginPage() {
     <div className="flex min-h-screen flex-col items-center justify-center bg-gradient-to-br from-slate-100 via-slate-50 to-medflow-50 p-4">
       {/* Logo / Brand */}
       <img
-        src="/icons/StockTrackRx.jpeg"
+        src="/icons/StockTrackRx-removebg-preview.png"
         alt="StockTrackRx"
         className="mb-8 h-auto w-full max-w-[400px]"
       />
