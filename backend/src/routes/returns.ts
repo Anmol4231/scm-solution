@@ -3,6 +3,7 @@ import { z } from "zod";
 import { ReturnType, MedicineCondition, StockTransactionType } from "@prisma/client";
 import { prisma } from "../lib/prisma";
 import { authenticate, getFacilityId, requireFacility } from "../middleware/auth";
+import { requirePermission } from "../middleware/permission";
 import { isCrossFacilityRole } from "../utils/roles";
 import { logAudit } from "../services/audit";
 import { assertNotExpired, isExpired, decrementBatchOrThrow } from "../utils/stockGuards";
@@ -10,6 +11,9 @@ import { getMedicineBalance, getMedicineBalanceTx } from "../utils/stock";
 
 const router = Router();
 router.use(authenticate, requireFacility);
+
+const returnsView   = requirePermission("returns", "view");
+const returnsCreate = requirePermission("returns", "create");
 
 const positiveNum = z.number().positive();
 
@@ -26,7 +30,7 @@ const patientReturnSchema = z.object({
   notes: z.string().optional(),
 });
 
-router.post("/patient", async (req, res, next) => {
+router.post("/patient", returnsCreate, async (req, res, next) => {
   try {
     const data = patientReturnSchema.parse(req.body);
     const facilityId = getFacilityId(req)!;
@@ -102,20 +106,35 @@ router.post("/patient", async (req, res, next) => {
 const facilityReturnSchema = z.object({
   returnType: z.enum(["FACILITY_TO_AMS", "INTER_FACILITY"]),
   receivingFacilityId: z.string().min(1, "Receiving facility is required"),
-  medicineId: z.string(),
-  batchNumber: z.string(),
-  expiryDate: z.string(),
+  batchId: z.string().min(1, "Batch is required"),
   quantity: positiveNum,
   returnReason: z.string().min(1),
   notes: z.string().optional(),
 });
 
-router.post("/facility", async (req, res, next) => {
+router.post("/facility", returnsCreate, async (req, res, next) => {
   try {
     const data = facilityReturnSchema.parse(req.body);
-    const facilityId = getFacilityId(req)!;
     const userId = req.user!.userId;
-    const expiryDate = new Date(data.expiryDate);
+
+    // Source medicine, batch, expiry and facility are all derived from the selected
+    // batch (mirrors the Transfers "Send" workflow) — never trusted from free-text input.
+    const sourceBatch = await prisma.stockBatch.findUnique({ where: { id: data.batchId } });
+    if (!sourceBatch || sourceBatch.quantity < data.quantity) {
+      return res.status(400).json({ error: "Invalid batch or insufficient quantity" });
+    }
+    const facilityId = sourceBatch.facilityId;
+    const medicineId = sourceBatch.medicineId;
+    const batchNumber = sourceBatch.batchNumber;
+    const expiryDate = sourceBatch.expiryDate;
+
+    // Facility-scoped users may only return stock held by their own facility.
+    if (!isCrossFacilityRole(req.user!.role)) {
+      if (!req.user!.facilityId) return res.status(400).json({ error: "Facility selection required" });
+      if (facilityId !== req.user!.facilityId) {
+        return res.status(403).json({ error: "You can only return stock from your own facility" });
+      }
+    }
 
     if (data.receivingFacilityId === facilityId) {
       return res.status(400).json({ error: "Receiving facility must differ from source" });
@@ -124,23 +143,16 @@ router.post("/facility", async (req, res, next) => {
     // A facility return credits the destination as usable inventory, so it is a
     // form of receiving — expired stock must never flow through it. Dispose expired
     // stock via the Expiry / disposal workflow instead.
-    assertNotExpired(expiryDate, data.batchNumber);
-
-    const sourceBatch = await prisma.stockBatch.findUnique({
-      where: { medicineId_facilityId_batchNumber: { medicineId: data.medicineId, facilityId, batchNumber: data.batchNumber } },
-    });
-    if (!sourceBatch || sourceBatch.quantity < data.quantity) {
-      return res.status(400).json({ error: "Insufficient stock in the specified batch" });
-    }
+    assertNotExpired(expiryDate, batchNumber);
 
     await prisma.$transaction(async (tx) => {
       // Deduct from returning facility (conditional decrement — never goes negative)
-      const srcBefore = await getMedicineBalanceTx(tx, data.medicineId, facilityId);
-      await decrementBatchOrThrow(tx, sourceBatch.id, data.quantity, `batch ${data.batchNumber}`);
+      const srcBefore = await getMedicineBalanceTx(tx, medicineId, facilityId);
+      await decrementBatchOrThrow(tx, sourceBatch.id, data.quantity, `batch ${batchNumber}`);
       await tx.stockTransaction.create({
         data: {
           facilityId,
-          medicineId: data.medicineId,
+          medicineId,
           batchId: sourceBatch.id,
           type: StockTransactionType.RETURN_OUT,
           quantity: -data.quantity,
@@ -152,21 +164,21 @@ router.post("/facility", async (req, res, next) => {
       });
 
       // Credit receiving facility (AMS or peer)
-      const destBefore = await getMedicineBalanceTx(tx, data.medicineId, data.receivingFacilityId);
+      const destBefore = await getMedicineBalanceTx(tx, medicineId, data.receivingFacilityId);
       let destBatch = await tx.stockBatch.findUnique({
-        where: { medicineId_facilityId_batchNumber: { medicineId: data.medicineId, facilityId: data.receivingFacilityId, batchNumber: data.batchNumber } },
+        where: { medicineId_facilityId_batchNumber: { medicineId, facilityId: data.receivingFacilityId, batchNumber } },
       });
       if (destBatch) {
         destBatch = await tx.stockBatch.update({ where: { id: destBatch.id }, data: { quantity: { increment: data.quantity } } });
       } else {
         destBatch = await tx.stockBatch.create({
-          data: { medicineId: data.medicineId, facilityId: data.receivingFacilityId, batchNumber: data.batchNumber, expiryDate, quantity: data.quantity },
+          data: { medicineId, facilityId: data.receivingFacilityId, batchNumber, expiryDate, quantity: data.quantity },
         });
       }
       await tx.stockTransaction.create({
         data: {
           facilityId: data.receivingFacilityId,
-          medicineId: data.medicineId,
+          medicineId,
           batchId: destBatch.id,
           type: StockTransactionType.RETURN_IN,
           quantity: data.quantity,
@@ -182,9 +194,9 @@ router.post("/facility", async (req, res, next) => {
         data: {
           returnType: data.returnType as ReturnType,
           facilityId,
-          medicineId: data.medicineId,
+          medicineId,
           batchId: sourceBatch.id,
-          batchNumber: data.batchNumber,
+          batchNumber,
           expiryDate,
           quantity: data.quantity,
           returnReason: data.returnReason,
@@ -206,7 +218,7 @@ router.post("/facility", async (req, res, next) => {
 });
 
 // Keep legacy endpoint for backward compat
-router.post("/facility-to-ams", async (req, res, next) => {
+router.post("/facility-to-ams", returnsCreate, async (req, res, next) => {
   req.body.returnType = "FACILITY_TO_AMS";
   if (!req.body.receivingFacilityId) req.body.receivingFacilityId = req.body.returnDestination;
   // Delegate to the new facility endpoint
@@ -215,7 +227,7 @@ router.post("/facility-to-ams", async (req, res, next) => {
   next();
 });
 
-router.get("/", async (req, res, next) => {
+router.get("/", returnsView, async (req, res, next) => {
   try {
     const facilityId = getFacilityId(req, req.query.facilityId as string);
     const returnType = req.query.returnType as string | undefined;
