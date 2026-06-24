@@ -86,6 +86,7 @@ export default function MedicineDetailPage() {
   const [form, setForm] = useState(emptyForm);
   const [error, setError] = useState("");
   const [success, setSuccess] = useState("");
+  const [highlightBatchId, setHighlightBatchId] = useState<string | null>(null);
 
   const load = () => {
     const q = user?.facilityId ? `?facilityId=${user.facilityId}` : "";
@@ -96,6 +97,21 @@ export default function MedicineDetailPage() {
     load();
     if (isAdmin) api<Category[]>("/categories").then(setCategories).catch(console.error);
   }, [id, user?.facilityId, isAdmin]);
+
+  // When arriving from an Expiry "View" link (#batch-<id>), scroll to and
+  // briefly highlight that specific batch row.
+  useEffect(() => {
+    if (!data) return;
+    const hash = window.location.hash;
+    if (!hash.startsWith("#batch-")) return;
+    const batchId = hash.slice("#batch-".length);
+    const el = document.getElementById(`batch-${batchId}`);
+    if (!el) return;
+    el.scrollIntoView({ behavior: "smooth", block: "center" });
+    setHighlightBatchId(batchId);
+    const t = setTimeout(() => setHighlightBatchId(null), 2600);
+    return () => clearTimeout(t);
+  }, [data]);
 
   if (!data) return <PageSkeleton />;
 
@@ -275,7 +291,11 @@ export default function MedicineDetailPage() {
             </thead>
             <tbody>
               {data.batches.map((b) => (
-                <tr key={b.id} className="border-b">
+                <tr
+                  key={b.id}
+                  id={`batch-${b.id}`}
+                  className={`border-b scroll-mt-24 transition-colors ${highlightBatchId === b.id ? "bg-medflow-50 ring-2 ring-inset ring-medflow-300" : ""}`}
+                >
                   <td className="p-2 font-mono text-xs">{b.batchNumber}</td>
                   <td className="p-2">{b.facility.name}</td>
                   <td className="p-2 font-medium">{b.quantity}</td>
