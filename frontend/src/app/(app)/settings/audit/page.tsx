@@ -2,13 +2,12 @@
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
-import { Search, RotateCcw, ArrowRight } from "lucide-react";
+import { Search, RotateCcw, ArrowRight, Eye, ChevronUp } from "lucide-react";
 import { api } from "@/lib/api";
 import { useAuth } from "@/lib/auth-context";
 import { isMasterDataAdminRole } from "@/lib/roles";
 import { Input } from "@/components/ui/input";
 import { Card, CardContent } from "@/components/ui/card";
-import { Button } from "@/components/ui/button";
 import { DateInput } from "@/components/ui/date-input";
 
 interface AuditEntry {
@@ -147,17 +146,7 @@ function ChangeDiff({
 
 // ─── Inline detail row ───────────────────────────────────────────────────────
 
-function ExpandedDetail({
-  entry,
-  canRestore,
-  restoring,
-  onRestore,
-}: {
-  entry: AuditEntry;
-  canRestore: boolean;
-  restoring: boolean;
-  onRestore: () => void;
-}) {
+function ExpandedDetail({ entry }: { entry: AuditEntry }) {
   const hasDiff = !!(entry.previousValues || entry.currentValues);
   return (
     <tr className="border-b bg-slate-50/70">
@@ -171,14 +160,6 @@ function ExpandedDetail({
           !entry.changeDetails && (
             <p className="text-sm text-slate-400">No additional details recorded.</p>
           )
-        )}
-        {canRestore && (
-          <div className="mt-4">
-            <Button size="sm" variant="outline" disabled={restoring} onClick={onRestore} className="gap-1.5">
-              <RotateCcw className="h-3.5 w-3.5" />
-              {restoring ? "Restoring…" : `Restore "${entry.recordName}"`}
-            </Button>
-          </div>
         )}
       </td>
     </tr>
@@ -397,7 +378,7 @@ export default function AuditTrailPage() {
                 <th className="px-4 py-3">Record</th>
                 <th className="px-4 py-3">Changed by</th>
                 <th className="px-4 py-3">Facility</th>
-                <th className="px-4 py-3" />
+                <th className="px-4 py-3 text-right">Actions</th>
               </tr>
             </thead>
             <tbody>
@@ -426,27 +407,39 @@ export default function AuditTrailPage() {
                         {NO_LOCATION_TYPES.has(e.entityType) ? "—" : (e.facility ?? "—")}
                       </td>
                       <td className="px-4 py-3">
-                        <button
-                          type="button"
-                          onClick={() => setExpanded(isOpen ? null : e.id)}
-                          className={`rounded-md border px-3 py-1 text-xs font-medium transition ${
-                            isOpen
-                              ? "border-medflow-300 bg-medflow-50 text-medflow-700"
-                              : "border-slate-200 text-slate-600 hover:bg-slate-50"
-                          }`}
-                        >
-                          {isOpen ? "Close" : "Details"}
-                        </button>
+                        <div className="flex items-center justify-end gap-1.5">
+                          <button
+                            type="button"
+                            disabled={!isCurrentlyDeleted(e) || restoring === e.id}
+                            onClick={() => restore(e)}
+                            title={isCurrentlyDeleted(e) ? `Restore "${e.recordName}"` : "Restore is only available for deleted records"}
+                            aria-label={isCurrentlyDeleted(e) ? `Restore ${e.recordName}` : "Restore unavailable"}
+                            className={`inline-flex h-8 w-8 items-center justify-center rounded-md border transition ${
+                              isCurrentlyDeleted(e)
+                                ? "border-emerald-200 bg-emerald-50 text-emerald-700 hover:bg-emerald-100"
+                                : "cursor-not-allowed border-slate-200 text-slate-300"
+                            }`}
+                          >
+                            <RotateCcw className={`h-4 w-4 ${restoring === e.id ? "animate-spin" : ""}`} />
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => setExpanded(isOpen ? null : e.id)}
+                            title={isOpen ? "Hide details" : "View details"}
+                            aria-label={isOpen ? "Hide details" : "View details"}
+                            className={`inline-flex h-8 w-8 items-center justify-center rounded-md border transition ${
+                              isOpen
+                                ? "border-medflow-300 bg-medflow-50 text-medflow-700"
+                                : "border-slate-200 text-slate-600 hover:bg-slate-50"
+                            }`}
+                          >
+                            {isOpen ? <ChevronUp className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+                          </button>
+                        </div>
                       </td>
                     </tr>
                     {isOpen && (
-                      <ExpandedDetail
-                        key={`${e.id}-detail`}
-                        entry={e}
-                        canRestore={isCurrentlyDeleted(e)}
-                        restoring={restoring === e.id}
-                        onRestore={() => restore(e)}
-                      />
+                      <ExpandedDetail key={`${e.id}-detail`} entry={e} />
                     )}
                   </>
                 );
