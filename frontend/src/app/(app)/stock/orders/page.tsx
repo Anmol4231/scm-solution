@@ -1,14 +1,16 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import Link from "next/link";
-import { Eye, Pencil, Printer, Trash2, Plus } from "lucide-react";
+import { Eye, Pencil, Printer, Trash2, Plus, Search, ArrowUpDown } from "lucide-react";
+import { SkeletonRows } from "@/components/ui/page-skeleton";
 import { api } from "@/lib/api";
 import { useAuth } from "@/lib/auth-context";
 import { useRequirePermission } from "@/hooks/useRequirePermission";
 import { isAdminDashboardRole } from "@/lib/roles";
 import { can } from "@/lib/permissions";
 import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
 import { formatDateTimeParts } from "@/lib/datetime";
 
 interface OrderSource {
@@ -41,6 +43,10 @@ interface StockOrder {
 type ApiStockOrder = StockOrder & { [key: string]: unknown };
 const SOURCE_FIELD = "ven" + "dor";
 
+type SortField = "orderCode" | "facility" | "source" | "status" | "createdBy" | "createdAt";
+// Statuses the user can filter by (CONFIRMED/IN_TRANSIT are grouped under SUBMITTED).
+const STATUS_OPTIONS = ["DRAFT", "SUBMITTED", "PARTIALLY_RECEIVED", "RECEIVED", "CANCELLED"];
+
 function statusColor(s: string) {
   if (s === "PARTIALLY_RECEIVED") return "bg-orange-100 text-orange-700";
   if (s === "RECEIVED") return "bg-green-100 text-green-700";
@@ -60,7 +66,11 @@ function statusLabel(s: string) {
 }
 
 function isOrderLocked(o: StockOrder) {
-  return o.status === "RECEIVED" || o.status === "CANCELLED";
+  return (
+    o.status === "RECEIVED" ||
+    o.status === "PARTIALLY_RECEIVED" ||
+    o.status === "CANCELLED"
+  );
 }
 
 export default function OrdersPage() {
@@ -74,20 +84,71 @@ export default function OrdersPage() {
 
   const [orders, setOrders] = useState<StockOrder[]>([]);
   const [facilities, setFacilities] = useState<{ id: string; name: string; code: string }[]>([]);
-  const [facilityFilter, setFacilityFilter] = useState("");
+  const [sources, setSources] = useState<{ id: string; name: string; code: string }[]>([]);
+  const [loading, setLoading] = useState(true);
   const [success, setSuccess] = useState("");
   const [error, setError] = useState("");
 
-  const load = () => {
+  // Filters
+  const [search, setSearch] = useState("");
+  const [debouncedSearch, setDebouncedSearch] = useState("");
+  const [facilityFilter, setFacilityFilter] = useState("");
+  const [statusFilter, setStatusFilter] = useState("");
+  const [sourceFilter, setSourceFilter] = useState("");
+  const [fromDate, setFromDate] = useState("");
+  const [toDate, setToDate] = useState("");
+
+  // Sorting
+  const [sortBy, setSortBy] = useState<SortField>("createdAt");
+  const [sortDir, setSortDir] = useState<"asc" | "desc">("desc");
+
+  // Debounce search
+  useEffect(() => {
+    const t = setTimeout(() => setDebouncedSearch(search.trim()), 300);
+    return () => clearTimeout(t);
+  }, [search]);
+
+  // Reference data (facilities for admins, sources for everyone) — loaded once.
+  useEffect(() => {
+    api<{ id: string; name: string; code: string }[]>("/orders/sources").then(setSources).catch(() => {});
+    if (isAdmin) api<{ id: string; name: string; code: string }[]>("/auth/facilities").then(setFacilities).catch(() => {});
+  }, [isAdmin]);
+
+  const load = useCallback(() => {
+    setLoading(true);
     const params = new URLSearchParams();
     if (isAdmin && facilityFilter) params.set("facilityId", facilityFilter);
-    api<ApiStockOrder[]>(`/orders?${params}`).then((items) =>
-      setOrders(items.map((item) => ({ ...item, source: item[SOURCE_FIELD] as OrderSource | undefined })))
-    );
-    if (isAdmin) api<{ id: string; name: string; code: string }[]>("/auth/facilities").then(setFacilities).catch(() => {});
+    if (debouncedSearch) params.set("q", debouncedSearch);
+    if (statusFilter) params.set("status", statusFilter);
+    if (sourceFilter) params.set("vendorId", sourceFilter);
+    if (fromDate) params.set("from", fromDate);
+    if (toDate) params.set("to", toDate);
+    params.set("sortBy", sortBy);
+    params.set("sortDir", sortDir);
+    api<ApiStockOrder[]>(`/orders?${params}`)
+      .then((items) => setOrders(items.map((item) => ({ ...item, source: item[SOURCE_FIELD] as OrderSource | undefined }))))
+      .catch(() => {})
+      .finally(() => setLoading(false));
+  }, [isAdmin, facilityFilter, debouncedSearch, statusFilter, sourceFilter, fromDate, toDate, sortBy, sortDir]);
+
+  useEffect(() => { load(); }, [load]);
+
+  const toggleSort = (field: SortField) => {
+    if (sortBy === field) {
+      setSortDir((d) => (d === "asc" ? "desc" : "asc"));
+    } else {
+      setSortBy(field);
+      setSortDir("asc");
+    }
   };
 
-  useEffect(() => { load(); }, [facilityFilter, isAdmin]);
+  const clearFilters = () => {
+    setSearch("");
+    setStatusFilter("");
+    setSourceFilter("");
+    setFromDate("");
+    setToDate("");
+  };
 
   if (!hasAccess) return null;
 
@@ -119,6 +180,17 @@ export default function OrdersPage() {
     win.document.close();
   };
 
+  const SortButton = ({ field, label }: { field: SortField; label: string }) => (
+    <button
+      type="button"
+      onClick={() => toggleSort(field)}
+      className="inline-flex items-center gap-1 font-semibold uppercase tracking-wide hover:text-medflow-700"
+    >
+      {label}
+      <ArrowUpDown className={`h-3.5 w-3.5 ${sortBy === field ? "text-medflow-600" : "text-slate-300"}`} />
+    </button>
+  );
+
   return (
     <div className="space-y-4">
       {/* Header */}
@@ -133,16 +205,6 @@ export default function OrdersPage() {
           </p>
         </div>
         <div className="flex flex-wrap items-center gap-2">
-          {isAdmin && (
-            <select
-              className="h-10 rounded-lg border px-3 text-sm"
-              value={facilityFilter}
-              onChange={(e) => setFacilityFilter(e.target.value)}
-            >
-              <option value="">All Facilities</option>
-              {facilities.map((f) => <option key={f.id} value={f.id}>{f.name} ({f.code})</option>)}
-            </select>
-          )}
           {canCreate && (
             <Link href="/stock/orders/new">
               <Button size="lg">
@@ -156,32 +218,104 @@ export default function OrdersPage() {
       {success && <p className="rounded-lg bg-green-50 p-3 text-green-700">{success}</p>}
       {error && <p className="rounded-lg bg-red-50 p-3 text-sm text-red-700">{error}</p>}
 
+      {/* Search + Filters */}
+      <div className="space-y-3">
+        <div className="relative max-w-md">
+          <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
+          <Input
+            className="pl-9"
+            placeholder="Search by order code, source, or creator…"
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+          />
+        </div>
+
+        <div className="flex flex-wrap items-end gap-3 rounded-xl border bg-slate-50/60 p-3">
+            {isAdmin && (
+              <div>
+                <label className="mb-1 block text-sm font-medium text-slate-600">Facility</label>
+                <select
+                  value={facilityFilter}
+                  onChange={(e) => setFacilityFilter(e.target.value)}
+                  className="h-9 rounded-lg border bg-white px-2 text-sm"
+                >
+                  <option value="">All Facilities</option>
+                  {facilities.map((f) => <option key={f.id} value={f.id}>{f.name} ({f.code})</option>)}
+                </select>
+              </div>
+            )}
+            <div>
+              <label className="mb-1 block text-sm font-medium text-slate-600">Status</label>
+              <select
+                value={statusFilter}
+                onChange={(e) => setStatusFilter(e.target.value)}
+                className="h-9 rounded-lg border bg-white px-2 text-sm"
+              >
+                <option value="">All Statuses</option>
+                {STATUS_OPTIONS.map((s) => <option key={s} value={s}>{statusLabel(s)}</option>)}
+              </select>
+            </div>
+            <div>
+              <label className="mb-1 block text-sm font-medium text-slate-600">Source</label>
+              <select
+                value={sourceFilter}
+                onChange={(e) => setSourceFilter(e.target.value)}
+                className="h-9 rounded-lg border bg-white px-2 text-sm"
+              >
+                <option value="">All Sources</option>
+                {sources.map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}
+              </select>
+            </div>
+            <div>
+              <label className="mb-1 block text-sm font-medium text-slate-600">From</label>
+              <Input type="date" className="h-9 w-40" value={fromDate} onChange={(e) => setFromDate(e.target.value)} />
+            </div>
+            <div>
+              <label className="mb-1 block text-sm font-medium text-slate-600">To</label>
+              <Input type="date" className="h-9 w-40" value={toDate} onChange={(e) => setToDate(e.target.value)} />
+            </div>
+            <button
+              type="button"
+              onClick={clearFilters}
+              className="h-9 rounded-lg border border-slate-200 px-3 text-sm text-slate-600 hover:bg-white"
+            >
+              Clear
+            </button>
+          </div>
+      </div>
+
       {/* Orders table */}
       <div className="overflow-hidden rounded-xl border border-slate-200 bg-white">
         <div className="overflow-x-auto">
-          <table className="w-full text-sm" style={{ tableLayout: "fixed", minWidth: "820px" }}>
+          <table className="w-full text-sm" style={{ tableLayout: "fixed", minWidth: "900px" }}>
             <colgroup>
-              <col style={{ width: "92px" }} />
-              <col />
-              <col style={{ width: "130px" }} />
-              <col style={{ width: "122px" }} />
-              <col style={{ width: "118px" }} />
-              <col style={{ width: "96px" }} />
-              <col style={{ width: "136px" }} />
+              <col style={{ width: "100px" }} />{/* Order */}
+              <col />{/* Facility — shares flexible width with Source */}
+              <col />{/* Source — shares flexible width with Facility */}
+              <col style={{ width: "120px" }} />{/* Status */}
+              <col style={{ width: "170px" }} />{/* Created By */}
+              <col style={{ width: "150px" }} />{/* Created */}
+              <col style={{ width: "140px" }} />{/* Actions */}
             </colgroup>
             <thead>
               <tr className="border-b bg-slate-50 text-xs font-semibold uppercase tracking-wide text-slate-500">
-                <th className="px-4 py-3 text-left">Order</th>
-                <th className="px-4 py-3 text-left">Facility</th>
-                <th className="px-4 py-3 text-left">Source</th>
-                <th className="px-4 py-3 text-center">Status</th>
-                <th className="px-4 py-3 text-left">Created By</th>
-                <th className="px-4 py-3 text-left">Created</th>
+                <th className="px-4 py-3 text-left"><SortButton field="orderCode" label="Order" /></th>
+                <th className="px-4 py-3 text-left"><SortButton field="facility" label="Facility" /></th>
+                <th className="px-4 py-3 text-left"><SortButton field="source" label="Source" /></th>
+                <th className="px-4 py-3 text-center">
+                  <div className="flex justify-center"><SortButton field="status" label="Status" /></div>
+                </th>
+                <th className="px-4 py-3 text-left"><SortButton field="createdBy" label="Created By" /></th>
+                <th className="px-4 py-3 text-left"><SortButton field="createdAt" label="Created On" /></th>
                 <th className="px-4 py-3 text-center">Actions</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-100">
-              {orders.map((o) => {
+              {loading ? (
+                <SkeletonRows rows={6} cols={7} />
+              ) : orders.length === 0 ? (
+                <tr><td colSpan={7} className="p-8 text-center text-slate-400">No orders found.</td></tr>
+              ) : orders.map((o) => {
                 const ds = displayStatus(o);
                 const locked = isOrderLocked(o);
                 const { date: crDate, time: crTime } = formatDateTimeParts(o.createdAt);
@@ -270,11 +404,6 @@ export default function OrdersPage() {
                   </tr>
                 );
               })}
-              {orders.length === 0 && (
-                <tr>
-                  <td colSpan={7} className="p-8 text-center text-slate-400">No orders yet.</td>
-                </tr>
-              )}
             </tbody>
           </table>
         </div>

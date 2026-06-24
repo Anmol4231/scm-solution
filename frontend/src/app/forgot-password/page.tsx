@@ -10,24 +10,28 @@ import { Card, CardContent, CardHeader } from "@/components/ui/card";
 
 export default function ForgotPasswordPage() {
   const [email, setEmail] = useState("");
-  const [result, setResult] = useState<{
-    resetUrl?: string;
-    resetToken?: string;
-    simulatedEmail?: { subject: string; body: string };
-  } | null>(null);
+  const [result, setResult] = useState<{ found: boolean } | null>(null);
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
 
   const submit = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (!email.trim() || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+      setError("Please enter a valid email address.");
+      return;
+    }
     setLoading(true);
     setError("");
     try {
-      const res = await api<typeof result & { message: string }>("/auth/forgot-password", {
+      const res = await api<{ found: boolean; message: string }>("/auth/forgot-password", {
         method: "POST",
         body: JSON.stringify({ email }),
       });
-      setResult(res);
+      if (res.found) {
+        setResult(res);
+      } else {
+        setError("No account found with the provided email address.");
+      }
     } catch (err) {
       setError(err instanceof Error ? err.message : "Request failed");
     } finally {
@@ -47,11 +51,18 @@ export default function ForgotPasswordPage() {
           <p className="text-sm text-muted-foreground">Reset your password</p>
         </CardHeader>
         <CardContent>
-          {!result ? (
-            <form onSubmit={submit} className="space-y-4">
+          {result?.found ? (
+            <div className="space-y-3 rounded-lg bg-green-50 p-4 text-sm">
+              <p className="font-medium text-green-800">Password reset link has been sent to your registered email address.</p>
+              <p className="text-center text-sm">
+                <Link href="/login" className="text-medflow-600 hover:underline">Back to login</Link>
+              </p>
+            </div>
+          ) : (
+            <form onSubmit={submit} className="space-y-4" noValidate>
               <div>
                 <Label htmlFor="email">Email address</Label>
-                <Input id="email" type="email" value={email} onChange={(e) => setEmail(e.target.value)} required />
+                <Input id="email" type="email" value={email} onChange={(e) => { setEmail(e.target.value); setError(""); }} />
               </div>
               {error && <p className="text-sm text-destructive">{error}</p>}
               <Button type="submit" size="lg" className="w-full" disabled={loading}>
@@ -61,24 +72,6 @@ export default function ForgotPasswordPage() {
                 <Link href="/login" className="text-medflow-600 hover:underline">Back to login</Link>
               </p>
             </form>
-          ) : (
-            <div className="space-y-3 rounded-lg bg-green-50 p-4 text-sm">
-              <p className="font-medium text-green-800">Reset link generated (simulated email)</p>
-              {result.simulatedEmail && (
-                <div className="rounded border bg-white p-3 text-sm">
-                  <p className="font-semibold">{result.simulatedEmail.subject}</p>
-                  <p className="mt-1 text-muted-foreground">{result.simulatedEmail.body}</p>
-                </div>
-              )}
-              {result.resetToken && (
-                <Link
-                  href={`/reset-password?token=${result.resetToken}`}
-                  className="block text-center font-medium text-medflow-600 hover:underline"
-                >
-                  Continue to reset password →
-                </Link>
-              )}
-            </div>
           )}
         </CardContent>
       </Card>

@@ -1,14 +1,14 @@
-﻿"use client";
+"use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
-import { Search, ScrollText, ChevronDown, ChevronUp, RotateCcw } from "lucide-react";
+import { Search, RotateCcw, ArrowRight, Eye, ChevronUp } from "lucide-react";
 import { api } from "@/lib/api";
 import { useAuth } from "@/lib/auth-context";
 import { isMasterDataAdminRole } from "@/lib/roles";
 import { Input } from "@/components/ui/input";
 import { Card, CardContent } from "@/components/ui/card";
-import { Button } from "@/components/ui/button";
+import { DateInput } from "@/components/ui/date-input";
 
 interface AuditEntry {
   id: string;
@@ -26,7 +26,7 @@ interface AuditEntry {
 }
 
 type Category = "" | "users" | "alerts" | "staff" | "facilities" | "roles" | "medicines" | "stock";
-type Range = "7" | "30" | "90" | "all";
+type Range = "7" | "30" | "90" | "all" | "custom";
 
 const CATEGORIES: { key: Category; label: string }[] = [
   { key: "", label: "All" },
@@ -40,88 +40,133 @@ const CATEGORIES: { key: Category; label: string }[] = [
 ];
 
 const RANGES: { key: Range; label: string }[] = [
-  { key: "7", label: "7 Days" },
-  { key: "30", label: "30 Days" },
-  { key: "90", label: "90 Days" },
+  { key: "7", label: "7 days" },
+  { key: "30", label: "30 days" },
+  { key: "90", label: "90 days" },
   { key: "all", label: "All time" },
+  { key: "custom", label: "Custom" },
 ];
 
-function actionClass(action: string) {
-  if (action === "CREATE" || action === "ACTIVATE" || action === "RESTORE") return "bg-emerald-50 text-emerald-700";
-  if (action === "SOFT_DELETE" || action === "DEACTIVATE") return "bg-red-50 text-red-700";
-  if (action.startsWith("PASSWORD") || action === "FORCE_PASSWORD_CHANGE") return "bg-amber-50 text-amber-700";
-  if (action === "RESOLVE") return "bg-blue-50 text-blue-700";
-  if (action === "UPDATE") return "bg-slate-100 text-medflow-700";
-  return "bg-slate-100 text-slate-600";
+const RESTORE_ENDPOINTS: Record<string, string> = {
+  Medicine: "/medicines",
+  MedicineCategory: "/categories",
+  Facility: "/facilities",
+  Role: "/roles",
+  HealthcareWorker: "/healthcare-workers",
+  StockOrder: "/orders",
+};
+
+const NO_LOCATION_TYPES = new Set(["Medicine", "MedicineCategory", "Role"]);
+
+function actionBadge(action: string) {
+  if (action === "CREATE" || action === "ACTIVATE" || action === "RESTORE")
+    return "bg-emerald-50 text-emerald-700 ring-1 ring-emerald-200";
+  if (action === "SOFT_DELETE" || action === "DEACTIVATE")
+    return "bg-red-50 text-red-700 ring-1 ring-red-200";
+  if (action.startsWith("PASSWORD") || action === "FORCE_PASSWORD_CHANGE")
+    return "bg-amber-50 text-amber-700 ring-1 ring-amber-200";
+  if (action === "RESOLVE")
+    return "bg-blue-50 text-blue-700 ring-1 ring-blue-200";
+  if (action === "UPDATE")
+    return "bg-slate-100 text-medflow-700 ring-1 ring-slate-200";
+  return "bg-slate-100 text-slate-600 ring-1 ring-slate-200";
 }
 
 function formatFieldLabel(key: string): string {
-  return key
-    .replace(/([A-Z])/g, " $1")
-    .replace(/^./, (c) => c.toUpperCase())
-    .trim();
+  return key.replace(/([A-Z])/g, " $1").replace(/^./, (c) => c.toUpperCase()).trim();
 }
 
-function ChangeDiff({ prev, curr }: {
-  prev: Record<string, unknown> | null | undefined;
-  curr: Record<string, unknown> | null | undefined;
-}) {
-  if (!prev && !curr) return null;
+function formatDate(ts: string) {
+  const d = new Date(ts);
+  return {
+    date: d.toLocaleDateString(undefined, { day: "2-digit", month: "short", year: "numeric" }),
+    time: d.toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" }),
+  };
+}
 
-  // If we only have curr (CREATE), show it as a new-record summary.
-  if (!prev && curr) {
-    const entries = Object.entries(curr).filter(([, v]) => v !== null && v !== undefined && v !== "");
-    if (!entries.length) return null;
-    return (
-      <div className="mt-2 text-sm">
-        <p className="mb-1 font-semibold text-emerald-700">Created with:</p>
-        <div className="space-y-0.5">
-          {entries.map(([k, v]) => (
-            <div key={k} className="flex gap-2">
-              <span className="w-32 shrink-0 text-slate-500">{formatFieldLabel(k)}</span>
-              <span className="text-slate-800">{String(v)}</span>
-            </div>
-          ))}
-        </div>
-      </div>
-    );
-  }
+// ─── Change diff ────────────────────────────────────────────────────────────
 
-  // UPDATE: show only changed fields with before → after.
-  const changedKeys = Object.keys({ ...prev, ...curr }).filter((k) => {
-    const pv = prev?.[k], cv = curr?.[k];
-    return String(pv ?? "") !== String(cv ?? "");
-  });
-
-  if (!changedKeys.length) return null;
-
+function CreateDiff({ curr }: { curr: Record<string, unknown> }) {
+  const entries = Object.entries(curr).filter(([, v]) => v !== null && v !== undefined && v !== "");
+  if (!entries.length) return null;
   return (
-    <div className="mt-2 grid gap-3 text-sm sm:grid-cols-2">
-      <div>
-        <p className="mb-1 font-semibold text-red-700">Before</p>
-        <div className="space-y-0.5 rounded-lg border border-red-100 bg-red-50/50 p-2">
-          {changedKeys.map((k) => (
-            <div key={k} className="flex gap-2">
-              <span className="w-32 shrink-0 text-slate-500">{formatFieldLabel(k)}</span>
-              <span className="text-slate-700">{String(prev?.[k] ?? "—")}</span>
-            </div>
-          ))}
+    <div className="space-y-1">
+      {entries.map(([k, v]) => (
+        <div key={k} className="flex gap-3 rounded-md px-2 py-1 odd:bg-slate-50">
+          <span className="w-36 shrink-0 text-xs text-slate-400 pt-0.5">{formatFieldLabel(k)}</span>
+          <span className="text-sm text-slate-800 break-all">{String(v)}</span>
         </div>
-      </div>
-      <div>
-        <p className="mb-1 font-semibold text-emerald-700">After</p>
-        <div className="space-y-0.5 rounded-lg border border-emerald-100 bg-emerald-50/50 p-2">
-          {changedKeys.map((k) => (
-            <div key={k} className="flex gap-2">
-              <span className="w-32 shrink-0 text-slate-500">{formatFieldLabel(k)}</span>
-              <span className="text-slate-700">{String(curr?.[k] ?? "—")}</span>
-            </div>
-          ))}
-        </div>
-      </div>
+      ))}
     </div>
   );
 }
+
+function UpdateDiff({
+  prev,
+  curr,
+}: {
+  prev: Record<string, unknown>;
+  curr: Record<string, unknown>;
+}) {
+  const changedKeys = Object.keys({ ...prev, ...curr }).filter(
+    (k) => String(prev[k] ?? "") !== String(curr[k] ?? "")
+  );
+  if (!changedKeys.length) return <p className="text-sm text-slate-400">No field-level changes recorded.</p>;
+  return (
+    <div className="space-y-2">
+      {changedKeys.map((k) => (
+        <div key={k} className="rounded-lg border border-slate-100 bg-white p-2.5">
+          <p className="mb-1.5 text-xs font-medium text-slate-400 uppercase tracking-wide">{formatFieldLabel(k)}</p>
+          <div className="flex items-start gap-2">
+            <div className="flex-1 rounded-md bg-red-50 px-2.5 py-1.5 text-sm text-red-800 break-all">
+              {String(prev[k] ?? "—")}
+            </div>
+            <ArrowRight className="mt-1.5 h-4 w-4 shrink-0 text-slate-300" />
+            <div className="flex-1 rounded-md bg-emerald-50 px-2.5 py-1.5 text-sm text-emerald-800 break-all">
+              {String(curr[k] ?? "—")}
+            </div>
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function ChangeDiff({
+  prev,
+  curr,
+}: {
+  prev: Record<string, unknown> | null | undefined;
+  curr: Record<string, unknown> | null | undefined;
+}) {
+  if (!prev && curr) return <CreateDiff curr={curr} />;
+  if (prev && curr) return <UpdateDiff prev={prev} curr={curr} />;
+  return null;
+}
+
+// ─── Inline detail row ───────────────────────────────────────────────────────
+
+function ExpandedDetail({ entry }: { entry: AuditEntry }) {
+  const hasDiff = !!(entry.previousValues || entry.currentValues);
+  return (
+    <tr className="border-b bg-slate-50/70">
+      <td colSpan={7} className="px-6 py-4">
+        {entry.changeDetails && (
+          <p className="mb-3 text-sm text-slate-500">{entry.changeDetails}</p>
+        )}
+        {hasDiff ? (
+          <ChangeDiff prev={entry.previousValues} curr={entry.currentValues} />
+        ) : (
+          !entry.changeDetails && (
+            <p className="text-sm text-slate-400">No additional details recorded.</p>
+          )
+        )}
+      </td>
+    </tr>
+  );
+}
+
+// ─── Page ────────────────────────────────────────────────────────────────────
 
 export default function AuditTrailPage() {
   const router = useRouter();
@@ -130,6 +175,8 @@ export default function AuditTrailPage() {
 
   const [category, setCategory] = useState<Category>("");
   const [range, setRange] = useState<Range>("30");
+  const [customFrom, setCustomFrom] = useState("");
+  const [customTo, setCustomTo] = useState("");
   const [search, setSearch] = useState("");
   const [debounced, setDebounced] = useState("");
   const [entries, setEntries] = useState<AuditEntry[]>([]);
@@ -138,6 +185,7 @@ export default function AuditTrailPage() {
   const [restoring, setRestoring] = useState<string | null>(null);
   const [restoreSuccess, setRestoreSuccess] = useState("");
   const [restoreError, setRestoreError] = useState("");
+  const [deletedEntitySet, setDeletedEntitySet] = useState<Set<string>>(new Set());
 
   useEffect(() => {
     if (!loading && !isAdmin) router.replace("/dashboard");
@@ -153,28 +201,79 @@ export default function AuditTrailPage() {
     setBusy(true);
     const params = new URLSearchParams();
     if (category) params.set("category", category);
-    if (range !== "all") params.set("from", new Date(Date.now() - Number(range) * 86400000).toISOString());
+    if (range === "custom") {
+      if (customFrom) params.set("from", `${customFrom}T00:00:00.000Z`);
+      if (customTo) params.set("to", `${customTo}T23:59:59.999Z`);
+    } else if (range !== "all") {
+      params.set("from", new Date(Date.now() - Number(range) * 86400000).toISOString());
+    }
     if (debounced) params.set("q", debounced);
     api<{ logs: AuditEntry[] }>(`/audit?${params}`)
       .then((r) => setEntries(r.logs))
       .catch(console.error)
       .finally(() => setBusy(false));
-  }, [isAdmin, category, range, debounced]);
+  }, [isAdmin, category, range, customFrom, customTo, debounced]);
 
   useEffect(() => { load(); }, [load]);
 
+  const loadDeletedEntities = useCallback(async () => {
+    if (!isAdmin) return;
+    const endpoints: [string, string][] = [
+      ["Role", "/roles/deleted"],
+      ["Facility", "/facilities/deleted"],
+      ["HealthcareWorker", "/healthcare-workers/deleted"],
+      ["Medicine", "/medicines/deleted"],
+      ["MedicineCategory", "/categories/deleted"],
+      ["StockOrder", "/orders/deleted"],
+    ];
+    const results = await Promise.allSettled(
+      endpoints.map(([type, path]) =>
+        api<{ id: string }[]>(path).then((items) => items.map((item) => `${type}:${item.id}`))
+      )
+    );
+    const keys = new Set<string>();
+    for (const r of results) {
+      if (r.status === "fulfilled") r.value.forEach((k) => keys.add(k));
+    }
+    setDeletedEntitySet(keys);
+  }, [isAdmin]);
+
+  useEffect(() => { loadDeletedEntities(); }, [loadDeletedEntities]);
+
+  const auditDerivedDeletedSet = useMemo(() => {
+    const state = new Map<string, "deleted" | "active">();
+    const sorted = [...entries].sort(
+      (a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime()
+    );
+    for (const e of sorted) {
+      if (!e.entityId || !(e.entityType in RESTORE_ENDPOINTS)) continue;
+      const key = `${e.entityType}:${e.entityId}`;
+      if (e.action === "SOFT_DELETE") state.set(key, "deleted");
+      else if (e.action === "RESTORE") state.set(key, "active");
+    }
+    const deleted = new Set<string>();
+    state.forEach((s, k) => { if (s === "deleted") deleted.add(k); });
+    return deleted;
+  }, [entries]);
+
+  const isCurrentlyDeleted = (e: AuditEntry) => {
+    if (!e.entityId || !(e.entityType in RESTORE_ENDPOINTS)) return false;
+    const key = `${e.entityType}:${e.entityId}`;
+    return deletedEntitySet.has(key) || auditDerivedDeletedSet.has(key);
+  };
+
   const restore = async (entry: AuditEntry) => {
     if (!entry.entityId) return;
-    const endpoint = entry.entityType === "Medicine"
-      ? `/medicines/${entry.entityId}/restore`
-      : `/categories/${entry.entityId}/restore`;
+    const base = RESTORE_ENDPOINTS[entry.entityType];
+    if (!base) return;
     setRestoring(entry.id);
     setRestoreError("");
     setRestoreSuccess("");
     try {
-      await api(endpoint, { method: "POST" });
+      await api(`${base}/${entry.entityId}/restore`, { method: "POST" });
       setRestoreSuccess(`"${entry.recordName}" restored successfully.`);
       load();
+      loadDeletedEntities();
     } catch (err) {
       setRestoreError(err instanceof Error ? err.message : "Restore failed");
     } finally {
@@ -184,133 +283,171 @@ export default function AuditTrailPage() {
 
   if (!isAdmin) return null;
 
-  const hasDiff = (e: AuditEntry) =>
-    (e.previousValues && Object.keys(e.previousValues).length > 0) ||
-    (e.currentValues && Object.keys(e.currentValues).length > 0);
-
-  const noLocationTypes = new Set(["Medicine", "MedicineCategory", "Role"]);
-
   return (
-    <div className="space-y-6">
-      <div className="flex items-center gap-2">
-        <ScrollText className="h-5 w-5 text-medflow-600" />
-        <div>
-          <h1 className="text-2xl font-bold">Audit Trail &amp; Restore</h1>
-        </div>
+    <div className="space-y-5">
+      <h1 className="text-2xl font-bold tracking-tight">Audit Logs</h1>
+
+      {restoreSuccess && (
+        <p className="rounded-lg bg-emerald-50 px-4 py-2.5 text-sm text-emerald-700 ring-1 ring-emerald-200">
+          {restoreSuccess}
+        </p>
+      )}
+      {restoreError && (
+        <p className="rounded-lg bg-red-50 px-4 py-2.5 text-sm text-red-700 ring-1 ring-red-200">
+          {restoreError}
+        </p>
+      )}
+
+      {/* Category pills */}
+      <div className="flex flex-wrap gap-1.5">
+        {CATEGORIES.map((c) => (
+          <button
+            key={c.key || "all"}
+            type="button"
+            onClick={() => setCategory(c.key)}
+            className={`rounded-full border px-3 py-1 text-sm font-medium transition ${
+              category === c.key
+                ? "border-medflow-300 bg-medflow-50 text-medflow-700"
+                : "border-slate-200 text-slate-500 hover:bg-slate-50"
+            }`}
+          >
+            {c.label}
+          </button>
+        ))}
       </div>
 
-      {restoreSuccess && <p className="rounded-lg bg-green-50 p-3 text-sm text-green-700">{restoreSuccess}</p>}
-      {restoreError && <p className="rounded-lg bg-red-50 p-3 text-sm text-red-700">{restoreError}</p>}
-
-      {/* Filters */}
-      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-        <div className="flex flex-wrap gap-1">
-          {CATEGORIES.map((c) => (
+      {/* Time range + search */}
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <div className="flex flex-wrap items-center gap-1.5">
+          {RANGES.map((r) => (
             <button
-              key={c.key || "all"}
+              key={r.key}
               type="button"
-              onClick={() => setCategory(c.key)}
+              onClick={() => setRange(r.key)}
               className={`rounded-full border px-3 py-1 text-sm font-medium transition ${
-                category === c.key ? "border-medflow-300 bg-medflow-50 text-medflow-700" : "border-slate-200 text-slate-500 hover:bg-slate-50"
+                range === r.key
+                  ? "border-medflow-300 bg-medflow-50 text-medflow-700"
+                  : "border-slate-200 text-slate-500 hover:bg-slate-50"
               }`}
             >
-              {c.label}
+              {r.label}
             </button>
           ))}
+          {range === "custom" && (
+            <div className="flex items-center gap-1.5 ml-1">
+              <DateInput
+                value={customFrom}
+                max={customTo || undefined}
+                onChange={(e) => setCustomFrom(e.target.value)}
+                className="h-9 w-36 text-sm"
+                aria-label="From date"
+                placeholder="From"
+              />
+              <span className="text-slate-400">–</span>
+              <DateInput
+                value={customTo}
+                min={customFrom || undefined}
+                onChange={(e) => setCustomTo(e.target.value)}
+                className="h-9 w-36 text-sm"
+                aria-label="To date"
+                placeholder="To"
+              />
+            </div>
+          )}
         </div>
-        <div className="flex flex-wrap items-center gap-2">
-          <div className="flex gap-1">
-            {RANGES.map((r) => (
-              <button
-                key={r.key}
-                type="button"
-                onClick={() => setRange(r.key)}
-                className={`rounded-full border px-2.5 py-1 text-sm font-medium transition ${
-                  range === r.key ? "border-medflow-300 bg-medflow-50 text-medflow-700" : "border-slate-200 text-slate-500 hover:bg-slate-50"
-                }`}
-              >
-                {r.label}
-              </button>
-            ))}
-          </div>
-          <div className="relative">
-            <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
-            <Input className="h-9 w-44 pl-9" placeholder="" value={search} onChange={(e) => setSearch(e.target.value)} />
-          </div>
+        <div className="relative">
+          <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
+          <Input
+            className="h-9 w-52 pl-9"
+            placeholder="Search records…"
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+          />
         </div>
       </div>
 
+      {/* Table */}
       <Card>
         <CardContent className="overflow-x-auto p-0">
-          <table className="w-full min-w-[760px] text-sm">
+          <table className="w-full min-w-[700px] text-sm">
             <thead>
-              <tr className="border-b bg-slate-50 text-left">
-                <th className="p-3">When</th>
-                <th className="p-3">Action</th>
-                <th className="p-3">Type</th>
-                <th className="p-3">Record</th>
-                <th className="p-3">By</th>
-                <th className="p-3">Location</th>
-                <th className="p-3">Details</th>
+              <tr className="border-b bg-slate-50 text-left text-xs font-semibold uppercase tracking-wide text-slate-400">
+                <th className="px-4 py-3">When</th>
+                <th className="px-4 py-3">Action</th>
+                <th className="px-4 py-3">Type</th>
+                <th className="px-4 py-3">Record</th>
+                <th className="px-4 py-3">Changed by</th>
+                <th className="px-4 py-3">Facility</th>
+                <th className="px-4 py-3 text-right">Actions</th>
               </tr>
             </thead>
             <tbody>
-              {entries.map((e) => (
-                <>
-                  <tr key={e.id} className="border-b hover:bg-slate-50/70">
-                    <td className="whitespace-nowrap p-3 text-slate-500">{new Date(e.timestamp).toLocaleString()}</td>
-                    <td className="p-3">
-                      <span className={`rounded px-1.5 py-0.5 text-sm font-semibold ${actionClass(e.action)}`}>{e.actionLabel}</span>
-                    </td>
-                    <td className="p-3 text-slate-600">{e.entityType}</td>
-                    <td className="p-3 font-medium">{e.recordName}</td>
-                    <td className="p-3 text-slate-600">{e.changedBy}</td>
-                    <td className="p-3 text-slate-500">
-                      {noLocationTypes.has(e.entityType) ? "—" : (e.facility ?? "—")}
-                    </td>
-                    <td className="p-3">
-                      <div className="flex flex-wrap items-center gap-1.5">
-                        {hasDiff(e) && (
+              {entries.map((e) => {
+                const { date, time } = formatDate(e.timestamp);
+                const isOpen = expanded === e.id;
+                return (
+                  <>
+                    <tr
+                      key={e.id}
+                      className={`border-b transition hover:bg-slate-50/60 ${isOpen ? "bg-slate-50/60" : ""}`}
+                    >
+                      <td className="px-4 py-3 text-slate-500">
+                        <span className="block text-slate-700">{date}</span>
+                        <span className="block text-xs text-slate-400">{time}</span>
+                      </td>
+                      <td className="px-4 py-3">
+                        <span className={`inline-block rounded-md px-2 py-0.5 text-xs font-semibold ${actionBadge(e.action)}`}>
+                          {e.actionLabel}
+                        </span>
+                      </td>
+                      <td className="px-4 py-3 text-slate-500">{e.entityType}</td>
+                      <td className="px-4 py-3 font-medium text-slate-800">{e.recordName}</td>
+                      <td className="px-4 py-3 text-slate-500">{e.changedBy}</td>
+                      <td className="px-4 py-3 text-slate-400">
+                        {NO_LOCATION_TYPES.has(e.entityType) ? "—" : (e.facility ?? "—")}
+                      </td>
+                      <td className="px-4 py-3">
+                        <div className="flex items-center justify-end gap-1.5">
                           <button
                             type="button"
-                            onClick={() => setExpanded(expanded === e.id ? null : e.id)}
-                            className="flex items-center gap-1 rounded-full border border-slate-200 px-2 py-0.5 text-sm text-slate-600 hover:bg-slate-50"
-                          >
-                            {expanded === e.id ? <ChevronUp className="h-3 w-3" /> : <ChevronDown className="h-3 w-3" />}
-                            View
-                          </button>
-                        )}
-                        {e.action === "SOFT_DELETE" && e.entityId && (e.entityType === "Medicine" || e.entityType === "MedicineCategory") && (
-                          <Button
-                            size="sm"
-                            variant="outline"
-                            className="h-6 px-2 text-sm"
-                            disabled={restoring === e.id}
+                            disabled={!isCurrentlyDeleted(e) || restoring === e.id}
                             onClick={() => restore(e)}
+                            title={isCurrentlyDeleted(e) ? `Restore "${e.recordName}"` : "Restore is only available for deleted records"}
+                            aria-label={isCurrentlyDeleted(e) ? `Restore ${e.recordName}` : "Restore unavailable"}
+                            className={`inline-flex h-8 w-8 items-center justify-center rounded-md border transition ${
+                              isCurrentlyDeleted(e)
+                                ? "border-emerald-200 bg-emerald-50 text-emerald-700 hover:bg-emerald-100"
+                                : "cursor-not-allowed border-slate-200 text-slate-300"
+                            }`}
                           >
-                            <RotateCcw className="mr-1 h-3 w-3" />
-                            {restoring === e.id ? "Restoring…" : "Restore"}
-                          </Button>
-                        )}
-                      </div>
-                    </td>
-                  </tr>
-                  {expanded === e.id && (
-                    <tr key={`${e.id}-detail`} className="border-b bg-slate-50/60">
-                      <td colSpan={7} className="px-4 py-3">
-                        {e.changeDetails && (
-                          <p className="mb-2 text-sm text-slate-500">{e.changeDetails}</p>
-                        )}
-                        <ChangeDiff prev={e.previousValues} curr={e.currentValues} />
+                            <RotateCcw className={`h-4 w-4 ${restoring === e.id ? "animate-spin" : ""}`} />
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => setExpanded(isOpen ? null : e.id)}
+                            title={isOpen ? "Hide details" : "View details"}
+                            aria-label={isOpen ? "Hide details" : "View details"}
+                            className={`inline-flex h-8 w-8 items-center justify-center rounded-md border transition ${
+                              isOpen
+                                ? "border-medflow-300 bg-medflow-50 text-medflow-700"
+                                : "border-slate-200 text-slate-600 hover:bg-slate-50"
+                            }`}
+                          >
+                            {isOpen ? <ChevronUp className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+                          </button>
+                        </div>
                       </td>
                     </tr>
-                  )}
-                </>
-              ))}
+                    {isOpen && (
+                      <ExpandedDetail key={`${e.id}-detail`} entry={e} />
+                    )}
+                  </>
+                );
+              })}
               {entries.length === 0 && (
                 <tr>
-                  <td colSpan={7} className="p-6 text-center text-muted-foreground">
-                    {busy ? "Loading…" : "No audit entries for this filter."}
+                  <td colSpan={7} className="px-4 py-10 text-center text-sm text-slate-400">
+                    {busy ? "Loading…" : "No audit entries match this filter."}
                   </td>
                 </tr>
               )}
@@ -318,6 +455,7 @@ export default function AuditTrailPage() {
           </table>
         </CardContent>
       </Card>
+
     </div>
   );
 }

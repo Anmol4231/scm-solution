@@ -1,6 +1,8 @@
 import { Router } from "express";
 import { config } from "../utils/config";
 import { whatsappService } from "../whatsapp/service";
+import { authenticate, requireRoles } from "../middleware/auth";
+import { UserRole } from "@prisma/client";
 
 const router = Router();
 
@@ -33,16 +35,25 @@ router.post("/webhook", async (req, res) => {
   }
 });
 
-// Manual command test endpoint (dev)
-router.post("/command", async (req, res, next) => {
-  try {
-    const { text, facilityId } = req.body;
-    const { parseWhatsAppCommand } = await import("../whatsapp/commands");
-    const result = await parseWhatsAppCommand(text, facilityId);
-    res.json(result);
-  } catch (e) {
-    next(e);
+// Manual command test endpoint — authentication + SUPER_ADMIN required; disabled in production.
+router.post(
+  "/command",
+  (req, res, next) => {
+    if (config.nodeEnv === "production") return res.sendStatus(404);
+    next();
+  },
+  authenticate,
+  requireRoles(UserRole.SUPER_ADMIN),
+  async (req, res, next) => {
+    try {
+      const { text, facilityId } = req.body;
+      const { parseWhatsAppCommand } = await import("../whatsapp/commands");
+      const result = await parseWhatsAppCommand(text, facilityId);
+      res.json(result);
+    } catch (e) {
+      next(e);
+    }
   }
-});
+);
 
 export default router;

@@ -1,6 +1,6 @@
 import { TransferStatus } from "@prisma/client";
 import { prisma } from "../lib/prisma";
-import { getMedicineBalance, daysUntilExpiry } from "../utils/stock";
+import { daysUntilExpiry } from "../utils/stock";
 import { config } from "../utils/config";
 
 const INBOUND_TYPES = ["RECEIPT", "RETURN_IN", "TRANSFER_IN"];
@@ -166,13 +166,26 @@ export async function buildAdminDashboard(facilityIdFilter?: string) {
     }),
   ]);
 
+  // One query for all facility+medicine balances instead of F×M sequential calls
+  const rawBalances = await prisma.stockBatch.groupBy({
+    by: ["facilityId", "medicineId"],
+    where: {
+      facilityId: { in: facilityIds },
+      quantity: { gt: 0 },
+    },
+    _sum: { quantity: true },
+  });
+  const balMap = new Map<string, number>(
+    rawBalances.map((b) => [`${b.facilityId}:${b.medicineId}`, b._sum.quantity ?? 0])
+  );
+
   const facilityStats = await Promise.all(
     facilities.map(async (f) => {
       let totalStock = 0;
       let lowCount = 0;
       let stockoutCount = 0;
       for (const m of medicines) {
-        const bal = await getMedicineBalance(m.id, f.id);
+        const bal = balMap.get(`${f.id}:${m.id}`) ?? 0;
         totalStock += bal;
         if (bal <= 0) stockoutCount++;
         else if (bal <= m.reorderThreshold) lowCount++;

@@ -1,5 +1,7 @@
 import express from "express";
 import cors from "cors";
+import helmet from "helmet";
+import rateLimit from "express-rate-limit";
 import path from "path";
 import { config } from "./utils/config";
 import { errorHandler } from "./middleware/errorHandler";
@@ -32,6 +34,19 @@ import whatsappRoutes from "./routes/whatsapp";
 
 const app = express();
 
+// S1 — security headers
+app.use(helmet());
+
+// S2 — rate limiting on auth endpoints (applied per-route below)
+const authLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000, // 15 minutes
+  max: 30,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: "Too many requests, please try again later." },
+  skip: () => config.nodeEnv === "development",
+});
+
 const allowedOrigins = config.corsOrigin.split(",").map((o) => o.trim());
 const devNetworkOriginPattern =
   /^https?:\/\/(localhost|127\.0\.0\.1|10\.\d{1,3}\.\d{1,3}\.\d{1,3}|172\.(1[6-9]|2\d|3[0-1])\.\d{1,3}\.\d{1,3}|192\.168\.\d{1,3}\.\d{1,3})(:\d+)?$/;
@@ -60,7 +75,7 @@ app.get("/api/config", (_req, res) =>
   res.json({ emailEnabled: config.email.enabled && !!config.email.smtpHost })
 );
 
-app.use("/api/auth", authRoutes);
+app.use("/api/auth", authLimiter, authRoutes);
 app.use("/api/users", userRoutes);
 app.use("/api/roles", roleRoutes);
 app.use("/api/facilities", facilityRoutes);

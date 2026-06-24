@@ -2,7 +2,7 @@ import { Router } from "express";
 import { TransferStatus } from "@prisma/client";
 import { prisma } from "../lib/prisma";
 import { authenticate, getFacilityId } from "../middleware/auth";
-import { getMedicineBalance, daysUntilExpiry } from "../utils/stock";
+import { daysUntilExpiry } from "../utils/stock";
 import { config } from "../utils/config";
 import { isAdminDashboardRole } from "../utils/roles";
 import { buildAdminDashboard } from "../services/adminDashboard";
@@ -50,12 +50,13 @@ router.get("/facility", async (req, res, next) => {
         }),
       ]);
 
-    const stockBalances = await Promise.all(
-      medicines.map(async (m) => ({
-        medicine: m,
-        balance: await getMedicineBalance(m.id, facilityId),
-      }))
-    );
+    const batchAgg = await prisma.stockBatch.groupBy({
+      by: ["medicineId"],
+      where: { facilityId, quantity: { gt: 0 } },
+      _sum: { quantity: true },
+    });
+    const balByMed = new Map(batchAgg.map((b) => [b.medicineId, b._sum.quantity ?? 0]));
+    const stockBalances = medicines.map((m) => ({ medicine: m, balance: balByMed.get(m.id) ?? 0 }));
 
     const lowStock = stockBalances.filter((s) => s.balance <= s.medicine.reorderThreshold && s.balance > 0);
     const stockouts = stockBalances.filter((s) => s.balance <= 0);
@@ -74,15 +75,16 @@ router.get("/facility", async (req, res, next) => {
       take: 8,
     });
 
-    const topConsumed = await Promise.all(
-      dispensingByMedicine.map(async (d) => {
-        const med = await prisma.medicine.findUnique({
-          where: { id: d.medicineId },
-          include: { category: true },
-        });
-        return { medicine: med, quantity: d._sum.quantity ?? 0 };
-      })
-    );
+    const topMedIds = dispensingByMedicine.map((d) => d.medicineId);
+    const topMeds = await prisma.medicine.findMany({
+      where: { id: { in: topMedIds } },
+      include: { category: true },
+    });
+    const topMedMap = new Map(topMeds.map((m) => [m.id, m]));
+    const topConsumed = dispensingByMedicine.map((d) => ({
+      medicine: topMedMap.get(d.medicineId) ?? null,
+      quantity: d._sum.quantity ?? 0,
+    }));
 
     const categoryBreakdown: Record<string, number> = {};
     for (const item of stockBalances) {

@@ -112,9 +112,6 @@ export default function StockManagementPage() {
     <div className="space-y-5">
       <div>
         <h1 className="text-2xl font-bold tracking-tight">Stock Management</h1>
-        <p className="mt-1 text-sm text-muted-foreground">
-          Central inventory hub — select an action below.
-        </p>
       </div>
 
       {/* All actions are shown; ones you cannot access are disabled (greyed out). */}

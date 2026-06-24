@@ -3,13 +3,14 @@
 import { useCallback, useEffect, useState } from "react";
 import { useParams, useRouter } from "next/navigation";
 import Link from "next/link";
-import { AlertCircle, ArrowLeft, Ban, FileText, Loader2, Syringe } from "lucide-react";
+import { AlertCircle, ArrowLeft, Ban, FileText, Syringe } from "lucide-react";
 import { api, resolveApiUrl } from "@/lib/api";
 import { useRequirePermission } from "@/hooks/useRequirePermission";
 import { useAuth } from "@/lib/auth-context";
 import { can } from "@/lib/permissions";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { PageSkeleton } from "@/components/ui/page-skeleton";
 import { OperationsTabs } from "@/components/layout/operations-tabs";
 
 function apiBaseUrl() {
@@ -108,7 +109,7 @@ export default function PrescriptionDetailPage() {
     return (
       <div className="space-y-4">
         <OperationsTabs />
-        <p className="flex items-center gap-2 p-6 text-sm text-muted-foreground"><Loader2 className="h-4 w-4 animate-spin" /> Loading prescription…</p>
+        <PageSkeleton />
       </div>
     );
   }

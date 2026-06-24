@@ -7,6 +7,8 @@ import {
   Eye, Loader2, Printer, Search, X,
 } from "lucide-react";
 import { api } from "@/lib/api";
+import { dateInputMin, dateInputMax } from "@/lib/datetime";
+import { DateInput } from "@/components/ui/date-input";
 import { useRequirePermission } from "@/hooks/useRequirePermission";
 import { useAuth } from "@/lib/auth-context";
 import { Button } from "@/components/ui/button";
@@ -384,12 +386,12 @@ export default function DispensingReportsPage() {
           <CardContent className="space-y-3 border-t p-4">
             <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
               <div>
-                <Label className="text-xs">From</Label>
-                <Input type="date" className="h-9" value={filters.from} onChange={(e) => pf({ from: e.target.value })} />
+                <Label htmlFor="dispense-log-from" className="text-xs">From</Label>
+                <DateInput id="dispense-log-from" className="h-9" min={dateInputMin()} max={filters.to || dateInputMax()} value={filters.from} onChange={(e) => pf({ from: e.target.value })} />
               </div>
               <div>
-                <Label className="text-xs">To</Label>
-                <Input type="date" className="h-9" value={filters.to} onChange={(e) => pf({ to: e.target.value })} />
+                <Label htmlFor="dispense-log-to" className="text-xs">To</Label>
+                <DateInput id="dispense-log-to" className="h-9" min={filters.from || dateInputMin()} max={dateInputMax()} value={filters.to} onChange={(e) => pf({ to: e.target.value })} />
               </div>
               <div>
                 <Label className="text-xs">Patient Name</Label>
@@ -415,7 +417,7 @@ export default function DispensingReportsPage() {
                 <div>
                   <Label className="text-xs">Facility</Label>
                   <select
-                    className="h-9 w-full rounded-lg border px-3 text-sm"
+                    className="h-9 w-full rounded-lg border bg-white px-3 text-sm"
                     value={filters.facilityId}
                     onChange={(e) => pf({ facilityId: e.target.value })}
                   >
@@ -551,11 +553,13 @@ export default function DispensingReportsPage() {
                     <td className="p-2 pr-4 text-right">
                       <Button
                         size="sm"
-                        variant="outline"
+                        variant="ghost"
                         onClick={() => setDetailGroup(g)}
-                        className="h-7 px-2 text-xs"
+                        className="h-8 w-8 p-0 text-slate-500 hover:bg-slate-100 hover:text-slate-700"
+                        title="View details"
+                        aria-label="View dispensing details"
                       >
-                        <Eye className="mr-1 h-3.5 w-3.5" /> View
+                        <Eye className="h-4 w-4" aria-hidden="true" />
                       </Button>
                     </td>
                   </tr>

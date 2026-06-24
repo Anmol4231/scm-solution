@@ -6,6 +6,8 @@ import Link from "next/link";
 import { Bell } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { api } from "@/lib/api";
+import { dateInputMin, dateInputMax } from "@/lib/datetime";
+import { DateInput } from "@/components/ui/date-input";
 import { useAuth } from "@/lib/auth-context";
 import { isAdminDashboardRole } from "@/lib/roles";
 import { LocationFilter } from "@/components/admin/location-filter";
@@ -146,11 +148,11 @@ export default function AdminDashboardPage() {
             <div className="flex flex-wrap items-center gap-2 text-sm text-slate-500">
               <label className="flex items-center gap-1">
                 From
-                <Input type="date" className="h-9 w-auto" value={customFrom} onChange={(e) => setCustomFrom(e.target.value)} />
+                <DateInput aria-label="From date" className="h-9 w-auto" min={dateInputMin()} max={customTo || dateInputMax()} value={customFrom} onChange={(e) => setCustomFrom(e.target.value)} />
               </label>
               <label className="flex items-center gap-1">
                 To
-                <Input type="date" className="h-9 w-auto" value={customTo} onChange={(e) => setCustomTo(e.target.value)} />
+                <DateInput aria-label="To date" className="h-9 w-auto" min={customFrom || dateInputMin()} max={dateInputMax()} value={customTo} onChange={(e) => setCustomTo(e.target.value)} />
               </label>
             </div>
           )}

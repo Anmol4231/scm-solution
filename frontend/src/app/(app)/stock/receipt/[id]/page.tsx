@@ -12,7 +12,8 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { formatDateTime, formatDate } from "@/lib/datetime";
+import { formatDateTime, formatDate, dateInputMax } from "@/lib/datetime";
+import { DateInput } from "@/components/ui/date-input";
 
 interface ReceiptLine {
   id: string;
@@ -433,9 +434,9 @@ export default function OrderReceivingPage() {
                               />
                             </td>
                             <td className="p-3">
-                              <Input
-                                type="date"
+                              <DateInput
                                 min={minExpiry}
+                                max={dateInputMax()}
                                 disabled={!isReceiving}
                                 value={formLine?.expiryDate ?? ""}
                                 className="w-full"
@@ -817,10 +818,10 @@ export default function OrderReceivingPage() {
                                               />
                                             </td>
                                             <td className="p-2">
-                                              <Input
-                                                type="date"
+                                              <DateInput
                                                 className="w-48"
                                                 min={tomorrowStr()}
+                                                max={dateInputMax()}
                                                 aria-label="Expiry date"
                                                 value={
                                                   formLine?.expiryDate ??

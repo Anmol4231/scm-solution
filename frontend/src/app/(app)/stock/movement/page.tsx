@@ -2,7 +2,10 @@
 
 import { useState } from "react";
 import Link from "next/link";
+import { ArrowUpDown } from "lucide-react";
 import { api } from "@/lib/api";
+import { dateInputMin, dateInputMax } from "@/lib/datetime";
+import { DateInput } from "@/components/ui/date-input";
 import { useAuth } from "@/lib/auth-context";
 import { isAdminDashboardRole } from "@/lib/roles";
 import { Button } from "@/components/ui/button";
@@ -50,6 +53,20 @@ export default function StockMovementPage() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
 
+  // Sorting (client-side — the whole report is loaded at once)
+  const [sortBy, setSortBy] = useState<keyof MovementRow>("medicineName");
+  const [sortDir, setSortDir] = useState<"asc" | "desc">("asc");
+  const toggleSort = (field: keyof MovementRow) => {
+    if (sortBy === field) setSortDir((d) => (d === "asc" ? "desc" : "asc"));
+    else { setSortBy(field); setSortDir("asc"); }
+  };
+  const SortButton = ({ field, label }: { field: keyof MovementRow; label: string }) => (
+    <button type="button" onClick={() => toggleSort(field)} className="inline-flex items-center gap-1 font-medium hover:text-medflow-700">
+      {label}
+      <ArrowUpDown className={`h-3.5 w-3.5 ${sortBy === field ? "text-medflow-600" : "text-slate-300"}`} />
+    </button>
+  );
+
   const loadFacilities = () => {
     if (!facilitiesLoaded && isAdmin) {
       api<{ id: string; name: string; code: string }[]>("/auth/facilities").then((f) => { setFacilities(f); setFacilitiesLoaded(true); });
@@ -78,6 +95,16 @@ export default function StockMovementPage() {
   const total = (field: keyof MovementRow) =>
     report?.rows.reduce((sum, r) => sum + (Number(r[field]) || 0), 0) ?? 0;
 
+  const sortedRows = report
+    ? [...report.rows].sort((a, b) => {
+        const av = a[sortBy], bv = b[sortBy];
+        const cmp = typeof av === "number" && typeof bv === "number"
+          ? av - bv
+          : String(av).localeCompare(String(bv));
+        return sortDir === "asc" ? cmp : -cmp;
+      })
+    : [];
+
   return (
     <div className="space-y-4">
       <div>
@@ -89,17 +116,17 @@ export default function StockMovementPage() {
       {/* Filters */}
       <div className="flex flex-wrap items-end gap-3 rounded-lg border bg-slate-50 p-4">
         <div>
-          <label className="mb-1 block text-sm font-medium text-slate-600">From</label>
-          <input type="date" value={from} onChange={(e) => setFrom(e.target.value)} className="h-9 rounded-lg border px-2 text-sm" />
+          <label htmlFor="movement-from" className="mb-1 block text-sm font-medium text-slate-600">From</label>
+          <DateInput id="movement-from" value={from} min={dateInputMin()} max={to || dateInputMax()} onChange={(e) => setFrom(e.target.value)} className="h-9" />
         </div>
         <div>
-          <label className="mb-1 block text-sm font-medium text-slate-600">To</label>
-          <input type="date" value={to} onChange={(e) => setTo(e.target.value)} className="h-9 rounded-lg border px-2 text-sm" />
+          <label htmlFor="movement-to" className="mb-1 block text-sm font-medium text-slate-600">To</label>
+          <DateInput id="movement-to" value={to} min={from || dateInputMin()} max={dateInputMax()} onChange={(e) => setTo(e.target.value)} className="h-9" />
         </div>
         {isAdmin && (
           <div onFocus={loadFacilities}>
             <label className="mb-1 block text-sm font-medium text-slate-600">Facility</label>
-            <select value={facilityId} onChange={(e) => setFacilityId(e.target.value)} className="h-9 rounded-lg border px-2 text-sm">
+            <select value={facilityId} onChange={(e) => setFacilityId(e.target.value)} className="h-9 rounded-lg border bg-white px-2 text-sm">
               <option value="">All Facilities</option>
               {facilities.map((f) => <option key={f.id} value={f.id}>{f.name} ({f.code})</option>)}
             </select>
@@ -124,22 +151,22 @@ export default function StockMovementPage() {
             <table className="w-full text-sm">
               <thead className="border-b bg-slate-50 text-slate-600">
                 <tr>
-                  <th className="px-3 py-2 text-left font-medium">Medicine</th>
-                  <th className="px-3 py-2 text-left font-medium">Category</th>
-                  <th className="px-3 py-2 text-right font-medium">Opening</th>
-                  <th className="px-3 py-2 text-right font-medium text-emerald-700">Receipts</th>
-                  <th className="px-3 py-2 text-right font-medium text-emerald-700">Transfers In</th>
-                  <th className="px-3 py-2 text-right font-medium text-emerald-700">Returns In</th>
-                  <th className="px-3 py-2 text-right font-medium text-red-600">Consumed</th>
-                  <th className="px-3 py-2 text-right font-medium text-red-600">Dispensed</th>
-                  <th className="px-3 py-2 text-right font-medium text-red-600">Transfers Out</th>
-                  <th className="px-3 py-2 text-right font-medium text-red-600">Disposals</th>
-                  <th className="px-3 py-2 text-right font-medium text-slate-500">Adjustments</th>
-                  <th className="px-3 py-2 text-right font-medium">Closing</th>
+                  <th className="px-3 py-2 text-left font-medium"><SortButton field="medicineName" label="Medicine" /></th>
+                  <th className="px-3 py-2 text-left font-medium"><SortButton field="category" label="Category" /></th>
+                  <th className="px-3 py-2 text-right font-medium"><SortButton field="openingBalance" label="Opening" /></th>
+                  <th className="px-3 py-2 text-right font-medium text-emerald-700"><SortButton field="receipts" label="Receipts" /></th>
+                  <th className="px-3 py-2 text-right font-medium text-emerald-700"><SortButton field="transfersIn" label="Transfers In" /></th>
+                  <th className="px-3 py-2 text-right font-medium text-emerald-700"><SortButton field="returnsIn" label="Returns In" /></th>
+                  <th className="px-3 py-2 text-right font-medium text-red-600"><SortButton field="consumptions" label="Consumed" /></th>
+                  <th className="px-3 py-2 text-right font-medium text-red-600"><SortButton field="dispensings" label="Dispensed" /></th>
+                  <th className="px-3 py-2 text-right font-medium text-red-600"><SortButton field="transfersOut" label="Transfers Out" /></th>
+                  <th className="px-3 py-2 text-right font-medium text-red-600"><SortButton field="disposals" label="Disposals" /></th>
+                  <th className="px-3 py-2 text-right font-medium text-slate-500"><SortButton field="adjustments" label="Adjustments" /></th>
+                  <th className="px-3 py-2 text-right font-medium"><SortButton field="closingBalance" label="Closing" /></th>
                 </tr>
               </thead>
               <tbody className="divide-y">
-                {report.rows.map((row) => (
+                {sortedRows.map((row) => (
                   <tr key={row.medicineId} className="hover:bg-slate-50">
                     <td className="px-3 py-2 font-medium">{row.medicineName}</td>
                     <td className="px-3 py-2 text-slate-500">{row.category}</td>

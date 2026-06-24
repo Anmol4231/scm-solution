@@ -1,13 +1,18 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
+import { createPortal } from "react-dom";
+import { SkeletonRows } from "@/components/ui/page-skeleton";
 import Link from "next/link";
-import { AlertTriangle, Clock, PackageX, ChevronDown, ChevronUp, X, ArrowLeftRight, Eye, Trash2 } from "lucide-react";
+import { AlertTriangle, Clock, PackageX, ChevronDown, ChevronUp, X, Eye, Trash2, ArrowUpDown } from "lucide-react";
 import { api } from "@/lib/api";
+import { useMedicines } from "@/lib/medicines-cache";
+import { dateInputMin, dateInputMax } from "@/lib/datetime";
+import { DateInput } from "@/components/ui/date-input";
 import { useAuth } from "@/lib/auth-context";
 import { isCrossFacilityRole } from "@/lib/roles";
 import { useRequirePermission } from "@/hooks/useRequirePermission";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -27,11 +32,6 @@ interface ExpiryResponse {
   categoryAnalytics?: { category: string; count: number; quantity: number; critical: number }[];
   facilityAnalytics?: { name: string; count: number; quantity: number }[];
   recommendations?: { medicineId: string; medicineName: string; batchNumber: string; facility: string; daysUntilExpiry: number; quantity: number; recommendation: string }[];
-}
-interface DisposalRecord {
-  id: string; batchNumber: string; medicineName: string; quantity: number;
-  disposalMethod: string; disposalWitness?: string | null; createdAt: string;
-  facilityName?: string; processedByName?: string;
 }
 interface Witness { id: string; name: string }
 
@@ -66,13 +66,34 @@ function rowBg(s: string) {
 // ─── Modal shell ──────────────────────────────────────────────────────────────
 function Modal({ title, onClose, children }: { title: string; onClose: () => void; children: React.ReactNode }) {
   const overlayRef = useRef<HTMLDivElement>(null);
-  return (
+  const dialogRef = useRef<HTMLDivElement>(null);
+  const [mounted, setMounted] = useState(false);
+
+  // Trap focus on the dialog and lock the page behind it while open.
+  useEffect(() => {
+    setMounted(true);
+    const prevOverflow = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    dialogRef.current?.focus();
+    const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") onClose(); };
+    document.addEventListener("keydown", onKey);
+    return () => {
+      document.body.style.overflow = prevOverflow;
+      document.removeEventListener("keydown", onKey);
+    };
+  }, [onClose]);
+
+  if (!mounted) return null;
+
+  // Render to <body> so the overlay escapes <main>'s view-transition stacking
+  // context and covers the header (logo) and sidebar too.
+  return createPortal(
     <div
       ref={overlayRef}
-      className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/50 p-4"
+      className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/60 p-4"
       onMouseDown={(e) => { if (e.target === overlayRef.current) onClose(); }}
     >
-      <div className="relative w-full max-w-lg rounded-xl bg-white shadow-2xl">
+      <div ref={dialogRef} tabIndex={-1} role="dialog" aria-modal="true" aria-label={title} className="relative w-full max-w-lg rounded-xl bg-white shadow-2xl outline-none">
         <div className="flex items-center justify-between border-b px-5 py-4">
           <h2 className="text-base font-semibold text-slate-800">{title}</h2>
           <button type="button" onClick={onClose} className="rounded-lg p-1 text-slate-400 hover:bg-slate-100 hover:text-slate-600">
@@ -81,7 +102,8 @@ function Modal({ title, onClose, children }: { title: string; onClose: () => voi
         </div>
         <div className="px-5 py-4">{children}</div>
       </div>
-    </div>
+    </div>,
+    document.body
   );
 }
 
@@ -102,7 +124,7 @@ function StatCard({ label, value, accent, icon: Icon }: { label: string; value: 
 function WitnessSelect({ witnesses, value, onChange }: { witnesses: Witness[]; value: string; onChange: (v: string) => void }) {
   return (
     <select
-      className="mt-1 h-9 w-full rounded-lg border px-3 text-sm"
+      className="mt-1 h-9 w-full rounded-lg border bg-white px-3 text-sm"
       value={value}
       onChange={(e) => onChange(e.target.value)}
     >
@@ -120,25 +142,36 @@ export default function ExpiryPage() {
   const isAdmin = isCrossFacilityRole(user?.role);
   const hasAccess = useRequirePermission("expiry");
 
+  // Person performing the disposal — used to keep them out of the witness list.
+  const disposerName = `${user?.firstName ?? ""} ${user?.lastName ?? ""}`.trim();
+  const sameAsDisposer = (name: string) =>
+    !!disposerName && name.trim().toLowerCase() === disposerName.toLowerCase();
+
   // Filter state
   const [withinDays, setWithinDays] = useState("90");
   const [categoryId, setCategoryId] = useState("");
   const [facilityFilter, setFacilityFilter] = useState("");
   const [status, setStatus] = useState("all");
 
+  // Sorting for the expiry batches table
+  const [sortBy, setSortBy] = useState<"medicine" | "batch" | "expiry" | "days" | "quantity" | "severity" | "facility">("expiry");
+  const [sortDir, setSortDir] = useState<"asc" | "desc">("asc");
+  const toggleSort = (field: typeof sortBy) => {
+    if (sortBy === field) setSortDir((d) => (d === "asc" ? "desc" : "asc"));
+    else { setSortBy(field); setSortDir("asc"); }
+  };
+
   // Data
   const [data, setData] = useState<ExpiryResponse | null>(null);
+  const [loadingAlerts, setLoadingAlerts] = useState(true);
   const [categories, setCategories] = useState<Category[]>([]);
   const [facilities, setFacilities] = useState<{ id: string; name: string }[]>([]);
-  const [medicines, setMedicines] = useState<{ id: string; medicineName: string }[]>([]);
+  const { data: medicines = [] } = useMedicines();
   const [witnesses, setWitnesses] = useState<Witness[]>([]);
 
   // Secondary panels
   const [showAnalytics, setShowAnalytics] = useState(false);
   const [showRecommendations, setShowRecommendations] = useState(false);
-  const [showHistory, setShowHistory] = useState(false);
-  const [history, setHistory] = useState<DisposalRecord[]>([]);
-  const [historyError, setHistoryError] = useState("");
 
   // Modals
   const [recordModal, setRecordModal] = useState(false);
@@ -161,21 +194,17 @@ export default function ExpiryPage() {
   const [disposeSuccess, setDisposeSuccess] = useState("");
 
   const loadAlerts = useCallback(() => {
+    setLoadingAlerts(true);
     const params = new URLSearchParams();
     params.set("withinDays", withinDays);
     params.set("status", status);
     if (categoryId) params.set("categoryId", categoryId);
     if (facilityFilter) params.set("facilityFilter", facilityFilter);
-    api<ExpiryResponse>(`/expiry/alerts?${params}`).then(setData).catch(console.error);
+    api<ExpiryResponse>(`/expiry/alerts?${params}`)
+      .then(setData)
+      .catch(console.error)
+      .finally(() => setLoadingAlerts(false));
   }, [withinDays, categoryId, facilityFilter, status]);
-
-  const loadHistory = useCallback(() => {
-    setHistoryError("");
-    const params = facilityFilter ? `?facilityId=${facilityFilter}` : "";
-    api<DisposalRecord[]>(`/expiry/disposal-history${params}`)
-      .then(setHistory)
-      .catch((err) => setHistoryError(err instanceof Error ? err.message : "Failed to load disposal history"));
-  }, [facilityFilter]);
 
   const loadWitnesses = useCallback((facilityId?: string) => {
     const params = facilityId ? `?facilityId=${facilityId}` : "";
@@ -184,7 +213,6 @@ export default function ExpiryPage() {
 
   useEffect(() => {
     api<Category[]>("/categories").then(setCategories);
-    api<{ id: string; medicineName: string }[]>("/medicines").then(setMedicines);
     if (isAdmin) api<{ id: string; name: string }[]>("/auth/facilities").then(setFacilities);
     loadWitnesses(user?.facilityId ?? undefined);
   }, [isAdmin, user?.facilityId, loadWitnesses]);
@@ -195,11 +223,6 @@ export default function ExpiryPage() {
   useEffect(() => {
     if (facilityFilter) loadWitnesses(facilityFilter);
   }, [facilityFilter, loadWitnesses]);
-
-  // Reload history when facilityFilter changes if history panel is open
-  useEffect(() => {
-    if (showHistory) loadHistory();
-  }, [facilityFilter]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // ── Record Expired submit ───────────────────────────────────────────────────
   const submitRecord = async (e: React.FormEvent) => {
@@ -235,7 +258,6 @@ export default function ExpiryPage() {
       setRecordSuccess("Expired stock recorded successfully.");
       setRecordForm(emptyRecord);
       loadAlerts();
-      if (showHistory) loadHistory();
       setTimeout(() => { setRecordModal(false); setRecordSuccess(""); }, 1500);
     } catch (err) {
       setRecordError(err instanceof Error ? err.message : "Failed to record expired stock");
@@ -251,6 +273,7 @@ export default function ExpiryPage() {
     setDisposeError(""); setDisposeSuccess("");
     if (!disposeForm.disposalMethod) return setDisposeError("Disposal method is required");
     if (disposeForm.disposalMethod === "Other" && !disposeForm.comment.trim()) return setDisposeError("Please describe the disposal method");
+    if (disposeForm.witness && sameAsDisposer(disposeForm.witness)) return setDisposeError("The witness must be different from the person performing the disposal.");
 
     const effectiveMethod = disposeForm.disposalMethod === "Other"
       ? `Other - ${disposeForm.comment.trim()}`
@@ -272,7 +295,6 @@ export default function ExpiryPage() {
       });
       setDisposeSuccess(`Disposed ${disposeTarget.quantity} units of ${disposeTarget.medicine?.medicineName}.`);
       loadAlerts();
-      if (showHistory) loadHistory();
       setTimeout(() => { setDisposeTarget(null); setDisposeSuccess(""); }, 1800);
     } catch (err) {
       setDisposeError(err instanceof Error ? err.message : "Failed to process disposal");
@@ -286,6 +308,28 @@ export default function ExpiryPage() {
   const criticalCount = batches.filter((b) => b.severity === "critical").length;
   const warningCount = batches.filter((b) => b.severity === "warning").length;
 
+  const sortedBatches = [...batches].sort((a, b) => {
+    const dir = sortDir === "asc" ? 1 : -1;
+    let cmp = 0;
+    switch (sortBy) {
+      case "medicine": cmp = (a.medicine?.medicineName ?? "").localeCompare(b.medicine?.medicineName ?? ""); break;
+      case "batch": cmp = a.batchNumber.localeCompare(b.batchNumber); break;
+      case "expiry": cmp = new Date(a.expiryDate).getTime() - new Date(b.expiryDate).getTime(); break;
+      case "days": cmp = a.daysUntilExpiry - b.daysUntilExpiry; break;
+      case "quantity": cmp = a.quantity - b.quantity; break;
+      case "severity": cmp = a.severity.localeCompare(b.severity); break;
+      case "facility": cmp = (a.facility?.name ?? "").localeCompare(b.facility?.name ?? ""); break;
+    }
+    return cmp * dir;
+  });
+
+  const SortButton = ({ field, label }: { field: typeof sortBy; label: string }) => (
+    <button type="button" onClick={() => toggleSort(field)} className="inline-flex items-center gap-1 font-semibold uppercase tracking-wide hover:text-medflow-700">
+      {label}
+      <ArrowUpDown className={`h-3.5 w-3.5 ${sortBy === field ? "text-medflow-600" : "text-slate-300"}`} />
+    </button>
+  );
+
   if (!hasAccess) return null;
 
   return (
@@ -297,14 +341,9 @@ export default function ExpiryPage() {
           <h1 className="mt-0.5 text-2xl font-bold">Expiry Management</h1>
         </div>
         <div className="flex gap-2">
-          <Button size="sm" variant="outline" onClick={() => {
-            if (showHistory) { setShowHistory(false); } else { setShowHistory(true); loadHistory(); }
-          }}>
-            Disposal History
-          </Button>
-          <Button size="sm" onClick={() => { setRecordForm({ ...emptyRecord, facilityId: user?.facilityId ?? "" }); setRecordError(""); setRecordSuccess(""); setRecordModal(true); }}>
-            Record Expired Stock
-          </Button>
+          <Link href="/expiry/disposal-history">
+            <Button size="sm" variant="outline">Disposal History</Button>
+          </Link>
         </div>
       </div>
 
@@ -355,7 +394,11 @@ export default function ExpiryPage() {
       {/* ── Primary: Expiry table ── */}
       <Card>
         <CardContent className="p-0 overflow-x-auto">
-          {batches.length === 0 ? (
+          {loadingAlerts ? (
+            <table className="w-full min-w-[700px] text-sm">
+              <tbody><SkeletonRows rows={6} cols={isAdmin ? 8 : 7} /></tbody>
+            </table>
+          ) : batches.length === 0 ? (
             <div className="px-6 py-12 text-center">
               <Clock className="mx-auto mb-3 h-10 w-10 text-slate-300" />
               <p className="text-sm font-medium text-slate-500">No batches match the current filters</p>
@@ -365,18 +408,18 @@ export default function ExpiryPage() {
             <table className="w-full min-w-[700px] text-sm">
               <thead>
                 <tr className="border-b bg-slate-50 text-left text-sm font-semibold uppercase tracking-wide text-slate-500">
-                  <th className="px-4 py-3">Medicine</th>
-                  <th className="px-4 py-3">Batch</th>
-                  <th className="px-4 py-3">Expiry</th>
-                  <th className="px-4 py-3">Days</th>
-                  <th className="px-4 py-3">Qty</th>
-                  <th className="px-4 py-3">Status</th>
-                  {isAdmin && <th className="px-4 py-3">Facility</th>}
+                  <th className="px-4 py-3"><SortButton field="medicine" label="Medicine" /></th>
+                  <th className="px-4 py-3"><SortButton field="batch" label="Batch" /></th>
+                  <th className="px-4 py-3"><SortButton field="expiry" label="Expiry" /></th>
+                  <th className="px-4 py-3"><SortButton field="days" label="Days" /></th>
+                  <th className="px-4 py-3"><SortButton field="quantity" label="Qty" /></th>
+                  <th className="px-4 py-3"><SortButton field="severity" label="Status" /></th>
+                  {isAdmin && <th className="px-4 py-3"><SortButton field="facility" label="Facility" /></th>}
                   <th className="px-4 py-3 text-right">Actions</th>
                 </tr>
               </thead>
               <tbody>
-                {batches.map((batch) => (
+                {sortedBatches.map((batch) => (
                   <tr key={batch.id} className={`border-b last:border-0 transition-colors ${rowBg(batch.severity)} hover:brightness-95`}>
                     <td className="px-4 py-3">
                       <span className="font-medium text-slate-800">{batch.medicine?.medicineName}</span>
@@ -397,20 +440,15 @@ export default function ExpiryPage() {
                     {isAdmin && <td className="px-4 py-3 text-sm text-slate-500">{batch.facility?.name ?? "—"}</td>}
                     <td className="px-4 py-3">
                       <div className="flex items-center justify-end gap-1">
-                        <Button asChild size="sm" variant="ghost" className="h-7 px-2 text-slate-500 hover:text-slate-700" title="View medicine">
-                          <Link href={`/medicines/${batch.medicineId}`}><Eye className="h-3.5 w-3.5" /></Link>
+                        <Button asChild size="sm" variant="ghost" className="h-7 px-2 text-slate-500 hover:text-slate-700" title="View batch details">
+                          <Link href={`/medicines/${batch.medicineId}#batch-${batch.id}`}><Eye className="h-3.5 w-3.5" /></Link>
                         </Button>
-                        {(batch.severity === "critical" || batch.severity === "warning") && (
-                          <Button asChild size="sm" variant="ghost" className="h-7 px-2 text-medflow-600 hover:text-medflow-800" title="Transfer batch">
-                            <Link href={`/transfers/send?medicineId=${batch.medicineId}`}><ArrowLeftRight className="h-3.5 w-3.5" /></Link>
-                          </Button>
-                        )}
-                        {batch.severity === "expired" && (
-                          <Button
-                            size="sm"
-                            variant="outline"
-                            className="h-7 border-red-200 px-2 text-red-700 hover:bg-red-50"
+                        {batch.severity === "expired" ? (
+                          <button
+                            type="button"
                             title="Dispose off"
+                            aria-label="Dispose off"
+                            className="rounded p-1.5 text-red-500 hover:bg-red-50 hover:text-red-700"
                             onClick={() => {
                               setDisposeTarget(batch);
                               setDisposeForm({ disposalMethod: "Incineration", witness: "", comment: "" });
@@ -418,8 +456,18 @@ export default function ExpiryPage() {
                               loadWitnesses(batch.facilityId);
                             }}
                           >
-                            <Trash2 className="mr-1 h-3.5 w-3.5" /> Dispose
-                          </Button>
+                            <Trash2 className="h-3.5 w-3.5" aria-hidden="true" />
+                          </button>
+                        ) : (
+                          <button
+                            type="button"
+                            disabled
+                            title="Disposal available only after the batch has expired"
+                            aria-label="Dispose off (unavailable until expiry)"
+                            className="cursor-not-allowed rounded p-1.5 text-slate-300"
+                          >
+                            <Trash2 className="h-3.5 w-3.5" aria-hidden="true" />
+                          </button>
                         )}
                       </div>
                     </td>
@@ -505,56 +553,6 @@ export default function ExpiryPage() {
         </div>
       ) : null}
 
-      {/* ── Disposal History (collapsible) ── */}
-      {showHistory && (
-        <Card>
-          <CardHeader className="pb-2">
-            <div className="flex items-center justify-between">
-              <CardTitle className="text-base">Disposal History</CardTitle>
-              <button type="button" onClick={() => setShowHistory(false)} className="text-slate-400 hover:text-slate-600"><X className="h-4 w-4" /></button>
-            </div>
-          </CardHeader>
-          <CardContent className="p-0">
-            {historyError ? (
-              <p className="px-4 py-6 text-center text-sm text-red-600">{historyError}</p>
-            ) : history.length === 0 ? (
-              <p className="px-4 py-6 text-center text-sm text-slate-500">No disposal records yet.</p>
-            ) : (
-              <div className="overflow-x-auto">
-                <table className="w-full text-sm">
-                  <thead>
-                    <tr className="border-b bg-slate-50 text-left text-sm font-semibold uppercase tracking-wide text-slate-500">
-                      <th className="px-4 py-2">Medicine</th>
-                      <th className="px-4 py-2">Batch</th>
-                      <th className="px-4 py-2">Qty</th>
-                      <th className="px-4 py-2">Method</th>
-                      <th className="px-4 py-2">Witness</th>
-                      {isAdmin && <th className="px-4 py-2">Facility</th>}
-                      <th className="px-4 py-2">Processed by</th>
-                      <th className="px-4 py-2">Date</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {history.map((h) => (
-                      <tr key={h.id} className="border-b last:border-0 hover:bg-slate-50/60">
-                        <td className="px-4 py-2.5 font-medium text-slate-800">{h.medicineName}</td>
-                        <td className="px-4 py-2.5 font-mono text-sm text-slate-600">{h.batchNumber}</td>
-                        <td className="px-4 py-2.5 text-slate-600">{h.quantity}</td>
-                        <td className="px-4 py-2.5 text-slate-600">{h.disposalMethod}</td>
-                        <td className="px-4 py-2.5 text-slate-500">{h.disposalWitness || <span className="text-slate-300">—</span>}</td>
-                        {isAdmin && <td className="px-4 py-2.5 text-slate-500">{h.facilityName ?? "—"}</td>}
-                        <td className="px-4 py-2.5 text-slate-500">{h.processedByName ?? "—"}</td>
-                        <td className="px-4 py-2.5 text-slate-500">{new Date(h.createdAt).toLocaleDateString()}</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            )}
-          </CardContent>
-        </Card>
-      )}
-
       {/* ── Modal: Record Expired Stock ── */}
       {recordModal && (
         <Modal title="Record Expired Stock" onClose={() => setRecordModal(false)}>
@@ -573,7 +571,7 @@ export default function ExpiryPage() {
                 <div>
                   <Label>Facility <span className="text-red-500">*</span></Label>
                   <select
-                    className="mt-1 h-9 w-full rounded-lg border px-3 text-sm"
+                    className="mt-1 h-9 w-full rounded-lg border bg-white px-3 text-sm"
                     value={recordForm.facilityId}
                     onChange={(e) => {
                       setRecordForm({ ...recordForm, facilityId: e.target.value });
@@ -609,13 +607,13 @@ export default function ExpiryPage() {
               </div>
 
               <div>
-                <Label>Expiry date <span className="text-red-500">*</span></Label>
-                <Input className="mt-1 h-9" type="date" value={recordForm.expiryDate} onChange={(e) => setRecordForm({ ...recordForm, expiryDate: e.target.value })} required />
+                <Label htmlFor="dispose-expiry-date">Expiry date <span className="text-red-500">*</span></Label>
+                <DateInput id="dispose-expiry-date" className="mt-1 h-9" min={dateInputMin()} max={dateInputMax()} value={recordForm.expiryDate} onChange={(e) => setRecordForm({ ...recordForm, expiryDate: e.target.value })} required />
               </div>
 
               <div>
                 <Label>Disposal method <span className="text-red-500">*</span></Label>
-                <select className="mt-1 h-9 w-full rounded-lg border px-3 text-sm" value={recordForm.disposalMethod} onChange={(e) => setRecordForm({ ...recordForm, disposalMethod: e.target.value, comment: "" })} required>
+                <select className="mt-1 h-9 w-full rounded-lg border bg-white px-3 text-sm" value={recordForm.disposalMethod} onChange={(e) => setRecordForm({ ...recordForm, disposalMethod: e.target.value, comment: "" })} required>
                   {DISPOSAL_METHODS.map((m) => <option key={m}>{m}</option>)}
                 </select>
               </div>
@@ -624,7 +622,7 @@ export default function ExpiryPage() {
                 <div>
                   <Label>Describe disposal method <span className="text-red-500">*</span></Label>
                   <textarea
-                    className="mt-1 w-full rounded-lg border px-3 py-2 text-sm resize-none"
+                    className="mt-1 w-full rounded-lg border bg-white px-3 py-2 text-sm resize-none"
                     rows={2}
                     placeholder="Describe how the stock will be disposed…"
                     value={recordForm.comment}
@@ -677,7 +675,7 @@ export default function ExpiryPage() {
               <div>
                 <Label>Disposal method <span className="text-red-500">*</span></Label>
                 <select
-                  className="mt-1 h-9 w-full rounded-lg border px-3 text-sm"
+                  className="mt-1 h-9 w-full rounded-lg border bg-white px-3 text-sm"
                   value={disposeForm.disposalMethod}
                   onChange={(e) => setDisposeForm({ ...disposeForm, disposalMethod: e.target.value, comment: "" })}
                   required
@@ -690,7 +688,7 @@ export default function ExpiryPage() {
                 <div>
                   <Label>Describe disposal method <span className="text-red-500">*</span></Label>
                   <textarea
-                    className="mt-1 w-full rounded-lg border px-3 py-2 text-sm resize-none"
+                    className="mt-1 w-full rounded-lg border bg-white px-3 py-2 text-sm resize-none"
                     rows={2}
                     placeholder="Describe how the stock will be disposed…"
                     value={disposeForm.comment}
@@ -702,8 +700,8 @@ export default function ExpiryPage() {
 
               <div>
                 <Label>Witness / Authorized by</Label>
-                {witnesses.length > 0 ? (
-                  <WitnessSelect witnesses={witnesses} value={disposeForm.witness} onChange={(v) => setDisposeForm({ ...disposeForm, witness: v })} />
+                {witnesses.filter((w) => !sameAsDisposer(w.name)).length > 0 ? (
+                  <WitnessSelect witnesses={witnesses.filter((w) => !sameAsDisposer(w.name))} value={disposeForm.witness} onChange={(v) => setDisposeForm({ ...disposeForm, witness: v })} />
                 ) : (
                   <Input className="mt-1 h-9" value={disposeForm.witness} placeholder="Witness name" onChange={(e) => setDisposeForm({ ...disposeForm, witness: e.target.value })} />
                 )}

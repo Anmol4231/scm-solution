@@ -1,12 +1,15 @@
 ﻿"use client";
 
 import { useCallback, useEffect, useState } from "react";
-import { ArrowUpDown, Download, Search, SlidersHorizontal } from "lucide-react";
+import Link from "next/link";
+import { ArrowUpDown, Download, Search } from "lucide-react";
 import { api } from "@/lib/api";
+import { useMedicines } from "@/lib/medicines-cache";
 import { useAuth } from "@/lib/auth-context";
 import { isAdminDashboardRole } from "@/lib/roles";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { SkeletonRows } from "@/components/ui/page-skeleton";
 import { downloadAuthenticatedFile } from "@/lib/download";
 
 // ─── Types ───────────────────────────────────────────────────────────────────
@@ -39,8 +42,8 @@ interface MedicineOption {
   medicineName: string;
 }
 
-type SortField = "medicineName" | "quantity" | "expiryDate" | "batchNumber";
-type ExpiryFilter = "" | "expired" | "expiring" | "ok";
+type SortField = "medicineName" | "category" | "facility" | "quantity" | "expiryDate" | "batchNumber";
+type ExpiryFilter = "" | "expired" | "not-expired" | "expiring" | "ok";
 
 // ─── Status badge ─────────────────────────────────────────────────────────────
 
@@ -53,9 +56,14 @@ function StatusBadge({ status }: { status: string }) {
         : status.startsWith("Expiring")
           ? "bg-amber-100 text-amber-700"
           : "bg-emerald-100 text-emerald-700";
+  // Friendlier display labels than the raw backend status strings.
+  const label =
+    status === "Expiring Soon (Critical)"
+      ? "Critical — Expiring"
+      : status;
   return (
     <span className={`inline-flex items-center rounded-full px-2 py-0.5 text-[11px] font-medium ${cls}`}>
-      {status}
+      {label}
     </span>
   );
 }
@@ -68,7 +76,7 @@ export default function StockInHandPage() {
 
   const [rows, setRows] = useState<StockBatchRow[]>([]);
   const [categories, setCategories] = useState<Category[]>([]);
-  const [medicines, setMedicines] = useState<MedicineOption[]>([]);
+  const { data: medicines = [] } = useMedicines();
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
 
@@ -81,11 +89,15 @@ export default function StockInHandPage() {
   const [expiryFilter, setExpiryFilter] = useState<ExpiryFilter>("");
   const [facilityId, setFacilityId] = useState("");
   const [allFacilities, setAllFacilities] = useState<{ id: string; name: string; code: string }[]>([]);
-  const [showFilters, setShowFilters] = useState(false);
 
   // Sorting
   const [sortBy, setSortBy] = useState<SortField>("medicineName");
   const [sortDir, setSortDir] = useState<"asc" | "desc">("asc");
+
+  // Pagination
+  const [page, setPage] = useState(1);
+  const [total, setTotal] = useState(0);
+  const PAGE_SIZE = 100;
 
   // Export
   const [exporting, setExporting] = useState(false);
@@ -99,7 +111,6 @@ export default function StockInHandPage() {
   // Load categories + facilities (admin)
   useEffect(() => {
     api<Category[]>("/categories").then(setCategories).catch(() => {});
-    api<MedicineOption[]>("/medicines").then(setMedicines).catch(() => {});
     if (isCrossAdmin) {
       api<{ id: string; name: string; code: string }[]>("/auth/facilities").then(setAllFacilities).catch(() => {});
     }
@@ -121,15 +132,18 @@ export default function StockInHandPage() {
     return params;
   }, [debouncedSearch, medicineId, batchNumber, categoryId, expiryFilter, facilityId, isCrossAdmin, sortBy, sortDir]);
 
-  const load = useCallback(() => {
+  const load = useCallback((pg = 1) => {
     setLoading(true);
     setError("");
-    api<StockBatchRow[]>(`/stock/in-hand?${buildParams()}`)
-      .then((data) => { setRows(data); setLoading(false); })
+    const params = buildParams();
+    params.set("page", String(pg));
+    params.set("pageSize", String(PAGE_SIZE));
+    api<{ data: StockBatchRow[]; total: number; page: number; pageSize: number }>(`/stock/in-hand?${params}`)
+      .then((r) => { setRows(r.data); setTotal(r.total); setLoading(false); })
       .catch((err) => { setError(err instanceof Error ? err.message : "Failed to load stock data"); setLoading(false); });
   }, [buildParams]);
 
-  useEffect(() => { load(); }, [load]);
+  useEffect(() => { setPage(1); load(1); }, [load]);
 
   const toggleSort = (field: SortField) => {
     if (sortBy === field) {
@@ -166,14 +180,16 @@ export default function StockInHandPage() {
   );
 
   const EXPIRY_FILTERS: { key: ExpiryFilter; label: string }[] = [
-    { key: "", label: "All" },
-    { key: "ok", label: "In Date" },
-    { key: "expiring", label: "Expiring Soon" },
+    { key: "", label: "All statuses" },
+    { key: "not-expired", label: "Not expired (usable)" },
+    { key: "ok", label: "In date" },
+    { key: "expiring", label: "Expiring soon" },
     { key: "expired", label: "Expired" },
   ];
 
   return (
     <div className="space-y-5">
+      <Link href="/stock" className="text-sm text-medflow-600 hover:underline">← Stock Management</Link>
       {/* Header */}
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div>
@@ -181,10 +197,6 @@ export default function StockInHandPage() {
           <p className="text-sm text-muted-foreground">Real-time view of current inventory across all batches.</p>
         </div>
         <div className="flex gap-2">
-          <Button variant="outline" size="sm" onClick={() => setShowFilters(!showFilters)}>
-            <SlidersHorizontal className="mr-1.5 h-3.5 w-3.5" />
-            Filters
-          </Button>
           <Button variant="outline" size="sm" onClick={exportCsv} disabled={exporting}>
             <Download className="mr-1.5 h-3.5 w-3.5" />
             {exporting ? "Exporting…" : "Export CSV"}
@@ -200,18 +212,17 @@ export default function StockInHandPage() {
           <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
           <Input
             className="pl-9"
-            placeholder=""
+            placeholder="Search by medicine, generic name, or batch no.…"
             value={search}
             onChange={(e) => setSearch(e.target.value)}
           />
         </div>
 
-        {showFilters && (
-          <div className="flex flex-wrap items-center gap-3 rounded-xl border bg-slate-50/60 p-3">
+        <div className="flex flex-wrap items-center gap-3 rounded-xl border bg-slate-50/60 p-3">
             {isCrossAdmin && (
               <div>
                 <label className="mb-1 block text-sm font-medium text-slate-600">Facility</label>
-                <select value={facilityId} onChange={(e) => setFacilityId(e.target.value)} className="h-9 rounded-lg border px-2 text-sm">
+                <select value={facilityId} onChange={(e) => setFacilityId(e.target.value)} className="h-9 rounded-lg border bg-white px-2 text-sm">
                   <option value="">All Facilities</option>
                   {allFacilities.map((f) => <option key={f.id} value={f.id}>{f.name} ({f.code})</option>)}
                 </select>
@@ -219,7 +230,7 @@ export default function StockInHandPage() {
             )}
             <div>
               <label className="mb-1 block text-sm font-medium text-slate-600">Product</label>
-              <select value={medicineId} onChange={(e) => setMedicineId(e.target.value)} className="h-9 rounded-lg border px-2 text-sm">
+              <select value={medicineId} onChange={(e) => setMedicineId(e.target.value)} className="h-9 rounded-lg border bg-white px-2 text-sm">
                 <option value="">All Products</option>
                 {medicines.map((m) => <option key={m.id} value={m.id}>{m.medicineName}</option>)}
               </select>
@@ -229,7 +240,7 @@ export default function StockInHandPage() {
               <select
                 value={categoryId}
                 onChange={(e) => setCategoryId(e.target.value)}
-                className="h-9 rounded-lg border px-2 text-sm"
+                className="h-9 rounded-lg border bg-white px-2 text-sm"
               >
                 <option value="">All Categories</option>
                 {categories.map((c) => (
@@ -243,25 +254,17 @@ export default function StockInHandPage() {
             </div>
             <div>
               <label className="mb-1 block text-sm font-medium text-slate-600">Expiry Status</label>
-              <div className="flex gap-1">
+              <select
+                value={expiryFilter}
+                onChange={(e) => setExpiryFilter(e.target.value as ExpiryFilter)}
+                className="h-9 rounded-lg border bg-white px-2 text-sm"
+              >
                 {EXPIRY_FILTERS.map((f) => (
-                  <button
-                    key={f.key}
-                    type="button"
-                    onClick={() => setExpiryFilter(f.key)}
-                    className={`rounded-full border px-3 py-1 text-sm font-medium transition ${
-                      expiryFilter === f.key
-                        ? "border-medflow-400 bg-medflow-50 text-medflow-700"
-                        : "border-slate-200 text-slate-600 hover:bg-white"
-                    }`}
-                  >
-                    {f.label}
-                  </button>
+                  <option key={f.key} value={f.key}>{f.label}</option>
                 ))}
-              </div>
+              </select>
             </div>
           </div>
-        )}
       </div>
 
       {/* Summary counts */}
@@ -285,9 +288,10 @@ export default function StockInHandPage() {
 
       {/* Table */}
       {loading ? (
-        <div className="flex items-center gap-2 py-10 text-sm text-muted-foreground">
-          <div className="h-4 w-4 animate-spin rounded-full border-2 border-medflow-400 border-t-transparent" />
-          Loading inventory…
+        <div className="overflow-x-auto rounded-xl border bg-white shadow-sm">
+          <table className="w-full min-w-[860px] text-sm">
+            <tbody><SkeletonRows rows={8} cols={8} /></tbody>
+          </table>
         </div>
       ) : rows.length === 0 ? (
         <div className="rounded-lg border border-dashed py-12 text-center">
@@ -301,8 +305,8 @@ export default function StockInHandPage() {
                 <th className="p-3 pl-4">
                   <SortButton field="medicineName" label="Medicine" />
                 </th>
-                <th className="p-3">Category</th>
-                {isCrossAdmin && <th className="p-3">Facility</th>}
+                <th className="p-3"><SortButton field="category" label="Category" /></th>
+                {isCrossAdmin && <th className="p-3"><SortButton field="facility" label="Facility" /></th>}
                 <th className="p-3">
                   <SortButton field="batchNumber" label="Batch No." />
                 </th>
@@ -367,6 +371,65 @@ export default function StockInHandPage() {
           </table>
         </div>
       )}
+
+      {total > PAGE_SIZE && (
+        <StockPagination
+          page={page}
+          total={total}
+          pageSize={PAGE_SIZE}
+          onChange={(p) => { setPage(p); load(p); }}
+        />
+      )}
+    </div>
+  );
+}
+
+function StockPagination({ page, total, pageSize, onChange }: {
+  page: number; total: number; pageSize: number; onChange: (p: number) => void;
+}) {
+  const totalPages = Math.ceil(total / pageSize);
+  if (totalPages <= 1) return null;
+
+  const pages: (number | "...")[] = [];
+  if (totalPages <= 7) {
+    for (let i = 1; i <= totalPages; i++) pages.push(i);
+  } else {
+    pages.push(1);
+    if (page > 4) pages.push("...");
+    for (let i = Math.max(2, page - 2); i <= Math.min(totalPages - 1, page + 2); i++) pages.push(i);
+    if (page < totalPages - 3) pages.push("...");
+    pages.push(totalPages);
+  }
+
+  return (
+    <div className="flex items-center justify-center gap-1 pt-4">
+      <button
+        onClick={() => onChange(page - 1)}
+        disabled={page === 1}
+        className="rounded px-3 py-1 text-sm text-muted-foreground hover:bg-accent disabled:opacity-40"
+      >
+        Previous
+      </button>
+      {pages.map((p, i) =>
+        p === "..." ? (
+          <span key={`ellipsis-${i}`} className="px-2 text-sm text-muted-foreground">…</span>
+        ) : (
+          <button
+            key={p}
+            onClick={() => onChange(p as number)}
+            className={`min-w-[2rem] rounded px-2 py-1 text-sm ${p === page ? "bg-primary text-primary-foreground font-medium" : "text-muted-foreground hover:bg-accent"}`}
+          >
+            {p}
+          </button>
+        )
+      )}
+      <button
+        onClick={() => onChange(page + 1)}
+        disabled={page === totalPages}
+        className="rounded px-3 py-1 text-sm text-muted-foreground hover:bg-accent disabled:opacity-40"
+      >
+        Next
+      </button>
     </div>
   );
 }

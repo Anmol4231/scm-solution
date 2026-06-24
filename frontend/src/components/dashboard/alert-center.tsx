@@ -2,8 +2,10 @@
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 import Link from "next/link";
-import { Bell, CheckCircle2, Eye, PackageX, CalendarClock, Search, Plus, Pencil, PlayCircle } from "lucide-react";
+import { Bell, CheckCircle2, Eye, PackageX, CalendarClock, Search, Plus, PlayCircle } from "lucide-react";
 import { api } from "@/lib/api";
+import { dateInputMin, dateInputMax } from "@/lib/datetime";
+import { DateInput } from "@/components/ui/date-input";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -87,8 +89,6 @@ export function AlertCenter({ facilityId }: { facilityId?: string }) {
   const [resolvingId, setResolvingId] = useState<string | null>(null);
   const [showCreate, setShowCreate] = useState(false);
   const [createForm, setCreateForm] = useState<AlertForm>(EMPTY_ALERT_FORM);
-  const [editingAlert, setEditingAlert] = useState<Alert | null>(null);
-  const [editForm, setEditForm] = useState<Partial<AlertForm>>({});
   const [formBusy, setFormBusy] = useState(false);
   const [formError, setFormError] = useState("");
 
@@ -163,26 +163,6 @@ export function AlertCenter({ facilityId }: { facilityId?: string }) {
     }
   }
 
-  async function saveEditAlert(e: React.FormEvent) {
-    e.preventDefault();
-    if (!editingAlert) return;
-    setFormError("");
-    setFormBusy(true);
-    try {
-      await api(`/alerts/${editingAlert.id}`, {
-        method: "PATCH",
-        body: JSON.stringify(editForm),
-      });
-      setEditingAlert(null);
-      setEditForm({});
-      load();
-    } catch (err) {
-      setFormError(err instanceof Error ? err.message : "Failed to update alert");
-    } finally {
-      setFormBusy(false);
-    }
-  }
-
   const counts = data?.counts;
   const alerts = useMemo(() => data?.alerts ?? [], [data]);
 
@@ -196,7 +176,7 @@ export function AlertCenter({ facilityId }: { facilityId?: string }) {
             size="sm"
             variant="outline"
             className="ml-auto"
-            onClick={() => { setShowCreate(!showCreate); setEditingAlert(null); setFormError(""); }}
+            onClick={() => { setShowCreate(!showCreate); setFormError(""); }}
           >
             <Plus className="mr-1 h-3.5 w-3.5" /> Create Alert
           </Button>
@@ -230,31 +210,6 @@ export function AlertCenter({ facilityId }: { facilityId?: string }) {
             <div className="flex gap-2">
               <Button size="sm" type="submit" disabled={formBusy}>{formBusy ? "Saving…" : "Create"}</Button>
               <Button size="sm" type="button" variant="outline" onClick={() => { setShowCreate(false); setFormError(""); }}>Cancel</Button>
-            </div>
-          </form>
-        )}
-
-        {editingAlert && (
-          <form onSubmit={saveEditAlert} className="rounded-lg border border-amber-200 bg-amber-50/40 p-3 space-y-2">
-            <p className="text-sm font-medium text-amber-800">Editing alert</p>
-            {formError && <p className="text-sm text-red-600">{formError}</p>}
-            <div>
-              <Label className="text-sm">Severity</Label>
-              <select className="h-9 w-full rounded border px-2 text-sm" value={editForm.severity ?? editingAlert.severity} onChange={(e) => setEditForm({ ...editForm, severity: e.target.value })}>
-                {SEVERITIES.map((s) => <option key={s} value={s}>{s}</option>)}
-              </select>
-            </div>
-            <div>
-              <Label className="text-sm">Title</Label>
-              <Input className="h-9" value={editForm.title ?? editingAlert.title} onChange={(e) => setEditForm({ ...editForm, title: e.target.value })} />
-            </div>
-            <div>
-              <Label className="text-sm">Message</Label>
-              <Input className="h-9" value={editForm.message ?? editingAlert.message} onChange={(e) => setEditForm({ ...editForm, message: e.target.value })} />
-            </div>
-            <div className="flex gap-2">
-              <Button size="sm" type="submit" disabled={formBusy}>{formBusy ? "Saving…" : "Save"}</Button>
-              <Button size="sm" type="button" variant="outline" onClick={() => { setEditingAlert(null); setEditForm({}); setFormError(""); }}>Cancel</Button>
             </div>
           </form>
         )}
@@ -324,11 +279,11 @@ export function AlertCenter({ facilityId }: { facilityId?: string }) {
           <div className="flex flex-wrap items-center gap-2 text-sm text-slate-500">
             <label className="flex items-center gap-1">
               From
-              <Input type="date" className="h-9 w-auto" value={customFrom} onChange={(e) => setCustomFrom(e.target.value)} />
+              <DateInput aria-label="From date" className="h-9 w-auto" min={dateInputMin()} max={customTo || dateInputMax()} value={customFrom} onChange={(e) => setCustomFrom(e.target.value)} />
             </label>
             <label className="flex items-center gap-1">
               To
-              <Input type="date" className="h-9 w-auto" value={customTo} onChange={(e) => setCustomTo(e.target.value)} />
+              <DateInput aria-label="To date" className="h-9 w-auto" min={customFrom || dateInputMin()} max={dateInputMax()} value={customTo} onChange={(e) => setCustomTo(e.target.value)} />
             </label>
           </div>
         )}
@@ -379,15 +334,6 @@ export function AlertCenter({ facilityId }: { facilityId?: string }) {
                       </Link>
                     </Button>
                   )}
-                  <Button
-                    variant="ghost"
-                    size="sm"
-                    className="text-slate-500 hover:text-slate-800"
-                    onClick={() => { setEditingAlert(a); setEditForm({}); setShowCreate(false); setFormError(""); }}
-                    title="Edit alert"
-                  >
-                    <Pencil className="h-4 w-4" />
-                  </Button>
                   {!resolved && (
                     <Button
                       variant="ghost"

@@ -5,6 +5,7 @@ import { prisma } from "../lib/prisma";
 import { authenticate, requireRoles } from "../middleware/auth";
 import { requirePermission } from "../middleware/permission";
 import { logAudit } from "../services/audit";
+import { logChangeHistory } from "../services/changeHistory";
 import { invalidateRoleCache } from "../services/permissions";
 import { sanitizeMatrix } from "../utils/permissionMatrix";
 import { masterCode, personName } from "../utils/validators";
@@ -43,9 +44,74 @@ function serialize(role: Prisma.RoleGetPayload<{ include: { _count: { select: { 
   };
 }
 
+router.get("/deleted", roleAdmins, requirePermission("roles", "delete"), async (_req, res, next) => {
+  try {
+    const roles = await prisma.role.findMany({
+      where: { deletedAt: { not: null } },
+      include: {
+        _count: { select: { users: true } },
+        deletedBy: { select: { firstName: true, lastName: true, email: true } },
+      },
+      orderBy: { deletedAt: "desc" },
+    });
+    res.json(roles.map((r) => ({
+      ...serialize(r),
+      deletedAt: r.deletedAt,
+      deletedBy: r.deletedBy
+        ? `${r.deletedBy.firstName} ${r.deletedBy.lastName}`.trim() || r.deletedBy.email
+        : null,
+    })));
+  } catch (e) {
+    next(e);
+  }
+});
+
+router.post("/:id/restore", roleAdmins, requirePermission("roles", "delete"), async (req, res, next) => {
+  try {
+    const role = await prisma.role.findUnique({
+      where: { id: req.params.id },
+      include: { _count: { select: { users: true } } },
+    });
+    if (!role) return res.status(404).json({ error: "Role not found" });
+    if (!role.deletedAt) return res.status(400).json({ error: "Role is not deleted" });
+
+    const clash = await prisma.role.findFirst({
+      where: {
+        OR: [{ name: { equals: role.name, mode: "insensitive" } }, { code: role.code }],
+        id: { not: role.id },
+        deletedAt: null,
+      },
+    });
+    if (clash) return res.status(409).json({ error: "Cannot restore: an active role with this name or code already exists" });
+
+    const restored = await prisma.role.update({
+      where: { id: role.id },
+      data: { isActive: true, deletedAt: null, deletedById: null },
+      include: { _count: { select: { users: true } } },
+    });
+    invalidateRoleCache(role.id);
+
+    await logChangeHistory({
+      userId: req.user!.userId,
+      action: "RESTORE",
+      entityType: "Role",
+      entityId: restored.id,
+      entityName: restored.name,
+      previousValues: { isActive: false, deletedAt: role.deletedAt },
+      currentValues: { isActive: true, deletedAt: null },
+      changeDetails: "Restored soft-deleted role",
+    });
+
+    res.json(serialize(restored));
+  } catch (e) {
+    next(e);
+  }
+});
+
 router.get("/", roleAdmins, requirePermission("roles", "view"), async (_req, res, next) => {
   try {
     const roles = await prisma.role.findMany({
+      where: { deletedAt: null },
       include: { _count: { select: { users: true } } },
       orderBy: [{ isSystem: "desc" }, { name: "asc" }],
     });
@@ -57,8 +123,8 @@ router.get("/", roleAdmins, requirePermission("roles", "view"), async (_req, res
 
 router.get("/:id", roleAdmins, requirePermission("roles", "view"), async (req, res, next) => {
   try {
-    const role = await prisma.role.findUnique({
-      where: { id: req.params.id },
+    const role = await prisma.role.findFirst({
+      where: { id: req.params.id, deletedAt: null },
       include: { _count: { select: { users: true } } },
     });
     if (!role) return res.status(404).json({ error: "Role not found" });
@@ -90,12 +156,19 @@ router.post("/", roleAdmins, requirePermission("roles", "create"), async (req, r
       include: { _count: { select: { users: true } } },
     });
 
-    await logAudit({
+    await logChangeHistory({
       userId: req.user!.userId,
       action: "CREATE",
       entityType: "Role",
       entityId: role.id,
-      details: { name: role.name, code: role.code },
+      entityName: role.name,
+      currentValues: {
+        name: role.name,
+        code: role.code,
+        description: role.description ?? "",
+        isActive: role.isActive,
+        scopeAllFacilities: role.scopeAllFacilities,
+      },
     });
 
     res.status(201).json(serialize(role));
@@ -107,7 +180,7 @@ router.post("/", roleAdmins, requirePermission("roles", "create"), async (req, r
 router.patch("/:id", roleAdmins, requirePermission("roles", "edit"), async (req, res, next) => {
   try {
     const parsed = roleSchema.partial().parse(req.body);
-    const role = await prisma.role.findUnique({ where: { id: req.params.id } });
+    const role = await prisma.role.findFirst({ where: { id: req.params.id, deletedAt: null } });
     if (!role) return res.status(404).json({ error: "Role not found" });
 
     const data: Prisma.RoleUpdateInput = {};
@@ -147,12 +220,24 @@ router.patch("/:id", roleAdmins, requirePermission("roles", "edit"), async (req,
     });
     invalidateRoleCache(role.id);
 
-    await logAudit({
+    await logChangeHistory({
       userId: req.user!.userId,
       action: "UPDATE",
       entityType: "Role",
       entityId: role.id,
-      details: { name: updated.name, code: updated.code },
+      entityName: updated.name,
+      previousValues: {
+        name: role.name,
+        description: role.description ?? "",
+        isActive: role.isActive,
+        scopeAllFacilities: role.scopeAllFacilities,
+      },
+      currentValues: {
+        name: updated.name,
+        description: updated.description ?? "",
+        isActive: updated.isActive,
+        scopeAllFacilities: updated.scopeAllFacilities,
+      },
     });
 
     res.json(serialize(updated));
@@ -163,8 +248,8 @@ router.patch("/:id", roleAdmins, requirePermission("roles", "edit"), async (req,
 
 router.delete("/:id", roleAdmins, requirePermission("roles", "delete"), async (req, res, next) => {
   try {
-    const role = await prisma.role.findUnique({
-      where: { id: req.params.id },
+    const role = await prisma.role.findFirst({
+      where: { id: req.params.id, deletedAt: null },
       include: { _count: { select: { users: true } } },
     });
     if (!role) return res.status(404).json({ error: "Role not found" });
@@ -173,15 +258,21 @@ router.delete("/:id", roleAdmins, requirePermission("roles", "delete"), async (r
       return res.status(409).json({ error: "Reassign the users on this role before deleting it" });
     }
 
-    await prisma.role.delete({ where: { id: role.id } });
+    await prisma.role.update({
+      where: { id: role.id },
+      data: { isActive: false, deletedAt: new Date(), deletedById: req.user!.userId },
+    });
     invalidateRoleCache(role.id);
 
-    await logAudit({
+    await logChangeHistory({
       userId: req.user!.userId,
-      action: "DELETE",
+      action: "SOFT_DELETE",
       entityType: "Role",
       entityId: role.id,
-      details: { name: role.name, code: role.code },
+      entityName: role.name,
+      previousValues: { isActive: true, deletedAt: null },
+      currentValues: { isActive: false, deletedAt: new Date() },
+      changeDetails: "Soft-deleted role",
     });
 
     res.json({ message: "Role deleted" });

@@ -8,6 +8,7 @@ import {
   X, Maximize2, Minimize2, ClipboardList, Printer,
 } from "lucide-react";
 import { api, resolveApiUrl } from "@/lib/api";
+import { useMedicines, CachedMedicine } from "@/lib/medicines-cache";
 import { useRequirePermission } from "@/hooks/useRequirePermission";
 import { useAuth } from "@/lib/auth-context";
 import { Button } from "@/components/ui/button";
@@ -144,7 +145,7 @@ function DispenseWorkflow() {
 
   /* ── Prescription ── */
   const [selectedRxId, setSelectedRxId] = useState("");
-  const [medicines, setMedicines] = useState<Medicine[]>([]);
+  const { data: medicines = [] } = useMedicines();
   const [newRx, setNewRx] = useState({ doctorName: "", diagnosisNotes: "" });
   const [newRxLines, setNewRxLines] = useState<{ medicineId: string; dosage: string; quantity: string }[]>([{ medicineId: "", dosage: "", quantity: "" }]);
   const [file, setFile] = useState<File | null>(null);
@@ -191,7 +192,6 @@ function DispenseWorkflow() {
   }, []);
 
   useEffect(() => { setRxImageLoaded(false); setRxImageError(false); }, [rxImageUrl]);
-  useEffect(() => { api<Medicine[]>("/medicines").then(setMedicines).catch(() => {}); }, []);
 
   // Availability is per-facility: clear the cache whenever the facility changes.
   useEffect(() => { availKnownRef.current = new Set(); setAvailabilityMap({}); }, [facId]);
@@ -315,7 +315,7 @@ function DispenseWorkflow() {
           let medicineId = m.medicineId ?? "";
           let candidates: Medicine[] = [];
           if (!medicineId) {
-            candidates = (m.candidates ?? []).map((c) => byId.get(c.id)).filter((c): c is Medicine => !!c);
+            candidates = (m.candidates ?? []).map((c) => byId.get(c.id)).filter((c): c is CachedMedicine => !!c);
             if (!candidates.length && m.matchConfidence === undefined) candidates = matchMedicines(m.medicineName, medicines);
             if (candidates.length === 1) { medicineId = candidates[0].id; candidates = []; }
           }
@@ -547,7 +547,7 @@ function DispenseWorkflow() {
                   ) : (
                     <>
                       <span className="flex-1 text-amber-700">Select a facility to continue</span>
-                      <select className="h-8 rounded border px-2 text-xs" value={facilityPickId} onChange={(e) => setFacilityPickId(e.target.value)}>
+                      <select className="h-8 rounded border bg-white px-2 text-xs" value={facilityPickId} onChange={(e) => setFacilityPickId(e.target.value)}>
                         <option value="">— Facility —</option>
                         {facilities.map((f) => <option key={f.id} value={f.id}>{f.name} ({f.code})</option>)}
                       </select>
@@ -590,7 +590,7 @@ function DispenseWorkflow() {
                     <div className="grid gap-3 sm:grid-cols-2">
                       <div><Label>First name *</Label><Input value={reg.firstName} onChange={(e) => setReg({ ...reg, firstName: sanitizePersonName(e.target.value) })} /></div>
                       <div><Label>Last name</Label><Input value={reg.lastName} onChange={(e) => setReg({ ...reg, lastName: sanitizePersonName(e.target.value) })} /></div>
-                      <div><Label>Gender</Label><select className="h-11 w-full rounded-lg border px-3 text-sm" value={reg.gender} onChange={(e) => setReg({ ...reg, gender: e.target.value })}><option value="">— Select —</option><option>Female</option><option>Male</option><option>Other</option></select></div>
+                      <div><Label>Gender</Label><select className="h-11 w-full rounded-lg border bg-white px-3 text-sm" value={reg.gender} onChange={(e) => setReg({ ...reg, gender: e.target.value })}><option value="">— Select —</option><option>Female</option><option>Male</option><option>Other</option></select></div>
                       <div><Label>Age</Label><Input inputMode="numeric" value={reg.age} onChange={(e) => setReg({ ...reg, age: e.target.value.replace(/\D/g, "") })} /></div>
                       <div className="sm:col-span-2"><Label>Phone *</Label><Input inputMode="tel" value={reg.phoneNumber} onChange={(e) => setReg({ ...reg, phoneNumber: sanitizePhone(e.target.value) })} /></div>
                       <div className="sm:col-span-2"><Label>Known allergies</Label><Input value={reg.allergies} onChange={(e) => setReg({ ...reg, allergies: e.target.value })} placeholder='e.g. "Penicillin" — leave blank if none known' /></div>
@@ -863,7 +863,7 @@ function DispenseWorkflow() {
                             <td className="p-2">
                               {l.batches.length > 0 ? (
                                 <div>
-                                  <select className="h-8 rounded border px-2 text-xs" value={l.batchId} disabled={!l.enabled} onChange={(e) => setLine(i, { batchId: e.target.value })}>
+                                  <select className="h-8 rounded border bg-white px-2 text-xs" value={l.batchId} disabled={!l.enabled} onChange={(e) => setLine(i, { batchId: e.target.value })}>
                                     {l.batches.map((b) => <option key={b.id} value={b.id}>{b.batchNumber} · exp {new Date(b.expiryDate).toLocaleDateString()} · {b.quantity}</option>)}
                                   </select>
                                   {selBatch && <p className={`mt-0.5 text-xs ${batchDays < 30 ? "font-semibold text-red-500" : batchDays < 90 ? "text-amber-600" : "text-slate-400"}`}>Exp {new Date(selBatch.expiryDate).toLocaleDateString()} · Stock {selBatch.quantity}{batchDays < 90 && <span className="ml-1">⚠ {batchDays < 30 ? "expires very soon" : "expires soon"}</span>}</p>}

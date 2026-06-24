@@ -34,6 +34,7 @@ export default function PatientProfilePage() {
 
   return (
     <div className="space-y-4">
+      <Link href="/patients" className="text-sm text-medflow-600 hover:underline">← Patient Log</Link>
       <div className="flex items-center justify-between">
         <div>
           <h1 className="text-2xl font-bold">{p.firstName} {p.lastName}</h1>

@@ -100,7 +100,7 @@ export default function SendTransferPage() {
             {isAdmin && (
               <div>
                 <Label>Source Facility *</Label>
-                <select className="mt-1 h-10 w-full rounded-lg border px-3 text-sm" value={fromFacilityId} onChange={(e) => setFromFacilityId(e.target.value)} required>
+                <select className="mt-1 h-10 w-full rounded-lg border bg-white px-3 text-sm" value={fromFacilityId} onChange={(e) => setFromFacilityId(e.target.value)} required>
                   <option value="">Select sending facility…</option>
                   {allFacilities.map((f) => <option key={f.id} value={f.id}>{f.name} ({f.code})</option>)}
                 </select>
@@ -114,14 +114,14 @@ export default function SendTransferPage() {
             )}
             <div>
               <Label>Destination Facility *</Label>
-              <select className="mt-1 h-10 w-full rounded-lg border px-3 text-sm" value={toFacilityId} onChange={(e) => setToFacilityId(e.target.value)} required>
+              <select className="mt-1 h-10 w-full rounded-lg border bg-white px-3 text-sm" value={toFacilityId} onChange={(e) => setToFacilityId(e.target.value)} required>
                 <option value="">Select destination…</option>
                 {toFacilities.map((f) => <option key={f.id} value={f.id}>{f.name} ({f.code})</option>)}
               </select>
             </div>
             <div>
               <Label>Notes</Label>
-              <textarea className="mt-1 w-full rounded-lg border px-3 py-2 text-sm" rows={2} value={authorizationNotes} onChange={(e) => setAuthorizationNotes(e.target.value)} />
+              <textarea className="mt-1 w-full rounded-lg border bg-white px-3 py-2 text-sm" rows={2} value={authorizationNotes} onChange={(e) => setAuthorizationNotes(e.target.value)} />
             </div>
           </CardContent>
         </Card>
@@ -152,7 +152,7 @@ export default function SendTransferPage() {
                   <div className="min-w-[200px] flex-1">
                     <Label>Batch *</Label>
                     <select
-                      className="mt-1 h-10 w-full rounded-lg border px-3 text-sm disabled:bg-slate-50"
+                      className="mt-1 h-10 w-full rounded-lg border bg-white px-3 text-sm disabled:bg-slate-50 disabled:cursor-not-allowed"
                       value={line.batchId}
                       onChange={(e) => updateLine(i, { batchId: e.target.value })}
                       disabled={!line.medicineId}

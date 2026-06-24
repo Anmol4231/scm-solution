@@ -3,12 +3,15 @@
 import { Fragment, useCallback, useEffect, useState } from "react";
 import Link from "next/link";
 import { api } from "@/lib/api";
+import { dateInputMin, dateInputMax } from "@/lib/datetime";
+import { DateInput } from "@/components/ui/date-input";
 import { useRequirePermission } from "@/hooks/useRequirePermission";
 import { useAuth } from "@/lib/auth-context";
 import { can } from "@/lib/permissions";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Card, CardContent } from "@/components/ui/card";
+import { SkeletonRows } from "@/components/ui/page-skeleton";
 import { OperationsTabs } from "@/components/layout/operations-tabs";
 import {
   Search, Filter, X, Syringe, Eye, Printer, AlertCircle,
@@ -181,7 +184,7 @@ export default function PrescriptionLogPage() {
                     <Building2 className="h-3 w-3" /> Facility
                   </label>
                   <select
-                    className="h-10 w-full rounded-lg border px-3 text-sm"
+                    className="h-10 w-full rounded-lg border bg-white px-3 text-sm"
                     value={filters.facilityId}
                     onChange={(e) => setFilters((f) => ({ ...f, facilityId: e.target.value }))}
                   >
@@ -195,7 +198,7 @@ export default function PrescriptionLogPage() {
               <div>
                 <label className="mb-1 block text-xs text-slate-500">Status</label>
                 <select
-                  className="h-10 w-full rounded-lg border px-3 text-sm"
+                  className="h-10 w-full rounded-lg border bg-white px-3 text-sm"
                   value={filters.status}
                   onChange={(e) => setFilters((f) => ({ ...f, status: e.target.value }))}
                 >
@@ -206,17 +209,21 @@ export default function PrescriptionLogPage() {
                 </select>
               </div>
               <div>
-                <label className="mb-1 block text-xs text-slate-500">Date From</label>
-                <Input
-                  type="date"
+                <label htmlFor="rx-date-from" className="mb-1 block text-xs text-slate-500">Date From</label>
+                <DateInput
+                  id="rx-date-from"
+                  min={dateInputMin()}
+                  max={filters.dateTo || dateInputMax()}
                   value={filters.dateFrom}
                   onChange={(e) => setFilters((f) => ({ ...f, dateFrom: e.target.value }))}
                 />
               </div>
               <div>
-                <label className="mb-1 block text-xs text-slate-500">Date To</label>
-                <Input
-                  type="date"
+                <label htmlFor="rx-date-to" className="mb-1 block text-xs text-slate-500">Date To</label>
+                <DateInput
+                  id="rx-date-to"
+                  min={filters.dateFrom || dateInputMin()}
+                  max={dateInputMax()}
                   value={filters.dateTo}
                   onChange={(e) => setFilters((f) => ({ ...f, dateTo: e.target.value }))}
                 />
@@ -251,7 +258,11 @@ export default function PrescriptionLogPage() {
       <Card>
         <CardContent className="p-0">
           {loading ? (
-            <p className="p-6 text-center text-sm text-slate-400">Loading…</p>
+            <div className="overflow-x-auto">
+              <table className="w-full min-w-[860px] text-sm">
+                <tbody><SkeletonRows rows={8} cols={colCount} /></tbody>
+              </table>
+            </div>
           ) : list.length === 0 ? (
             <p className="p-6 text-center text-sm text-slate-400">No prescriptions found.</p>
           ) : (

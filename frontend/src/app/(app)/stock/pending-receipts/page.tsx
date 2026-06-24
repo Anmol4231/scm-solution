@@ -2,9 +2,20 @@
 
 import { useEffect, useState } from "react";
 import Link from "next/link";
+import { ArrowUpDown } from "lucide-react";
 import { api } from "@/lib/api";
 import { useAuth } from "@/lib/auth-context";
 import { isCrossFacilityRole } from "@/lib/roles";
+import { PageSkeleton } from "@/components/ui/page-skeleton";
+
+// Generic client-side sort for the small pending-receipt queues.
+function sortRows<T>(rows: T[], accessor: (r: T) => string | number, dir: "asc" | "desc"): T[] {
+  return [...rows].sort((a, b) => {
+    const av = accessor(a), bv = accessor(b);
+    const cmp = typeof av === "number" && typeof bv === "number" ? av - bv : String(av).localeCompare(String(bv));
+    return dir === "asc" ? cmp : -cmp;
+  });
+}
 
 interface PendingVoucher {
   id: string;
@@ -37,6 +48,10 @@ export default function PendingReceiptsPage() {
   const [orders, setOrders] = useState<PendingOrder[]>([]);
   const [loading, setLoading] = useState(true);
 
+  // Sort state per table
+  const [vSort, setVSort] = useState<{ field: string; dir: "asc" | "desc" }>({ field: "issued", dir: "desc" });
+  const [oSort, setOSort] = useState<{ field: string; dir: "asc" | "desc" }>({ field: "orderCode", dir: "asc" });
+
   useEffect(() => {
     setLoading(true);
     Promise.all([
@@ -45,7 +60,46 @@ export default function PendingReceiptsPage() {
     ]).then(([v, o]) => { setVouchers(v); setOrders(o); }).finally(() => setLoading(false));
   }, []);
 
-  if (loading) return <p className="text-sm text-slate-500 p-4">Loading…</p>;
+  const voucherAccessors: Record<string, (v: PendingVoucher) => string | number> = {
+    voucherCode: (v) => v.voucherCode,
+    requisition: (v) => v.requisition.requisitionCode,
+    issuingFacility: (v) => v.requisition.issuingFacility.name,
+    priority: (v) => v.requisition.priority,
+    lines: (v) => v._count.lines,
+    issued: (v) => v.finalizedAt ?? "",
+  };
+  const orderAccessors: Record<string, (o: PendingOrder) => string | number> = {
+    orderCode: (o) => o.orderCode,
+    vendor: (o) => o.vendor.name,
+    status: (o) => o.status,
+    expected: (o) => o.expectedDeliveryDate ?? "",
+  };
+
+  const sortedVouchers = sortRows(vouchers, voucherAccessors[vSort.field], vSort.dir);
+  const sortedOrders = sortRows(orders, orderAccessors[oSort.field], oSort.dir);
+
+  const VSort = ({ field, label }: { field: string; label: string }) => (
+    <button
+      type="button"
+      onClick={() => setVSort((s) => s.field === field ? { field, dir: s.dir === "asc" ? "desc" : "asc" } : { field, dir: "asc" })}
+      className="inline-flex items-center gap-1 font-medium hover:text-medflow-700"
+    >
+      {label}
+      <ArrowUpDown className={`h-3.5 w-3.5 ${vSort.field === field ? "text-medflow-600" : "text-slate-300"}`} />
+    </button>
+  );
+  const OSort = ({ field, label }: { field: string; label: string }) => (
+    <button
+      type="button"
+      onClick={() => setOSort((s) => s.field === field ? { field, dir: s.dir === "asc" ? "desc" : "asc" } : { field, dir: "asc" })}
+      className="inline-flex items-center gap-1 font-medium hover:text-medflow-700"
+    >
+      {label}
+      <ArrowUpDown className={`h-3.5 w-3.5 ${oSort.field === field ? "text-medflow-600" : "text-slate-300"}`} />
+    </button>
+  );
+
+  if (loading) return <PageSkeleton />;
 
   return (
     <div className="space-y-6">
@@ -65,17 +119,17 @@ export default function PendingReceiptsPage() {
             <table className="w-full text-sm">
               <thead className="border-b bg-slate-50">
                 <tr>
-                  <th className="px-4 py-3 text-left font-medium text-slate-600">Voucher No.</th>
-                  <th className="px-4 py-3 text-left font-medium text-slate-600">Requisition</th>
-                  <th className="px-4 py-3 text-left font-medium text-slate-600">Issuing Store</th>
-                  <th className="px-4 py-3 text-left font-medium text-slate-600">Priority</th>
-                  <th className="px-4 py-3 text-left font-medium text-slate-600">Lines</th>
-                  <th className="px-4 py-3 text-left font-medium text-slate-600">Issued</th>
+                  <th className="px-4 py-3 text-left font-medium text-slate-600"><VSort field="voucherCode" label="Voucher No." /></th>
+                  <th className="px-4 py-3 text-left font-medium text-slate-600"><VSort field="requisition" label="Requisition" /></th>
+                  <th className="px-4 py-3 text-left font-medium text-slate-600"><VSort field="issuingFacility" label="Issuing Store" /></th>
+                  <th className="px-4 py-3 text-left font-medium text-slate-600"><VSort field="priority" label="Priority" /></th>
+                  <th className="px-4 py-3 text-left font-medium text-slate-600"><VSort field="lines" label="Lines" /></th>
+                  <th className="px-4 py-3 text-left font-medium text-slate-600"><VSort field="issued" label="Issued" /></th>
                   <th className="px-4 py-3 text-left font-medium text-slate-600"></th>
                 </tr>
               </thead>
               <tbody className="divide-y">
-                {vouchers.map((v) => (
+                {sortedVouchers.map((v) => (
                   <tr key={v.id} className="hover:bg-slate-50">
                     <td className="px-4 py-3 font-mono text-medflow-600">{v.voucherCode}</td>
                     <td className="px-4 py-3 font-mono text-sm text-slate-500">{v.requisition.requisitionCode}</td>
@@ -108,15 +162,15 @@ export default function PendingReceiptsPage() {
             <table className="w-full text-sm">
               <thead className="border-b bg-slate-50">
                 <tr>
-                  <th className="px-4 py-3 text-left font-medium text-slate-600">Order Code</th>
-                  <th className="px-4 py-3 text-left font-medium text-slate-600">Vendor</th>
-                  <th className="px-4 py-3 text-left font-medium text-slate-600">Status</th>
-                  <th className="px-4 py-3 text-left font-medium text-slate-600">Expected</th>
+                  <th className="px-4 py-3 text-left font-medium text-slate-600"><OSort field="orderCode" label="Order Code" /></th>
+                  <th className="px-4 py-3 text-left font-medium text-slate-600"><OSort field="vendor" label="Vendor" /></th>
+                  <th className="px-4 py-3 text-left font-medium text-slate-600"><OSort field="status" label="Status" /></th>
+                  <th className="px-4 py-3 text-left font-medium text-slate-600"><OSort field="expected" label="Expected" /></th>
                   <th className="px-4 py-3 text-left font-medium text-slate-600"></th>
                 </tr>
               </thead>
               <tbody className="divide-y">
-                {orders.map((o) => (
+                {sortedOrders.map((o) => (
                   <tr key={o.id} className="hover:bg-slate-50">
                     <td className="px-4 py-3 font-mono text-medflow-600">{o.orderCode}</td>
                     <td className="px-4 py-3">{o.vendor.name}</td>

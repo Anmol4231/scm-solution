@@ -60,4 +60,42 @@ table {
   .status-badge {
     @apply inline-flex rounded-full bg-medflow-50 px-2 py-0.5 text-xs font-medium text-medflow-800;
   }
+  /* Applied to <main> — marks it as the named View Transition target */
+  .vt-page-content {
+    view-transition-name: page-content;
+  }
+}
+
+/* ── View Transitions: smooth content cross-fade ─────────────────────────────
+ * Only the named "page-content" area transitions.
+ * Sidebar and header are part of root but disabled below — they stay static.
+ */
+@keyframes vt-slide-out {
+  to {
+    opacity: 0;
+    transform: translateY(-4px);
+  }
+}
+
+@keyframes vt-slide-in {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+}
+
+::view-transition-old(page-content) {
+  animation: vt-slide-out 120ms ease-in both;
+}
+
+::view-transition-new(page-content) {
+  animation: vt-slide-in 220ms ease-out both;
+}
+
+/* Disable the default root cross-fade so header and sidebar stay completely
+ * static. Only the page-content named element animates. */
+::view-transition-old(root),
+::view-transition-new(root) {
+  animation: none;
+  mix-blend-mode: normal;
 }

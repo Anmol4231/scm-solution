@@ -5,6 +5,7 @@ import { prisma } from "../lib/prisma";
 import { authenticate, requireRoles } from "../middleware/auth";
 import { requirePermission } from "../middleware/permission";
 import { logAudit } from "../services/audit";
+import { logChangeHistory } from "../services/changeHistory";
 import { masterCode, optionalPhone, optionalText, requiredText } from "../utils/validators";
 
 const router = Router();
@@ -30,8 +31,8 @@ const facilitySchema = z.object({
     (v) => !v || /[A-Za-z]/.test(v),
     { message: "Custom facility type must be alphanumeric" }
   ).optional(),
-  province: optionalText(80),
-  district: optionalText(80),
+  province: requiredText(80),
+  district: requiredText(80),
   address: optionalText(250),
   isActive: z.boolean().optional(),
 });
@@ -69,12 +70,66 @@ const facilitySelect = {
   _count: { select: { users: true } },
 } satisfies Prisma.FacilitySelect;
 
+router.get("/deleted", facilityAdmins, requirePermission("facilities", "delete"), async (_req, res, next) => {
+  try {
+    const facilities = await prisma.facility.findMany({
+      where: { deletedAt: { not: null } },
+      include: { deletedBy: { select: { firstName: true, lastName: true, email: true } } },
+      orderBy: { deletedAt: "desc" },
+    });
+    res.json(facilities.map((f) => ({
+      ...f,
+      deletedBy: f.deletedBy
+        ? `${f.deletedBy.firstName} ${f.deletedBy.lastName}`.trim() || f.deletedBy.email
+        : null,
+    })));
+  } catch (e) {
+    next(e);
+  }
+});
+
+router.post("/:id/restore", facilityAdmins, requirePermission("facilities", "delete"), async (req, res, next) => {
+  try {
+    const facility = await prisma.facility.findUnique({ where: { id: req.params.id } });
+    if (!facility) return res.status(404).json({ error: "Facility not found" });
+    if (!facility.deletedAt) return res.status(400).json({ error: "Facility is not deleted" });
+
+    const clash = await prisma.facility.findFirst({
+      where: { code: facility.code, id: { not: facility.id }, deletedAt: null },
+    });
+    if (clash) return res.status(409).json({ error: "Cannot restore: an active facility with this code already exists" });
+
+    const restored = await prisma.facility.update({
+      where: { id: facility.id },
+      data: { isActive: true, deletedAt: null, deletedById: null },
+      select: facilitySelect,
+    });
+
+    await syncVendorForFacility({ ...restored, facilityType: restored.facilityType ?? null, address: restored.address ?? null, isActive: true });
+    await logChangeHistory({
+      userId: req.user!.userId,
+      action: "RESTORE",
+      entityType: "Facility",
+      entityId: restored.id,
+      entityName: restored.name,
+      previousValues: { isActive: false, deletedAt: facility.deletedAt },
+      currentValues: { isActive: true, deletedAt: null },
+      changeDetails: "Restored soft-deleted facility",
+    });
+
+    res.json(restored);
+  } catch (e) {
+    next(e);
+  }
+});
+
 router.get("/", facilityAdmins, requirePermission("facilities", "view"), async (req, res, next) => {
   try {
     const q = (req.query.q as string | undefined)?.trim();
     const status = req.query.status as string | undefined;
     const facilities = await prisma.facility.findMany({
       where: {
+        deletedAt: null,
         ...(status === "active" ? { isActive: true } : status === "inactive" ? { isActive: false } : {}),
         ...(q
           ? {
@@ -113,7 +168,7 @@ router.get("/", facilityAdmins, requirePermission("facilities", "view"), async (
 
 router.get("/:id", facilityAdmins, requirePermission("facilities", "view"), async (req, res, next) => {
   try {
-    const facility = await prisma.facility.findUnique({ where: { id: req.params.id }, select: facilitySelect });
+    const facility = await prisma.facility.findFirst({ where: { id: req.params.id, deletedAt: null }, select: facilitySelect });
     if (!facility) return res.status(404).json({ error: "Facility not found" });
     res.json(facility);
   } catch (e) {
@@ -200,8 +255,8 @@ router.patch("/:id", facilityAdmins, requirePermission("facilities", "edit"), as
 
 router.delete("/:id", facilityAdmins, requirePermission("facilities", "delete"), async (req, res, next) => {
   try {
-    const facility = await prisma.facility.findUnique({
-      where: { id: req.params.id },
+    const facility = await prisma.facility.findFirst({
+      where: { id: req.params.id, deletedAt: null },
       include: { _count: { select: { users: true } } },
     });
     if (!facility) return res.status(404).json({ error: "Facility not found" });
@@ -209,15 +264,21 @@ router.delete("/:id", facilityAdmins, requirePermission("facilities", "delete"),
       return res.status(409).json({ error: `Cannot delete: ${facility._count.users} user(s) are assigned to this facility. Reassign them first.` });
     }
 
-    await prisma.facility.delete({ where: { id: facility.id } });
+    await prisma.facility.update({
+      where: { id: facility.id },
+      data: { isActive: false, deletedAt: new Date(), deletedById: req.user!.userId },
+    });
     await deactivateVendorForFacility(facility.code);
 
-    await logAudit({
+    await logChangeHistory({
       userId: req.user!.userId,
-      action: "DELETE",
+      action: "SOFT_DELETE",
       entityType: "Facility",
       entityId: facility.id,
-      details: { name: facility.name, code: facility.code },
+      entityName: facility.name,
+      previousValues: { isActive: true, deletedAt: null },
+      currentValues: { isActive: false, deletedAt: new Date() },
+      changeDetails: "Soft-deleted facility",
     });
 
     res.json({ message: "Facility deleted" });

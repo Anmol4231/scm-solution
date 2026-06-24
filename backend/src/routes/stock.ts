@@ -198,12 +198,14 @@ const adjustmentSchema = z.object({
   medicineId: z.string(),
   physicalCount: nonNegativeWholeNumber,
   reason: z.string(),
+  facilityId: z.string().optional(),
 });
 
 router.post("/adjustment", stockEdit, async (req, res, next) => {
   try {
     const data = adjustmentSchema.parse(req.body);
-    const facilityId = getFacilityId(req)!;
+    const facilityId = getFacilityId(req, data.facilityId);
+    if (!facilityId) return res.status(400).json({ error: "Facility selection is required." });
     const userId = req.user!.userId;
     const systemBalance = await getMedicineBalance(data.medicineId, facilityId);
     const discrepancy = data.physicalCount - systemBalance;
@@ -382,6 +384,8 @@ router.get("/transactions", stockView, async (req, res, next) => {
     const to = req.query.to as string | undefined;
     const skip = parseInt((req.query.skip as string) ?? "0", 10) || 0;
     const take = Math.min(parseInt((req.query.take as string) ?? "50", 10) || 50, 200);
+    const sortBy = req.query.sortBy as string | undefined;
+    const sortDir = req.query.sortDir === "asc" ? "asc" : "desc";
 
     const where: any = {
       ...(facilityId ? { facilityId } : {}),
@@ -395,6 +399,18 @@ router.get("/transactions", stockView, async (req, res, next) => {
       } : {}),
     };
 
+    const orderBy: any =
+      sortBy === "type" ? { type: sortDir }
+      : sortBy === "medicine" ? { medicine: { medicineName: sortDir } }
+      : sortBy === "facility" ? { facility: { name: sortDir } }
+      : sortBy === "batch" ? { batch: { batchNumber: sortDir } }
+      : sortBy === "quantity" ? { quantity: sortDir }
+      : sortBy === "balanceAfter" ? { balanceAfter: sortDir }
+      : sortBy === "reason" ? { reason: sortDir }
+      : sortBy === "performedBy" ? { performedBy: { firstName: sortDir } }
+      : sortBy === "destination" ? { transfer: { toFacility: { name: sortDir } } }
+      : { createdAt: sortDir };
+
     const [total, txs] = await prisma.$transaction([
       prisma.stockTransaction.count({ where }),
       prisma.stockTransaction.findMany({
@@ -405,7 +421,7 @@ router.get("/transactions", stockView, async (req, res, next) => {
           performedBy: { select: { firstName: true, lastName: true } },
           facility: { select: { id: true, name: true, code: true } },
         },
-        orderBy: { createdAt: "desc" },
+        orderBy,
         skip,
         take,
       }),
@@ -432,6 +448,86 @@ router.get("/transactions", stockView, async (req, res, next) => {
     });
 
     res.json({ total, skip, take, transactions });
+  } catch (e) {
+    next(e);
+  }
+});
+
+// GET /stock/transactions/export — CSV export of the ledger, mirroring every filter
+// from /stock/transactions (no pagination — all matching rows).
+router.get("/transactions/export", stockView, async (req, res, next) => {
+  try {
+    const facilityId = getFacilityId(req, req.query.facilityId as string);
+    const type = req.query.type as string | undefined;
+    const medicineId = req.query.medicineId as string | undefined;
+    const from = req.query.from as string | undefined;
+    const to = req.query.to as string | undefined;
+
+    const where: any = {
+      ...(facilityId ? { facilityId } : {}),
+      ...(type ? { type } : {}),
+      ...(medicineId ? { medicineId } : {}),
+      ...(from || to ? {
+        createdAt: {
+          ...(from ? { gte: new Date(from) } : {}),
+          ...(to ? { lte: new Date(new Date(to).setHours(23, 59, 59, 999)) } : {}),
+        },
+      } : {}),
+    };
+
+    const txs = await prisma.stockTransaction.findMany({
+      where,
+      include: {
+        medicine: { select: { medicineName: true } },
+        batch: { select: { batchNumber: true, expiryDate: true } },
+        performedBy: { select: { firstName: true, lastName: true } },
+        facility: { select: { name: true, code: true } },
+      },
+      orderBy: { createdAt: "desc" },
+      take: 10000,
+    });
+
+    const transferIds = [...new Set(txs.map((tx) => tx.transferId).filter(Boolean))] as string[];
+    const transfers = transferIds.length
+      ? await prisma.transfer.findMany({
+          where: { id: { in: transferIds } },
+          include: {
+            fromFacility: { select: { name: true } },
+            toFacility: { select: { name: true } },
+          },
+        })
+      : [];
+    const transferMap = Object.fromEntries(transfers.map((t) => [t.id, t]));
+
+    const escape = (v: unknown) => {
+      const s = String(v ?? "");
+      return s.includes(",") || s.includes('"') || s.includes("\n") ? `"${s.replace(/"/g, '""')}"` : s;
+    };
+
+    const header = ["Date & Time", "Type", "Medicine", "Facility", "Source Facility", "Destination Facility", "Batch", "Expiry", "Quantity", "Balance After", "Reason", "Performed By"];
+    const rows = txs.map((tx) => {
+      const transfer = tx.transferId ? transferMap[tx.transferId] : null;
+      return [
+        tx.createdAt.toISOString(),
+        tx.type,
+        tx.medicine?.medicineName ?? "",
+        tx.facility?.name ?? "",
+        transfer?.fromFacility?.name ?? "",
+        transfer?.toFacility?.name ?? "",
+        tx.batch?.batchNumber ?? "",
+        tx.batch?.expiryDate ? tx.batch.expiryDate.toISOString().slice(0, 10) : "",
+        tx.quantity,
+        tx.balanceAfter ?? "",
+        tx.reason ?? tx.notes ?? "",
+        tx.performedBy ? `${tx.performedBy.firstName} ${tx.performedBy.lastName}` : "",
+      ];
+    });
+
+    const csv = [header, ...rows].map((r) => r.map(escape).join(",")).join("\n");
+    const filename = `transactions-${new Date().toISOString().slice(0, 10)}.csv`;
+    res.setHeader("Content-Type", "text/csv; charset=utf-8");
+    res.setHeader("Content-Disposition", `attachment; filename="${filename}"`);
+    res.send("﻿" + csv);
   } catch (e) {
     next(e);
   }
@@ -580,66 +676,76 @@ router.get("/in-hand", stockView, async (req, res, next) => {
     const expiryStatus = req.query.expiryStatus as string | undefined; // "expired"|"expiring"|"ok"
     const sortBy = (req.query.sortBy as string | undefined) ?? "medicineName";
     const sortDir = req.query.sortDir === "desc" ? "desc" : "asc";
+    const page = Math.max(1, parseInt(req.query.page as string, 10) || 1);
+    const pageSize = Math.min(500, Math.max(1, parseInt(req.query.pageSize as string, 10) || 100));
 
-    const batches = await prisma.stockBatch.findMany({
-      where: {
-        ...(facilityId ? { facilityId } : {}),
-        ...(batchNumber ? { batchNumber: { contains: batchNumber, mode: "insensitive" } } : {}),
-        quantity: { gt: 0 },
-        medicine: {
-          isActive: true,
-          deletedAt: null,
-          ...(medicineId ? { id: medicineId } : {}),
-          ...(categoryId ? { categoryId } : {}),
-          ...(q
-            ? {
-                OR: [
-                  { medicineName: { contains: q, mode: "insensitive" } },
-                  { genericName: { contains: q, mode: "insensitive" } },
-                ],
-              }
-            : {}),
-        },
+    const where = {
+      ...(facilityId ? { facilityId } : {}),
+      ...(batchNumber ? { batchNumber: { contains: batchNumber, mode: "insensitive" as const } } : {}),
+      quantity: { gt: 0 },
+      medicine: {
+        isActive: true,
+        deletedAt: null,
+        ...(medicineId ? { id: medicineId } : {}),
+        ...(categoryId ? { categoryId } : {}),
+        ...(q
+          ? {
+              OR: [
+                { medicineName: { contains: q, mode: "insensitive" as const } },
+                { genericName: { contains: q, mode: "insensitive" as const } },
+              ],
+            }
+          : {}),
       },
-      include: {
-        medicine: {
-          include: { category: { select: { id: true, name: true, coldStorage: true, controlledDrug: true } } },
-        },
-        facility: { select: { id: true, name: true, code: true } },
+    };
+    const orderBy = (() => {
+      if (sortBy === "expiryDate") return { expiryDate: sortDir } as const;
+      if (sortBy === "quantity") return { quantity: sortDir } as const;
+      if (sortBy === "batchNumber") return { batchNumber: sortDir } as const;
+      if (sortBy === "category") return { medicine: { category: { name: sortDir } } } as const;
+      if (sortBy === "facility") return { facility: { name: sortDir } } as const;
+      return { medicine: { medicineName: sortDir } } as const;
+    })();
+    const include = {
+      medicine: {
+        include: { category: { select: { id: true, name: true, coldStorage: true, controlledDrug: true } } },
       },
-      orderBy: (() => {
-        if (sortBy === "expiryDate") return { expiryDate: sortDir } as const;
-        if (sortBy === "quantity") return { quantity: sortDir } as const;
-        if (sortBy === "batchNumber") return { batchNumber: sortDir } as const;
-        return { medicine: { medicineName: sortDir } } as const;
-      })(),
-    });
+      facility: { select: { id: true, name: true, code: true } },
+    };
+
+    // Fetch all matching batches for expiry-status post-filter, then paginate in memory.
+    // This is necessary because daysLeft is computed after fetch (expiryStatus is a derived field).
+    const allBatches = await prisma.stockBatch.findMany({ where, include, orderBy });
 
     const now = new Date();
     const warningDays = config.expiryWarningDays;
 
-    const result = batches
-      .map((b) => {
-        const daysLeft = Math.ceil((b.expiryDate.getTime() - now.getTime()) / 86400000);
-        const status =
-          daysLeft <= 0
-            ? "Expired"
-            : daysLeft <= config.expiryCriticalDays
-              ? "Expiring Soon (Critical)"
-              : daysLeft <= warningDays
-                ? "Expiring Soon"
-                : "OK";
-        return { ...b, daysLeft, status };
-      })
-      .filter((b) => {
-        if (!expiryStatus) return true;
-        if (expiryStatus === "expired") return b.daysLeft <= 0;
-        if (expiryStatus === "expiring") return b.daysLeft > 0 && b.daysLeft <= warningDays;
-        if (expiryStatus === "ok") return b.daysLeft > warningDays;
-        return true;
-      });
+    const decorated = allBatches.map((b) => {
+      const daysLeft = Math.ceil((b.expiryDate.getTime() - now.getTime()) / 86400000);
+      const status =
+        daysLeft <= 0
+          ? "Expired"
+          : daysLeft <= config.expiryCriticalDays
+            ? "Expiring Soon (Critical)"
+            : daysLeft <= warningDays
+              ? "Expiring Soon"
+              : "In Date";
+      return { ...b, daysLeft, status };
+    });
 
-    res.json(result);
+    const filtered = decorated.filter((b) => {
+      if (!expiryStatus) return true;
+      if (expiryStatus === "expired") return b.daysLeft <= 0;
+      if (expiryStatus === "not-expired") return b.daysLeft > 0;
+      if (expiryStatus === "expiring") return b.daysLeft > 0 && b.daysLeft <= warningDays;
+      if (expiryStatus === "ok") return b.daysLeft > warningDays;
+      return true;
+    });
+
+    const total = filtered.length;
+    const data = filtered.slice((page - 1) * pageSize, page * pageSize);
+
+    res.json({ data, total, page, pageSize });
   } catch (e) {
     next(e);
   }
@@ -699,12 +805,13 @@ router.get("/in-hand/export", stockView, async (req, res, next) => {
           daysLeft <= 0 ? "Expired"
           : daysLeft <= config.expiryCriticalDays ? "Expiring Soon (Critical)"
           : daysLeft <= warningDays ? "Expiring Soon"
-          : "OK";
+          : "In Date";
         return { b, daysLeft, status };
       })
       .filter(({ daysLeft }) => {
         if (!expiryStatus) return true;
         if (expiryStatus === "expired") return daysLeft <= 0;
+        if (expiryStatus === "not-expired") return daysLeft > 0;
         if (expiryStatus === "expiring") return daysLeft > 0 && daysLeft <= warningDays;
         if (expiryStatus === "ok") return daysLeft > warningDays;
         return true;

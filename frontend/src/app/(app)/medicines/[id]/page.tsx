@@ -10,6 +10,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { PageSkeleton } from "@/components/ui/page-skeleton";
 
 interface Category {
   id: string;
@@ -85,6 +86,7 @@ export default function MedicineDetailPage() {
   const [form, setForm] = useState(emptyForm);
   const [error, setError] = useState("");
   const [success, setSuccess] = useState("");
+  const [highlightBatchId, setHighlightBatchId] = useState<string | null>(null);
 
   const load = () => {
     const q = user?.facilityId ? `?facilityId=${user.facilityId}` : "";
@@ -96,7 +98,22 @@ export default function MedicineDetailPage() {
     if (isAdmin) api<Category[]>("/categories").then(setCategories).catch(console.error);
   }, [id, user?.facilityId, isAdmin]);
 
-  if (!data) return <p className="text-muted-foreground">Loading medicine details...</p>;
+  // When arriving from an Expiry "View" link (#batch-<id>), scroll to and
+  // briefly highlight that specific batch row.
+  useEffect(() => {
+    if (!data) return;
+    const hash = window.location.hash;
+    if (!hash.startsWith("#batch-")) return;
+    const batchId = hash.slice("#batch-".length);
+    const el = document.getElementById(`batch-${batchId}`);
+    if (!el) return;
+    el.scrollIntoView({ behavior: "smooth", block: "center" });
+    setHighlightBatchId(batchId);
+    const t = setTimeout(() => setHighlightBatchId(null), 2600);
+    return () => clearTimeout(t);
+  }, [data]);
+
+  if (!data) return <PageSkeleton />;
 
   const m = data.medicine;
 
@@ -143,7 +160,7 @@ export default function MedicineDetailPage() {
   };
 
   const deleteMedicine = async () => {
-    if (!window.confirm(`Delete ${m.medicineName}? It can be restored from Audit Trail & Restore.`)) return;
+    if (!window.confirm(`Delete ${m.medicineName}? It can be restored from Audit Logs.`)) return;
     try {
       await api(`/medicines/${id}`, { method: "DELETE" });
       router.push("/medicines");
@@ -182,7 +199,7 @@ export default function MedicineDetailPage() {
             <form onSubmit={saveMedicine} className="grid gap-3 md:grid-cols-2">
               <div className="md:col-span-2">
                 <Label>Category *</Label>
-                <select className="h-11 w-full rounded-lg border px-3" value={form.categoryId} onChange={(e) => setForm({ ...form, categoryId: e.target.value })} required>
+                <select className="h-11 w-full rounded-lg border bg-white px-3" value={form.categoryId} onChange={(e) => setForm({ ...form, categoryId: e.target.value })} required>
                   <option value="">Select category</option>
                   {categories.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
                 </select>
@@ -274,7 +291,11 @@ export default function MedicineDetailPage() {
             </thead>
             <tbody>
               {data.batches.map((b) => (
-                <tr key={b.id} className="border-b">
+                <tr
+                  key={b.id}
+                  id={`batch-${b.id}`}
+                  className={`border-b scroll-mt-24 transition-colors ${highlightBatchId === b.id ? "bg-medflow-50 ring-2 ring-inset ring-medflow-300" : ""}`}
+                >
                   <td className="p-2 font-mono text-xs">{b.batchNumber}</td>
                   <td className="p-2">{b.facility.name}</td>
                   <td className="p-2 font-medium">{b.quantity}</td>

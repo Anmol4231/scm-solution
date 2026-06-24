@@ -1,6 +1,6 @@
 import { Router, type Request } from "express";
 import { z } from "zod";
-import { StockTransactionType, VendorOrderStatus } from "@prisma/client";
+import { Prisma, StockTransactionType, VendorOrderStatus } from "@prisma/client";
 import { prisma } from "../lib/prisma";
 import { authenticate, getFacilityId, requireFacility } from "../middleware/auth";
 import { requirePermission, requireAnyPermission } from "../middleware/permission";
@@ -88,11 +88,62 @@ router.get("/sources", ordersOrReceiveView, async (_req, res, next) => {
 router.get("/", ordersOrReceiveView, async (req, res, next) => {
   try {
     const facilityWhere = orderFacilityWhere(req, req.query.facilityId as string | undefined);
+    const { q, status, sortBy, sortDir } = req.query as Record<string, string>;
+    const vendorId = req.query.vendorId as string | undefined;
+    const from = req.query.from as string | undefined;
+    const to = req.query.to as string | undefined;
+
+    // Status filter — "SUBMITTED" surfaces the internal CONFIRMED/IN_TRANSIT states
+    // that the UI groups under "Submitted".
+    const statusWhere: Prisma.StockOrderWhereInput =
+      !status
+        ? {}
+        : status === "SUBMITTED"
+          ? { status: { in: [VendorOrderStatus.SUBMITTED, VendorOrderStatus.CONFIRMED, VendorOrderStatus.IN_TRANSIT] } }
+          : { status: status as VendorOrderStatus };
+
+    const searchWhere: Prisma.StockOrderWhereInput = q
+      ? {
+          OR: [
+            { orderCode: { contains: q, mode: "insensitive" } },
+            { vendor: { name: { contains: q, mode: "insensitive" } } },
+            { orderedBy: { firstName: { contains: q, mode: "insensitive" } } },
+            { orderedBy: { lastName: { contains: q, mode: "insensitive" } } },
+          ],
+        }
+      : {};
+
+    const dateWhere: Prisma.StockOrderWhereInput =
+      from || to
+        ? { createdAt: { ...(from ? { gte: new Date(from) } : {}), ...(to ? { lte: new Date(`${to}T23:59:59.999Z`) } : {}) } }
+        : {};
+
+    const dir: Prisma.SortOrder = sortDir === "asc" ? "asc" : "desc";
+    const orderBy: Prisma.StockOrderOrderByWithRelationInput =
+      sortBy === "orderCode"
+        ? { orderCode: dir }
+        : sortBy === "status"
+          ? { status: dir }
+          : sortBy === "facility"
+            ? { facility: { name: dir } }
+            : sortBy === "source"
+              ? { vendor: { name: dir } }
+              : sortBy === "createdBy"
+                ? { orderedBy: { firstName: dir } }
+                : { createdAt: dir };
+
     const orders = await prisma.stockOrder.findMany({
-      where: { ...facilityWhere, deletedAt: null },
+      where: {
+        ...facilityWhere,
+        deletedAt: null,
+        ...statusWhere,
+        ...(vendorId ? { vendorId } : {}),
+        ...searchWhere,
+        ...dateWhere,
+      },
       include: orderListInclude,
-      orderBy: { createdAt: "desc" },
-      take: 50,
+      orderBy,
+      take: 100,
     });
     res.json(orders);
   } catch (e) {
@@ -146,6 +197,28 @@ router.get("/received", ordersOrReceiveView, async (req, res, next) => {
       take: 100,
     });
     res.json(orders);
+  } catch (e) {
+    next(e);
+  }
+});
+
+router.get("/deleted", ordersDelete, async (req, res, next) => {
+  try {
+    const facilityWhere = orderFacilityWhere(req, req.query.facilityId as string | undefined);
+    const orders = await prisma.stockOrder.findMany({
+      where: { ...facilityWhere, deletedAt: { not: null } },
+      include: {
+        ...orderListInclude,
+        deletedBy: { select: { firstName: true, lastName: true, email: true } },
+      },
+      orderBy: { deletedAt: "desc" },
+    });
+    res.json(orders.map((o) => ({
+      ...o,
+      deletedBy: o.deletedBy
+        ? `${o.deletedBy.firstName} ${o.deletedBy.lastName}`.trim() || o.deletedBy.email
+        : null,
+    })));
   } catch (e) {
     next(e);
   }
@@ -310,8 +383,12 @@ router.patch("/:id", ordersEdit, async (req, res, next) => {
       include: { lines: true },
     });
     if (!order) return res.status(404).json({ error: "Order not found" });
-    if (order.status === VendorOrderStatus.RECEIVED || order.status === VendorOrderStatus.CANCELLED) {
-      return res.status(400).json({ error: "Received or cancelled orders cannot be edited" });
+    if (
+      order.status === VendorOrderStatus.RECEIVED ||
+      order.status === VendorOrderStatus.PARTIALLY_RECEIVED ||
+      order.status === VendorOrderStatus.CANCELLED
+    ) {
+      return res.status(400).json({ error: "Received, partially received, or cancelled orders cannot be edited" });
     }
 
     const receiptStarted = order.lines.some((l) => (l.quantityReceived ?? 0) > 0);
@@ -897,6 +974,36 @@ router.post("/:id/cancel", ordersEdit, async (req, res, next) => {
   }
 });
 
+router.post("/:id/restore", ordersDelete, async (req, res, next) => {
+  try {
+    const facilityWhere = orderFacilityWhere(req, req.query.facilityId as string | undefined);
+    const order = await prisma.stockOrder.findFirst({
+      where: { id: req.params.id, ...facilityWhere },
+    });
+    if (!order) return res.status(404).json({ error: "Order not found" });
+    if (!order.deletedAt) return res.status(400).json({ error: "Order is not deleted" });
+
+    const restored = await prisma.stockOrder.update({
+      where: { id: order.id },
+      data: { deletedAt: null, deletedById: null },
+      include: orderDetailInclude,
+    });
+
+    await logAudit({
+      facilityId: order.facilityId,
+      userId: req.user!.userId,
+      action: "RESTORE",
+      entityType: "StockOrder",
+      entityId: order.id,
+      details: { name: order.orderCode, previousValues: { deletedAt: order.deletedAt }, currentValues: { deletedAt: null }, changeDetails: "Restored soft-deleted stock order" },
+    });
+
+    res.json(restored);
+  } catch (e) {
+    next(e);
+  }
+});
+
 router.delete("/:id", ordersDelete, async (req, res, next) => {
   try {
     const facilityWhere = orderFacilityWhere(req, req.query.facilityId as string | undefined);
@@ -909,6 +1016,16 @@ router.delete("/:id", ordersDelete, async (req, res, next) => {
       data: { deletedAt: new Date(), deletedById: req.user!.userId },
       include: { vendor: true, lines: { include: { medicine: true } } },
     });
+
+    await logAudit({
+      facilityId: order.facilityId,
+      userId: req.user!.userId,
+      action: "SOFT_DELETE",
+      entityType: "StockOrder",
+      entityId: order.id,
+      details: { name: order.orderCode, previousValues: { deletedAt: null }, currentValues: { deletedAt: new Date() }, changeDetails: "Soft-deleted stock order" },
+    });
+
     res.json(deleted);
   } catch (e) {
     next(e);

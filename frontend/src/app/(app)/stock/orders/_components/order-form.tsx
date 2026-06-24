@@ -5,6 +5,7 @@ import { useRouter } from "next/navigation";
 import Link from "next/link";
 import { Plus, X } from "lucide-react";
 import { api } from "@/lib/api";
+import { useMedicines } from "@/lib/medicines-cache";
 import { useAuth } from "@/lib/auth-context";
 import { useRequirePermission } from "@/hooks/useRequirePermission";
 import { isAdminDashboardRole } from "@/lib/roles";
@@ -47,6 +48,8 @@ interface ExistingOrder {
   [key: string]: unknown;
 }
 
+// Orders in these states can no longer be edited (mirrors the backend PATCH guard).
+const LOCKED_STATUSES = ["RECEIVED", "PARTIALLY_RECEIVED", "CANCELLED"];
 const EMPTY_LINE = { medicineId: "", quantityOrdered: 0, notes: "", serverQuantityReceived: 0 };
 const EMPTY_FORM = { facilityId: "", sourceId: "", notes: "", lines: [{ ...EMPTY_LINE }] };
 const SOURCE_FIELD = "ven" + "dor";
@@ -62,17 +65,17 @@ export function OrderForm({ orderId }: { orderId?: string }) {
 
   const [sources, setSources] = useState<OrderSource[]>([]);
   const [facilities, setFacilities] = useState<{ id: string; name: string; code: string }[]>([]);
-  const [medicines, setMedicines] = useState<MedicineOption[]>([]);
+  const { data: medicines = [] } = useMedicines();
   const [loadingOrder, setLoadingOrder] = useState(!!orderId);
   const [submitting, setSubmitting] = useState(false);
   const [formError, setFormError] = useState("");
   const [mergeNotice, setMergeNotice] = useState("");
   const [form, setForm] = useState(EMPTY_FORM);
   const [orderCode, setOrderCode] = useState("");
+  const [orderStatus, setOrderStatus] = useState("");
 
   useEffect(() => {
     api<OrderSource[]>("/orders/sources").then(setSources);
-    api<MedicineOption[]>("/medicines").then(setMedicines);
     if (isAdmin) {
       api<{ id: string; name: string; code: string }[]>("/auth/facilities")
         .then(setFacilities)
@@ -85,6 +88,7 @@ export function OrderForm({ orderId }: { orderId?: string }) {
         .then((data) => {
           const source = data[SOURCE_FIELD] as OrderSource | undefined;
           setOrderCode(data.orderCode);
+          setOrderStatus(data.status);
           setForm({
             facilityId: data.facility?.id ?? "",
             sourceId: source?.id ?? "",
@@ -117,6 +121,29 @@ export function OrderForm({ orderId }: { orderId?: string }) {
 
   if (loadingOrder) {
     return <div className="p-8 text-center text-slate-500">Loading…</div>;
+  }
+
+  if (orderId && LOCKED_STATUSES.includes(orderStatus)) {
+    return (
+      <div className="space-y-4">
+        <Link href="/stock/orders" className="text-sm text-medflow-600 hover:underline">
+          ← Orders
+        </Link>
+        <div className="rounded-lg bg-amber-50 p-4 text-amber-800">
+          <p className="font-medium">This order can no longer be edited.</p>
+          <p className="mt-1 text-sm">
+            {orderCode} is {orderStatus.replace(/_/g, " ").toLowerCase()}, so its details are locked.
+            View the order to see its receipts and history.
+          </p>
+          <Link
+            href={`/stock/orders/${orderId}`}
+            className="mt-3 inline-block text-sm font-medium text-medflow-600 hover:underline"
+          >
+            View order details →
+          </Link>
+        </div>
+      </div>
+    );
   }
 
   const addLine = () => setForm((f) => ({ ...f, lines: [...f.lines, { ...EMPTY_LINE }] }));
@@ -238,7 +265,7 @@ export function OrderForm({ orderId }: { orderId?: string }) {
               <div>
                 <Label>Receiving Facility *</Label>
                 <select
-                  className="mt-1 h-11 w-full rounded-lg border px-3 text-sm"
+                  className="mt-1 h-11 w-full rounded-lg border bg-white px-3 text-sm"
                   value={form.facilityId}
                   onChange={(e) => setForm({ ...form, facilityId: e.target.value })}
                   required
@@ -256,7 +283,7 @@ export function OrderForm({ orderId }: { orderId?: string }) {
               <div>
                 <Label>Source / Supplier</Label>
                 <select
-                  className="mt-1 h-11 w-full rounded-lg border px-3 text-sm"
+                  className="mt-1 h-11 w-full rounded-lg border bg-white px-3 text-sm"
                   value={form.sourceId}
                   onChange={(e) => setForm({ ...form, sourceId: e.target.value })}
                 >

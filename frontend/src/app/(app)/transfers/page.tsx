@@ -6,6 +6,8 @@ import { api } from "@/lib/api";
 import { useAuth } from "@/lib/auth-context";
 import { isCrossFacilityRole } from "@/lib/roles";
 import { useRequirePermission } from "@/hooks/useRequirePermission";
+import { SkeletonRows } from "@/components/ui/page-skeleton";
+import { Eye, ArrowUpDown } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { formatDate } from "@/lib/datetime";
@@ -46,6 +48,18 @@ export default function TransfersPage() {
   const [transfers, setTransfers] = useState<Transfer[]>([]);
   const [view, setView] = useState<"all" | "outgoing" | "incoming">("all");
   const [loading, setLoading] = useState(true);
+  const [sortBy, setSortBy] = useState<"transferCode" | "from" | "to" | "items" | "status" | "createdAt">("createdAt");
+  const [sortDir, setSortDir] = useState<"asc" | "desc">("desc");
+  const toggleSort = (field: typeof sortBy) => {
+    if (sortBy === field) setSortDir((d) => (d === "asc" ? "desc" : "asc"));
+    else { setSortBy(field); setSortDir("asc"); }
+  };
+  const SortButton = ({ field, label }: { field: typeof sortBy; label: string }) => (
+    <button type="button" onClick={() => toggleSort(field)} className="inline-flex items-center gap-1 font-medium hover:text-medflow-700">
+      {label}
+      <ArrowUpDown className={`h-3.5 w-3.5 ${sortBy === field ? "text-medflow-600" : "text-slate-300"}`} />
+    </button>
+  );
 
   const load = () => {
     setLoading(true);
@@ -67,6 +81,20 @@ export default function TransfersPage() {
   const incomingToReceive = transfers.filter(
     (t) => myFacility && t.toFacility.id === myFacility && (t.status === "IN_TRANSIT" || t.status === "PARTIALLY_RECEIVED")
   );
+
+  const sortedVisible = [...visible].sort((a, b) => {
+    const dir = sortDir === "asc" ? 1 : -1;
+    let cmp = 0;
+    switch (sortBy) {
+      case "transferCode": cmp = a.transferCode.localeCompare(b.transferCode); break;
+      case "from": cmp = a.fromFacility.name.localeCompare(b.fromFacility.name); break;
+      case "to": cmp = a.toFacility.name.localeCompare(b.toFacility.name); break;
+      case "items": cmp = a.lines.length - b.lines.length; break;
+      case "status": cmp = a.status.localeCompare(b.status); break;
+      case "createdAt": cmp = new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime(); break;
+    }
+    return cmp * dir;
+  });
 
   return (
     <div className="space-y-4">
@@ -112,22 +140,22 @@ export default function TransfersPage() {
           <table className="w-full min-w-[760px] text-sm">
             <thead>
               <tr className="border-b bg-slate-50 text-left">
-                <th className="p-3">Transfer</th>
-                <th className="p-3">From</th>
-                <th className="p-3">To</th>
-                <th className="p-3">Items</th>
-                <th className="p-3">Status</th>
-                <th className="p-3">Date</th>
+                <th className="p-3"><SortButton field="transferCode" label="Transfer" /></th>
+                <th className="p-3"><SortButton field="from" label="From" /></th>
+                <th className="p-3"><SortButton field="to" label="To" /></th>
+                <th className="p-3"><SortButton field="items" label="Items" /></th>
+                <th className="p-3"><SortButton field="status" label="Status" /></th>
+                <th className="p-3"><SortButton field="createdAt" label="Date" /></th>
                 <th className="p-3">Actions</th>
               </tr>
             </thead>
             <tbody className="divide-y">
               {loading ? (
-                <tr><td colSpan={7} className="p-6 text-center text-slate-400">Loading…</td></tr>
-              ) : visible.length === 0 ? (
+                <SkeletonRows rows={6} cols={7} />
+              ) : sortedVisible.length === 0 ? (
                 <tr><td colSpan={7} className="p-8 text-center text-slate-400">No transfers.</td></tr>
               ) : (
-                visible.map((t) => {
+                sortedVisible.map((t) => {
                   const received = hasReceipt(t);
                   return (
                     <tr key={t.id} className={`align-middle ${received ? "bg-green-50/40" : "hover:bg-slate-50"}`}>
@@ -145,7 +173,12 @@ export default function TransfersPage() {
                       <td className="p-3 whitespace-nowrap text-slate-500">{formatDate(t.createdAt)}</td>
                       <td className="p-3">
                         <Link href={`/transfers/${t.id}`}>
-                          <Button size="sm" variant="outline">Details</Button>
+                          <Button size="sm" variant="ghost"
+                            className="h-8 w-8 p-0 text-slate-500 hover:bg-slate-100 hover:text-slate-700"
+                            title="View transfer details" aria-label="View transfer details"
+                          >
+                            <Eye className="h-4 w-4" aria-hidden="true" />
+                          </Button>
                         </Link>
                       </td>
                     </tr>

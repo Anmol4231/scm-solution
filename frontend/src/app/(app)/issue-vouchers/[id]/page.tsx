@@ -5,6 +5,7 @@ import Link from "next/link";
 import { api } from "@/lib/api";
 import { useAuth } from "@/lib/auth-context";
 import { isCrossFacilityRole } from "@/lib/roles";
+import { SkeletonRows } from "@/components/ui/page-skeleton";
 
 interface Voucher {
   id: string;
@@ -60,7 +61,11 @@ export default function IssueVouchersPage() {
       </div>
 
       {loading ? (
-        <p className="text-sm text-slate-500">Loading…</p>
+        <div className="overflow-x-auto rounded-lg border bg-white">
+          <table className="w-full text-sm">
+            <tbody><SkeletonRows rows={6} cols={isAdmin ? 7 : 6} /></tbody>
+          </table>
+        </div>
       ) : items.length === 0 ? (
         <p className="text-sm text-slate-500">No vouchers found.</p>
       ) : (

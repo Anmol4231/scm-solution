@@ -31,7 +31,7 @@ services:
       NODE_ENV: production
       JWT_SECRET: ${JWT_SECRET:-change-me-in-production}
       JWT_EXPIRES_IN: 7d
-      CORS_ORIGIN: http://localhost:3000,http://3.110.48.102:3000
+      CORS_ORIGIN: http://52.66.176.130:3000,http://52.66.176.130,http://localhost:3000,http://3.110.48.102:3000,http://stocktrackrx.com,http://www.stocktrackrx.com,https://stocktrackrx.com,https://www.stocktrackrx.com
       WHATSAPP_API_URL: ${WHATSAPP_API_URL:-https://graph.facebook.com/v18.0}
       WHATSAPP_PHONE_NUMBER_ID: ${WHATSAPP_PHONE_NUMBER_ID:-}
       WHATSAPP_ACCESS_TOKEN: ${WHATSAPP_ACCESS_TOKEN:-}
@@ -47,12 +47,14 @@ services:
     build:
       context: ./frontend
       dockerfile: Dockerfile
+      args:
+        NEXT_PUBLIC_API_URL: https://stocktrackrx.com/api
     container_name: medflow-web
     restart: unless-stopped
     ports:
       - "3000:3000"
     environment:
-      NEXT_PUBLIC_API_URL: http://localhost:4000/api
+      NEXT_PUBLIC_API_URL: https://stocktrackrx.com/api
     depends_on:
       - backend
 

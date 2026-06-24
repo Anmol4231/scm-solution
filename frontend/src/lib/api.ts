@@ -106,28 +106,38 @@ export async function api<T = any>(path: string, options: RequestInit = {}): Pro
 
   try {
     const res = await fetch(`${resolveApiUrl()}${path}`, { ...options, headers });
-    if (res.status === 401) {
-      clearAuth();
-      if (typeof window !== "undefined") window.location.href = "/login";
-      throw new Error("Unauthorized");
-    }
     const data = await res.json().catch(() => ({}));
+    if (res.status === 401) {
+      if (path !== "/auth/login") {
+        clearAuth();
+        if (typeof window !== "undefined") window.location.href = "/login";
+      }
+      throw new Error(data.error || data.message || "Unauthorized");
+    }
     if (!res.ok) {
       const msg = data.error || data.message || `Request failed (${res.status})`;
       throw new Error(msg);
     }
 
     if (isBrowser && method === "GET") {
-      const { cacheResponse } = await import("./offline/sync-engine");
-      await cacheResponse(cacheKey(path, method), data);
+      import("./offline/sync-engine")
+        .then(({ cacheResponse }) => cacheResponse(cacheKey(path, method), data))
+        .catch(() => {});
     }
 
     return data as T;
   } catch (err) {
     if (isBrowser && method === "GET") {
-      const { getCached } = await import("./offline/sync-engine");
-      const cached = await getCached<T>(cacheKey(path, method));
-      if (cached !== null) return cached;
+      try {
+        const { getCached } = await import("./offline/sync-engine");
+        const cached = await Promise.race([
+          getCached<T>(cacheKey(path, method)),
+          new Promise<null>((resolve) => setTimeout(() => resolve(null), 1500)),
+        ]);
+        if (cached !== null) return cached;
+      } catch {
+        // ignore cache errors, fall through to throw
+      }
     }
     throw err;
   }

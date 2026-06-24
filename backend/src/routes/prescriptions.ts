@@ -15,9 +15,16 @@ import { matchMedicine } from "../utils/medicineMatcher";
 const uploadDir = path.join(process.cwd(), "uploads");
 if (!fs.existsSync(uploadDir)) fs.mkdirSync(uploadDir, { recursive: true });
 
+function sanitizeFilename(original: string): string {
+  return original
+    .replace(/[^a-zA-Z0-9._-]/g, "_")  // only safe chars
+    .replace(/\.{2,}/g, "_")            // collapse dot-dot sequences
+    .slice(0, 100);                     // cap length
+}
+
 const storage = multer.diskStorage({
   destination: (_req, _file, cb) => cb(null, uploadDir),
-  filename: (_req, file, cb) => cb(null, `${Date.now()}-${file.originalname}`),
+  filename: (_req, file, cb) => cb(null, `${Date.now()}-${sanitizeFilename(file.originalname)}`),
 });
 const upload = multer({
   storage,

@@ -41,16 +41,16 @@ export const MODULES: ModuleDef[] = [
   { key: "medicines", label: "Medicines", actions: ALL },
   { key: "orders", label: "Orders", actions: ["view", "create", "edit", "delete", "approve"], approveLabel: "Approve order" },
   { key: "receiveStock", label: "Receive Stock", actions: ["view", "create", "edit", "approve"], approveLabel: "Confirm receipt" },
-  { key: "stock", label: "Stock (adjustments / report)", actions: ["view", "create", "edit", "approve"], approveLabel: "Approve adjustments" },
-  { key: "expiry", label: "Expiry", actions: ["view", "edit", "approve"], approveLabel: "Approve disposal" },
+  { key: "stock", label: "Stock Adjustments", actions: ["view", "create", "edit", "approve"], approveLabel: "Approve adjustments" },
+  { key: "expiry", label: "Expiry & Disposal", actions: ["view", "edit", "approve"], approveLabel: "Approve disposal" },
   { key: "transfers", label: "Transfers", actions: ["view", "create", "edit", "approve"], approveLabel: "Receive / authorize" },
   { key: "returns", label: "Returns", actions: ["view", "create", "edit", "approve"], approveLabel: "Approve return" },
   { key: "patients", label: "Patients", actions: ["view", "create", "edit"] },
   { key: "prescriptions", label: "Prescriptions", actions: ["view", "create", "edit"] },
   { key: "dispensing", label: "Medicine Dispensing", actions: ["view", "create"] },
   { key: "alerts", label: "Alert Center", actions: ["view", "approve"], approveLabel: "Resolve alert" },
-  { key: "audit", label: "Audit Trail & Restore", actions: ["view"] },
-  { key: "recovery", label: "Recovery", actions: ["view", "approve"], approveLabel: "Restore record" },
+  { key: "audit", label: "Audit Logs", actions: ["view"] },
+  { key: "recovery", label: "Archived Records", actions: ["view", "approve"], approveLabel: "Restore record" },
 ];
 
 export type PermissionMatrix = Partial<Record<ModuleKey, ActionKey[]>>;
