@@ -104,7 +104,7 @@ export function buildWelcomeEmail(
   const text = [
     `Hello ${firstName},`,
     "",
-    "Your SCM Solution account has been created.",
+    "Your StockTrackRx account has been created.",
     "",
     `Login ID:  ${email}`,
     `Password:  ${temporaryPassword}`,
@@ -118,7 +118,7 @@ export function buildWelcomeEmail(
 
   const html = `
 <p>Hello ${firstName},</p>
-<p>Your <strong>SCM Solution</strong> account has been created.</p>
+<p>Your <strong>StockTrackRx</strong> account has been created.</p>
 <table cellpadding="6" style="border:1px solid #e2e8f0;border-radius:6px;border-collapse:collapse;margin:12px 0">
   <tr style="background:#f8fafc"><td style="color:#64748b;padding:8px 12px">Login ID</td><td style="padding:8px 12px"><strong>${email}</strong></td></tr>
   <tr><td style="color:#64748b;padding:8px 12px">Temporary password</td><td style="padding:8px 12px"><strong style="font-family:monospace">${temporaryPassword}</strong></td></tr>
@@ -130,7 +130,7 @@ export function buildWelcomeEmail(
 
   return {
     to: email,
-    subject: "Your SCM Solution account credentials",
+    subject: "Your StockTrackRx account credentials",
     text,
     html,
   };
@@ -146,7 +146,7 @@ export function buildPasswordResetEmail(
   const text = [
     `Hello ${firstName},`,
     "",
-    "Your SCM Solution password has been reset by an administrator.",
+    "Your StockTrackRx password has been reset by an administrator.",
     "",
     `Login ID:  ${email}`,
     `New temporary password:  ${temporaryPassword}`,
@@ -158,7 +158,7 @@ export function buildPasswordResetEmail(
 
   const html = `
 <p>Hello ${firstName},</p>
-<p>Your <strong>SCM Solution</strong> password has been reset by an administrator.</p>
+<p>Your <strong>StockTrackRx</strong> password has been reset by an administrator.</p>
 <table cellpadding="6" style="border:1px solid #e2e8f0;border-radius:6px;border-collapse:collapse;margin:12px 0">
   <tr style="background:#f8fafc"><td style="color:#64748b;padding:8px 12px">Login ID</td><td style="padding:8px 12px"><strong>${email}</strong></td></tr>
   <tr><td style="color:#64748b;padding:8px 12px">New temporary password</td><td style="padding:8px 12px"><strong style="font-family:monospace">${temporaryPassword}</strong></td></tr>
@@ -169,7 +169,7 @@ export function buildPasswordResetEmail(
 
   return {
     to: email,
-    subject: "Your SCM Solution password has been reset",
+    subject: "Your StockTrackRx password has been reset",
     text,
     html,
   };
@@ -189,7 +189,7 @@ export function buildForgotPasswordEmail(
   const text = [
     "Hello,",
     "",
-    "A password reset was requested for your SCM Solution account.",
+    "A password reset was requested for your StockTrackRx account.",
     "",
     `Reset link (expires at ${expiryStr}):`,
     resetUrl,
@@ -200,7 +200,7 @@ export function buildForgotPasswordEmail(
 
   const html = `
 <p>Hello,</p>
-<p>A password reset was requested for your <strong>SCM Solution</strong> account.</p>
+<p>A password reset was requested for your <strong>StockTrackRx</strong> account.</p>
 <p style="margin:20px 0">
   <a href="${resetUrl}" style="display:inline-block;background:#0f766e;color:#fff;padding:10px 20px;border-radius:6px;text-decoration:none;font-weight:600">Reset my password</a>
 </p>
@@ -212,7 +212,7 @@ export function buildForgotPasswordEmail(
 
   return {
     to: email,
-    subject: "Reset your SCM Solution password",
+    subject: "Reset your StockTrackRx password",
     text,
     html,
   };

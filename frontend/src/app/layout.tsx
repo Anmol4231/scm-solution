@@ -3,14 +3,14 @@ import { AuthProvider } from "@/lib/auth-context";
 import "./globals.css";
 
 export const metadata: Metadata = {
-  title: "MediTrack - Healthcare Supply Chain Platform",
-  description: "Track. Manage. Deliver. Care. — medicine inventory and dispensing for healthcare facilities",
+  title: "StockTrackRx - Healthcare Supply Chain Platform",
+  description: "Medicine inventory and dispensing for healthcare facilities",
   manifest: "/manifest.json",
   themeColor: "#1a3a6e",
   appleWebApp: {
     capable: true,
     statusBarStyle: "default",
-    title: "MediTrack",
+    title: "StockTrackRx",
   },
 };
 

@@ -1,7 +1,7 @@
 {
-  "name": "MediTrack",
-  "short_name": "MediTrack",
-  "description": "Track. Manage. Deliver. Care. — medicine inventory, dispensing, and facility operations",
+  "name": "StockTrackRx",
+  "short_name": "StockTrackRx",
+  "description": "Medicine inventory, dispensing, and facility operations",
   "start_url": "/dashboard",
   "scope": "/",
   "display": "standalone",

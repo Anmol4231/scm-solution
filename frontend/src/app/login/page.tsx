@@ -51,8 +51,8 @@ export default function LoginPage() {
     <div className="flex min-h-screen flex-col items-center justify-center bg-gradient-to-br from-slate-100 via-slate-50 to-medflow-50 p-4">
       {/* Logo / Brand */}
       <img
-        src="/icons/meditrack-logo.png"
-        alt="MediTrack — Track. Manage. Deliver. Care."
+        src="/icons/StockTrackRx.jpeg"
+        alt="StockTrackRx"
         className="mb-8 h-auto w-full max-w-[400px]"
       />
 

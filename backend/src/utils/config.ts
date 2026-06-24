@@ -33,6 +33,6 @@ export const config = {
     smtpUser: process.env.SMTP_USER || "",
     smtpPass: process.env.SMTP_PASS || "",
     fromAddress: process.env.EMAIL_FROM || "noreply@scmsolution.local",
-    fromName: process.env.EMAIL_FROM_NAME || "SCM Solution",
+    fromName: process.env.EMAIL_FROM_NAME || "StockTrackRx",
   },
 };
