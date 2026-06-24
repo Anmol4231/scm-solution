@@ -1,6 +1,6 @@
 "use client";
 
-import { Fragment, useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { useParams } from "next/navigation";
 import Link from "next/link";
 import { api } from "@/lib/api";
@@ -67,9 +67,6 @@ export default function TransferDetailPage() {
 
   // receive form: lineId -> quantity to receive now
   const [receiveQty, setReceiveQty] = useState<Record<string, number>>({});
-  const [finalizeShortfall, setFinalizeShortfall] = useState(false);
-  const [mismatchReason, setMismatchReason] = useState<Record<string, string>>({});
-  const [remarks, setRemarks] = useState<Record<string, string>>({});
   const [receiptNotes, setReceiptNotes] = useState("");
 
   const load = useCallback(async () => {
@@ -128,48 +125,23 @@ export default function TransferDetailPage() {
   };
 
   const submitReceive = () => {
-    // When finalizing shortfall, include ALL lines (even qty=0) so backend can validate
-    // mismatch reason for lines that were never received.
-    const lines = finalizeShortfall
-      ? transfer.lines.map((l) => ({
-          lineId: l.id,
-          quantityReceived: Number(receiveQty[l.id] ?? 0),
-          mismatchReason: mismatchReason[l.id] || undefined,
-          remarks: remarks[l.id] || undefined,
-        }))
-      : transfer.lines
-          .map((l) => ({ lineId: l.id, quantityReceived: Number(receiveQty[l.id] ?? 0) }))
-          .filter((l) => l.quantityReceived > 0);
+    const lines = transfer.lines
+      .map((l) => ({ lineId: l.id, quantityReceived: Number(receiveQty[l.id] ?? 0) }))
+      .filter((l) => l.quantityReceived > 0);
 
-    if (lines.length === 0 && !finalizeShortfall) {
-      setError("Enter a quantity to receive on at least one line, or tick 'close with shortfall'.");
+    if (lines.length === 0) {
+      setError("Enter a quantity to receive on at least one line.");
       return;
     }
     for (const l of transfer.lines) {
       const q = Number(receiveQty[l.id] ?? 0);
       if (q > remaining(l)) { setError(`Cannot receive ${q} for ${l.medicine?.medicineName ?? "line"} — only ${remaining(l)} remaining.`); return; }
     }
-    // Client-side mismatch validation when closing with shortfall
-    if (finalizeShortfall) {
-      for (const l of transfer.lines) {
-        const newTotal = (l.quantityReceived ?? 0) + Number(receiveQty[l.id] ?? 0);
-        if (newTotal < l.quantityTransferred) {
-          if (!mismatchReason[l.id]) {
-            setError(`Select a mismatch reason for ${l.medicine?.medicineName ?? l.batchNumber} (batch ${l.batchNumber}).`);
-            return;
-          }
-          if (!remarks[l.id]?.trim()) {
-            setError(`Remarks are required when received quantity differs from issued quantity for batch ${l.batchNumber}.`);
-            return;
-          }
-        }
-      }
-    }
     act(
-      finalizeShortfall ? "Receipt recorded; transfer closed with documented shortfall." : "Receipt recorded.",
+      "Receipt recorded.",
       () => api(`/transfers/${transfer.id}/receive-multi`, {
         method: "POST",
-        body: JSON.stringify({ lines, finalizeShortfall, notes: receiptNotes.trim() || undefined }),
+        body: JSON.stringify({ lines, notes: receiptNotes.trim() || undefined }),
       })
     );
   };
@@ -188,7 +160,14 @@ export default function TransferDetailPage() {
           </h1>
         </div>
         {showCancel && (
-          <Button variant="outline" className="text-red-600" disabled={busy} onClick={cancel}>Recall / Cancel</Button>
+          <Button
+            variant="outline"
+            className="border-red-300 bg-red-50 text-red-700 hover:bg-red-100 hover:text-red-800"
+            disabled={busy}
+            onClick={cancel}
+          >
+            Recall / Cancel
+          </Button>
         )}
       </div>
 
@@ -215,7 +194,7 @@ export default function TransferDetailPage() {
         </CardContent>
       </Card>
 
-      {/* Medicine lines (Sent / Received / Remaining / Variance) */}
+      {/* Medicine lines (Sent / Received / Remaining) */}
       <Card>
         <CardHeader><CardTitle>Medicine Lines</CardTitle></CardHeader>
         <CardContent className="p-0">
@@ -227,7 +206,6 @@ export default function TransferDetailPage() {
                   <th className="p-3">Batch</th>
                   <th className="p-3 text-right">Issued Qty</th>
                   <th className="p-3 text-right">Received Qty</th>
-                  <th className="p-3 text-right">Variance</th>
                   <th className="p-3 text-right">Remaining</th>
                 </tr>
               </thead>
@@ -235,17 +213,12 @@ export default function TransferDetailPage() {
                 {transfer.lines.map((l) => {
                   const rem = remaining(l);
                   const received = l.quantityReceived ?? 0;
-                  const variance = received - l.quantityTransferred;
                   return (
                     <tr key={l.id}>
                       <td className="p-3 font-medium">{l.medicine?.medicineName ?? "—"}</td>
                       <td className="p-3 text-slate-600">{l.batch?.batchNumber ?? l.batchNumber} · exp {l.expiryDate ? formatDate(l.expiryDate) : "—"}</td>
                       <td className="p-3 text-right">{l.quantityTransferred}</td>
                       <td className="p-3 text-right text-slate-600">{received}</td>
-                      <td className={`p-3 text-right font-medium ${variance < 0 ? "text-orange-600" : variance > 0 ? "text-blue-600" : "text-green-600"}`}>
-                        {variance === 0 ? "—" : variance > 0 ? `+${variance}` : `${variance}`}
-                        {l.shortfallFlag && <span className="ml-1 text-xs text-orange-600">(short)</span>}
-                      </td>
                       <td className={`p-3 text-right font-medium ${rem > 0 ? "text-orange-600" : "text-green-600"}`}>{rem}</td>
                     </tr>
                   );
@@ -299,21 +272,16 @@ export default function TransferDetailPage() {
                     <th className="p-2 text-left">Batch</th>
                     <th className="p-2 text-right">Issued Qty</th>
                     <th className="p-2 text-right">Qty Received</th>
-                    <th className="p-2 text-right">Variance</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y">
                   {transfer.lines.filter((l) => (l.quantityReceived ?? 0) > 0).map((l) => {
-                    const variance = (l.quantityReceived ?? 0) - l.quantityTransferred;
                     return (
                       <tr key={l.id}>
                         <td className="p-2 font-medium">{l.medicine?.medicineName ?? "—"}</td>
                         <td className="p-2 text-slate-500">{l.batch?.batchNumber ?? l.batchNumber}</td>
                         <td className="p-2 text-right">{l.quantityTransferred}</td>
                         <td className="p-2 text-right font-semibold">{l.quantityReceived ?? 0}</td>
-                        <td className={`p-2 text-right font-medium ${variance < 0 ? "text-orange-600" : variance > 0 ? "text-blue-600" : "text-green-600"}`}>
-                          {variance === 0 ? "—" : variance > 0 ? `+${variance}` : `${variance}`}
-                        </td>
                       </tr>
                     );
                   })}
@@ -344,7 +312,6 @@ export default function TransferDetailPage() {
         <Card>
           <CardHeader>
             <CardTitle>Record Receipt</CardTitle>
-            <p className="text-sm text-slate-500">Enter the quantities you received — partial receipts are allowed and accumulate until the transfer is fully received.</p>
           </CardHeader>
           <CardContent className="space-y-4">
             <div className="overflow-x-auto rounded-lg border">
@@ -361,60 +328,22 @@ export default function TransferDetailPage() {
                 <tbody className="divide-y">
                   {transfer.lines.map((l) => {
                     const rem = remaining(l);
-                    const receiveNow = Number(receiveQty[l.id] ?? 0);
-                    const projectedTotal = (l.quantityReceived ?? 0) + receiveNow;
-                    const willHaveShortfall = finalizeShortfall && projectedTotal < l.quantityTransferred;
                     return (
-                      <Fragment key={l.id}>
-                        <tr>
-                          <td className="p-3 font-medium">{l.medicine?.medicineName ?? "—"}</td>
-                          <td className="p-3 text-slate-600">{l.batch?.batchNumber ?? l.batchNumber}</td>
-                          <td className="p-3 text-right text-slate-500">{l.quantityTransferred}</td>
-                          <td className={`p-3 text-right font-medium ${rem > 0 ? "text-orange-600" : "text-green-600"}`}>{rem}</td>
-                          <td className="p-3">
-                            {rem === 0 ? (
-                              <span className="block text-right text-green-600">Complete</span>
-                            ) : (
-                              <Input type="number" min={0} max={rem} className="text-right"
-                                value={receiveQty[l.id] ?? 0}
-                                onChange={(e) => setReceiveQty((q) => ({ ...q, [l.id]: Math.max(0, Math.min(rem, Number(e.target.value))) }))} />
-                            )}
-                          </td>
-                        </tr>
-                        {willHaveShortfall && (
-                          <tr className="bg-orange-50">
-                            <td colSpan={5} className="px-3 pb-3 pt-1">
-                              <div className="grid gap-2 sm:grid-cols-2">
-                                <div>
-                                  <label className="mb-1 block text-xs font-medium text-orange-700">Mismatch Reason *</label>
-                                  <select
-                                    className="h-9 w-full rounded border border-orange-300 bg-white px-2 text-sm"
-                                    value={mismatchReason[l.id] ?? ""}
-                                    onChange={(e) => setMismatchReason((r) => ({ ...r, [l.id]: e.target.value }))}
-                                  >
-                                    <option value="">Select reason…</option>
-                                    <option>Damaged</option>
-                                    <option>Missing in Transit</option>
-                                    <option>Expired</option>
-                                    <option>Counting Error</option>
-                                    <option>Other</option>
-                                  </select>
-                                </div>
-                                <div>
-                                  <label className="mb-1 block text-xs font-medium text-orange-700">Remarks *</label>
-                                  <Input
-                                    placeholder="Required — describe the discrepancy"
-                                    value={remarks[l.id] ?? ""}
-                                    onChange={(e) => setRemarks((r) => ({ ...r, [l.id]: e.target.value }))}
-                                    className="border-orange-300"
-                                  />
-                                </div>
-                              </div>
-                              <p className="mt-1 text-xs text-orange-600">Remarks are required when received quantity differs from issued quantity.</p>
-                            </td>
-                          </tr>
-                        )}
-                      </Fragment>
+                      <tr key={l.id}>
+                        <td className="p-3 font-medium">{l.medicine?.medicineName ?? "—"}</td>
+                        <td className="p-3 text-slate-600">{l.batch?.batchNumber ?? l.batchNumber}</td>
+                        <td className="p-3 text-right text-slate-500">{l.quantityTransferred}</td>
+                        <td className={`p-3 text-right font-medium ${rem > 0 ? "text-orange-600" : "text-green-600"}`}>{rem}</td>
+                        <td className="p-3">
+                          {rem === 0 ? (
+                            <span className="block text-right text-green-600">Complete</span>
+                          ) : (
+                            <Input type="number" min={0} max={rem} className="text-right"
+                              value={receiveQty[l.id] ?? 0}
+                              onChange={(e) => setReceiveQty((q) => ({ ...q, [l.id]: Math.max(0, Math.min(rem, Number(e.target.value))) }))} />
+                          )}
+                        </td>
+                      </tr>
                     );
                   })}
                 </tbody>
@@ -432,12 +361,8 @@ export default function TransferDetailPage() {
               />
             </div>
 
-            <label className="flex items-center gap-2 text-sm text-slate-600">
-              <input type="checkbox" className="h-4 w-4 accent-medflow-600" checked={finalizeShortfall} onChange={(e) => setFinalizeShortfall(e.target.checked)} />
-              Finalize with shortfall — close transfer and document undelivered items as loss
-            </label>
             <Button onClick={submitReceive} disabled={busy} className="bg-emerald-600 text-white hover:bg-emerald-700">
-              {busy ? "Saving…" : finalizeShortfall ? "Receive & Close" : "Confirm Receipt"}
+              {busy ? "Saving…" : "Confirm Receipt"}
             </Button>
           </CardContent>
         </Card>
