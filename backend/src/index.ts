@@ -5,7 +5,7 @@ import { validateEmailConfig } from "./utils/email";
 const HOST = process.env.HOST || "0.0.0.0";
 
 const server = app.listen(config.port, HOST, () => {
-  console.log(`SCM Solution API running on http://${HOST}:${config.port}`);
+  console.log(`StockTrackRx API running on http://${HOST}:${config.port}`);
   console.log(`Local health check: http://localhost:${config.port}/health`);
   validateEmailConfig();
 });
@@ -13,7 +13,7 @@ const server = app.listen(config.port, HOST, () => {
 server.on("error", (err: NodeJS.ErrnoException) => {
   if (err.code === "EADDRINUSE") {
     console.error(
-        `\nPort ${config.port} is already in use. Another SCM Solution API instance may be running.\n` +
+        `\nPort ${config.port} is already in use. Another StockTrackRx API instance may be running.\n` +
         `  Windows: netstat -ano | findstr :${config.port}\n` +
         `  Then: taskkill /PID <pid> /F\n` +
         `  Or set a different PORT in backend/.env\n`

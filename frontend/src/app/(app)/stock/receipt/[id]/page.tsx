@@ -286,7 +286,7 @@ export default function OrderReceivingPage() {
       <table><thead><tr><th>Medicine</th><th style="text-align:right">Qty</th><th>Batch No.</th><th>Expiry Date</th><th>Notes</th></tr></thead>
       <tbody>${rows}</tbody></table>
       <p class="total">Total: ${totalItems} units</p>
-      <div class="footer">Printed ${new Date().toLocaleString()} &nbsp;|&nbsp; MediTrack</div>
+      <div class="footer">Printed ${new Date().toLocaleString()} &nbsp;|&nbsp; StockTrackRx</div>
       <script>window.onload=()=>window.print();</script>
     </body></html>`;
     const win = window.open("", "_blank");

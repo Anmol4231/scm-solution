@@ -100,7 +100,7 @@ router.post("/", transferCreate, async (req, res, next) => {
 
     await whatsappService.sendToFacilityPhones(
       data.toFacilityId,
-      `Transfer ${transfer.transferCode} incoming. Confirm receipt in SCM Solution.`
+      `Transfer ${transfer.transferCode} incoming. Confirm receipt in StockTrackRx.`
     );
 
     await createShipmentForTransfer({
@@ -386,7 +386,7 @@ router.post("/new", transferCreate, async (req, res, next) => {
       message: `Transfer ${transfer.transferCode} is in transit — confirm receipt in SCM Solution.`,
     }).catch(() => {});
     await whatsappService
-      .sendToFacilityPhones(data.toFacilityId, `Transfer ${transfer.transferCode} incoming. Confirm receipt in SCM Solution.`)
+      .sendToFacilityPhones(data.toFacilityId, `Transfer ${transfer.transferCode} incoming. Confirm receipt in StockTrackRx.`)
       .catch(() => {});
 
     await logAudit({ facilityId: effectiveFromFacilityId, userId, action: "TRANSFER_SEND", entityType: "Transfer", entityId: transfer.id, details: { code: transfer.transferCode } });

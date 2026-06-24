@@ -44,8 +44,8 @@ export default function ForgotPasswordPage() {
       <Card className="w-full max-w-md">
         <CardHeader className="text-center">
           <img
-            src="/icons/meditrack-logo.png"
-            alt="MediTrack"
+            src="/icons/StockTrackRx.jpeg"
+            alt="StockTrackRx"
             className="mx-auto mb-2 h-auto w-full max-w-[260px]"
           />
           <p className="text-sm text-muted-foreground">Reset your password</p>

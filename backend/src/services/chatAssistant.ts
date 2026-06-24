@@ -5,7 +5,7 @@ import { config } from "../utils/config";
 import { isCrossFacilityRole } from "../utils/roles";
 
 export const ASSISTANT_PROFILE = {
-  name: "SCM Assistant",
+  name: "StockTrackRx Assistant",
   subtitle: "Healthcare Inventory & Workflow Assistant",
   avatar: "healthcare-assistant",
   role: "assistant" as const,
@@ -29,7 +29,7 @@ export interface ChatResponse {
 }
 
 export const WELCOME_MESSAGE =
-  "Hello. I'm SCM Assistant. I can help with inventory, stock levels, expiry alerts, patients, dispensing, orders, reports, transfers, returns, and workflow guidance.";
+  "Hello. I'm StockTrackRx Assistant. I can help with inventory, stock levels, expiry alerts, patients, dispensing, orders, reports, transfers, returns, and workflow guidance.";
 
 const NOT_FOUND_REPLY =
   "I could not find that information. Try asking about stock, expiry, patients, dispensing, reports, or orders.";

@@ -188,16 +188,16 @@ export function AppShell({ children }: { children: React.ReactNode }) {
             <Link
               href="/dashboard"
               className="flex shrink-0 items-center gap-2"
-              aria-label="MediTrack home"
+              aria-label="StockTrackRx home"
             >
               <img
-                src="/icons/meditrack-emblem.png"
+                src="/icons/stocktrackrx-emblem.png"
                 alt=""
                 className="h-9 w-9 object-contain"
               />
               <span className="text-xl font-extrabold tracking-tight">
-                <span className="text-[#1a3a6e]">Medi</span>
-                <span className="text-green-600">Track</span>
+                <span className="text-[#1a3a6e]">Stock</span>
+                <span className="text-green-600">TrackRx</span>
               </span>
             </Link>
           </div>
