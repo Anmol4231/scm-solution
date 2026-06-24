@@ -6,7 +6,7 @@ import Link from "next/link";
 import { Bell } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { api } from "@/lib/api";
-import { dateInputMin, dateInputMax } from "@/lib/datetime";
+import { dateInputMin, todayStr } from "@/lib/datetime";
 import { DateInput } from "@/components/ui/date-input";
 import { useAuth } from "@/lib/auth-context";
 import { isAdminDashboardRole } from "@/lib/roles";
@@ -15,10 +15,7 @@ import { AdminSummaryCards, type AdminSummary } from "@/components/admin/summary
 import { FacilityComparison, ExpiryHeatmapTable, type FacilityStat } from "@/components/admin/facility-comparison";
 import { AdminTrendCharts } from "@/components/admin/trend-charts";
 import { TransferRecommendationsPanel } from "@/components/admin/transfer-recommendations";
-import {
-  PendingSyncWidget,
-  GlobalActivityFeed,
-} from "@/components/admin/admin-widgets";
+import { GlobalActivityFeed } from "@/components/admin/admin-widgets";
 import { Input } from "@/components/ui/input";
 
 type DurationRange = "today" | "7" | "30" | "90" | "custom";
@@ -148,11 +145,11 @@ export default function AdminDashboardPage() {
             <div className="flex flex-wrap items-center gap-2 text-sm text-slate-500">
               <label className="flex items-center gap-1">
                 From
-                <DateInput aria-label="From date" className="h-9 w-auto" min={dateInputMin()} max={customTo || dateInputMax()} value={customFrom} onChange={(e) => setCustomFrom(e.target.value)} />
+                <DateInput aria-label="From date" className="h-9 w-auto" min={dateInputMin()} max={customTo || todayStr()} value={customFrom} onChange={(e) => setCustomFrom(e.target.value)} />
               </label>
               <label className="flex items-center gap-1">
                 To
-                <DateInput aria-label="To date" className="h-9 w-auto" min={customFrom || dateInputMin()} max={dateInputMax()} value={customTo} onChange={(e) => setCustomTo(e.target.value)} />
+                <DateInput aria-label="To date" className="h-9 w-auto" min={customFrom || dateInputMin()} max={todayStr()} value={customTo} onChange={(e) => setCustomTo(e.target.value)} />
               </label>
             </div>
           )}
@@ -183,10 +180,7 @@ export default function AdminDashboardPage() {
         <>
           <AdminSummaryCards summary={data.summary} />
           <FacilityComparison stats={data.facilityStats} />
-          <div className="grid gap-4 md:grid-cols-2">
-            <GlobalActivityFeed activity={recentActivity} />
-            <PendingSyncWidget nonReportingCount={data.nonReportingFacilities?.length ?? 0} />
-          </div>
+          <GlobalActivityFeed activity={recentActivity} />
           <TransferRecommendationsPanel facilityFilter={locationId} />
           {data.trends && <AdminTrendCharts trends={data.trends} />}
           <ExpiryHeatmapTable rows={data.expiryHeatmap} />

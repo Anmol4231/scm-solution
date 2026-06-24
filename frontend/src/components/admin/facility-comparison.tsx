@@ -40,16 +40,20 @@ export function FacilityComparison({ stats }: { stats: FacilityStat[] }) {
         <CardHeader><CardTitle className="text-base">Facility Comparison</CardTitle></CardHeader>
         <CardContent className="h-72">
           <ResponsiveContainer width="100%" height="100%">
-            <BarChart data={chartData}>
+            <BarChart data={chartData} barGap={2} barCategoryGap="20%">
               <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" />
               <XAxis dataKey="name" tick={{ fontSize: 10 }} />
-              <YAxis tick={{ fontSize: 11 }} />
+              {/* Stock dwarfs the operational counts, so it gets its own left axis
+                  while patients/dispensing/expiring share a right axis — otherwise
+                  the small bars are invisible against the stock scale. */}
+              <YAxis yAxisId="left" tick={{ fontSize: 11 }} label={{ value: "Stock", angle: -90, position: "insideLeft", style: { fontSize: 10, fill: "#94a3b8" } }} />
+              <YAxis yAxisId="right" orientation="right" tick={{ fontSize: 11 }} label={{ value: "Patients / Dispensing", angle: 90, position: "insideRight", style: { fontSize: 10, fill: "#94a3b8" } }} />
               <Tooltip />
               <Legend />
-              <Bar dataKey="stock" fill="#0ea5e9" name="Stock" radius={[2, 2, 0, 0]} />
-              <Bar dataKey="patients" fill="#6366f1" name="Patients" radius={[2, 2, 0, 0]} />
-              <Bar dataKey="dispensing" fill="#2563eb" name="Dispensing (30d)" radius={[2, 2, 0, 0]} />
-              <Bar dataKey="expiring" fill="#f59e0b" name="Expiring batches" radius={[2, 2, 0, 0]} />
+              <Bar yAxisId="left" dataKey="stock" fill="#0ea5e9" name="Stock" radius={[2, 2, 0, 0]} />
+              <Bar yAxisId="right" dataKey="patients" fill="#6366f1" name="Patients" radius={[2, 2, 0, 0]} />
+              <Bar yAxisId="right" dataKey="dispensing" fill="#2563eb" name="Dispensing (30d)" radius={[2, 2, 0, 0]} />
+              <Bar yAxisId="right" dataKey="expiring" fill="#f59e0b" name="Expiring batches" radius={[2, 2, 0, 0]} />
             </BarChart>
           </ResponsiveContainer>
         </CardContent>
@@ -59,7 +63,7 @@ export function FacilityComparison({ stats }: { stats: FacilityStat[] }) {
         {stats.map((s) => (
           <Card
             key={s.facility.id}
-            className={`border-slate-200 shadow-sm transition hover:shadow-md ${s.nonReporting ? "ring-1 ring-red-200" : ""}`}
+            className="border-slate-200 shadow-sm transition hover:shadow-md"
           >
             <CardHeader className="pb-2">
               <CardTitle className="text-sm font-semibold text-slate-800">{s.facility.name}</CardTitle>
@@ -72,7 +76,6 @@ export function FacilityComparison({ stats }: { stats: FacilityStat[] }) {
               <div><span className="text-slate-500">Dispensing (30d)</span><p className="font-semibold">{s.dispensingCount}</p></div>
               <div><span className="text-slate-500">Low / Stockout</span><p><span className="text-amber-600">{s.lowCount}</span> / <span className="text-red-600">{s.stockoutCount}</span></p></div>
               <div><span className="text-slate-500">Expiring</span><p className="font-semibold text-sky-700">{s.expiringBatches}</p></div>
-              {s.nonReporting && <p className="col-span-2 text-sm font-medium text-red-600">Non-reporting facility</p>}
             </CardContent>
           </Card>
         ))}

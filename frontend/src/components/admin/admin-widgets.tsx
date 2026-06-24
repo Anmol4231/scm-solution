@@ -1,22 +1,7 @@
 ﻿"use client";
 
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { Activity, AlertCircle } from "lucide-react";
-
-export function PendingSyncWidget({ nonReportingCount }: { nonReportingCount: number }) {
-  return (
-    <Card>
-      <CardHeader className="flex flex-row items-center gap-2 pb-2">
-        <AlertCircle className="h-5 w-5 text-amber-500" />
-        <CardTitle className="text-base">Pending sync</CardTitle>
-      </CardHeader>
-      <CardContent>
-        <p className="text-3xl font-bold text-slate-900">{nonReportingCount}</p>
-        <p className="mt-1 text-sm text-slate-500">Facilities with overdue consumption reporting</p>
-      </CardContent>
-    </Card>
-  );
-}
+import { Activity } from "lucide-react";
 
 export function GlobalActivityFeed({
   activity,

@@ -378,6 +378,20 @@ export default function ExpiryPage() {
               </select>
             </div>
           )}
+          <div className="flex items-end">
+            <button
+              type="button"
+              onClick={() => {
+                setWithinDays("90");
+                setCategoryId("");
+                setStatus("all");
+                setFacilityFilter("");
+              }}
+              className="h-9 rounded-lg border border-slate-200 px-3 text-sm text-slate-600 hover:bg-white"
+            >
+              Clear
+            </button>
+          </div>
         </CardContent>
       </Card>
 

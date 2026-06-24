@@ -15,6 +15,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Card, CardContent } from "@/components/ui/card";
+import { ModalPortal } from "@/components/ui/modal-portal";
 import { OperationsTabs } from "@/components/layout/operations-tabs";
 
 interface DispenseLine {
@@ -139,6 +140,7 @@ function printDispenseSlip(group: PrescriptionGroup) {
 
 function DetailModal({ group, onClose }: { group: PrescriptionGroup; onClose: () => void }) {
   return (
+    <ModalPortal>
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4" onClick={onClose}>
       <div
         className="w-full max-w-2xl overflow-hidden rounded-xl bg-white shadow-2xl"
@@ -214,6 +216,7 @@ function DetailModal({ group, onClose }: { group: PrescriptionGroup; onClose: ()
         </div>
       </div>
     </div>
+    </ModalPortal>
   );
 }
 

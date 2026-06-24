@@ -241,6 +241,7 @@ router.get("/", returnsView, async (req, res, next) => {
       include: {
         medicine: true,
         patient: true,
+        facility: { select: { id: true, name: true, code: true } },
         processedBy: { select: { firstName: true, lastName: true } },
       },
       orderBy: { createdAt: "desc" },

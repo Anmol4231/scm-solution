@@ -315,16 +315,13 @@ export default function ReceiveStockPage() {
               </select>
             )}
 
-            {(search || fromDate || toDate || statusFilter !== "all") && (
-              <Button
-                variant="ghost"
-                size="sm"
-                className="self-center"
-                onClick={() => { setSearch(""); setFromDate(""); setToDate(""); setStatusFilter("all"); }}
-              >
-                Clear
-              </Button>
-            )}
+            <button
+              type="button"
+              onClick={() => { setSearch(""); setFromDate(""); setToDate(""); setStatusFilter("all"); }}
+              className="h-9 self-center rounded-lg border border-slate-200 px-3 text-sm text-slate-600 hover:bg-white"
+            >
+              Clear
+            </button>
           </div>
         </CardContent>
       </Card>

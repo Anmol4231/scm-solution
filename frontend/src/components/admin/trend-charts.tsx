@@ -108,7 +108,7 @@ export function AdminTrendCharts({ trends }: { trends: Trends }) {
               <XAxis dataKey="period" tick={{ fontSize: 11 }} />
               <YAxis tick={{ fontSize: 11 }} />
               <Tooltip />
-              <Bar dataKey="quantity" fill="#ef4444" name="Qty at risk" radius={[4, 4, 0, 0]} />
+              <Bar dataKey="quantity" fill="#fca5a5" name="Qty at risk" radius={[4, 4, 0, 0]} />
             </BarChart>
           </ResponsiveContainer>
         </CardContent>

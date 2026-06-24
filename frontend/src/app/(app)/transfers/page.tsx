@@ -9,6 +9,7 @@ import { useRequirePermission } from "@/hooks/useRequirePermission";
 import { SkeletonRows } from "@/components/ui/page-skeleton";
 import { Eye, ArrowUpDown } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
 import { Card, CardContent } from "@/components/ui/card";
 import { formatDate } from "@/lib/datetime";
 
@@ -46,8 +47,12 @@ export default function TransfersPage() {
   const isAdmin = isCrossFacilityRole(user?.role);
   const hasAccess = useRequirePermission("transfers");
   const [transfers, setTransfers] = useState<Transfer[]>([]);
-  const [view, setView] = useState<"all" | "outgoing" | "incoming">("all");
   const [loading, setLoading] = useState(true);
+  const [search, setSearch] = useState("");
+  const [statusFilter, setStatusFilter] = useState("");
+  const [facilityFilter, setFacilityFilter] = useState("");
+  const [fromDate, setFromDate] = useState("");
+  const [toDate, setToDate] = useState("");
   const [sortBy, setSortBy] = useState<"transferCode" | "from" | "to" | "items" | "status" | "createdAt">("createdAt");
   const [sortDir, setSortDir] = useState<"asc" | "desc">("desc");
   const toggleSort = (field: typeof sortBy) => {
@@ -70,11 +75,36 @@ export default function TransfersPage() {
 
   if (!hasAccess) return null;
 
-  // Incoming = my facility is the destination; outgoing = my facility is the source.
+  // Facility options for the admin filter — derived from the transfers themselves
+  // (both source and destination), so no extra fetch is needed.
+  const facilityOptions = Array.from(
+    new Map(
+      transfers.flatMap((t) => [
+        [t.fromFacility.id, t.fromFacility] as const,
+        [t.toFacility.id, t.toFacility] as const,
+      ])
+    ).values()
+  ).sort((a, b) => a.name.localeCompare(b.name));
+
   const myFacility = user?.facilityId;
+  const q = search.trim().toLowerCase();
   const visible = transfers.filter((t) => {
-    if (view === "incoming") return isAdmin || t.toFacility.id === myFacility;
-    if (view === "outgoing") return isAdmin || t.fromFacility.id === myFacility;
+    if (statusFilter && t.status !== statusFilter) return false;
+    // Facility filter matches either side of the transfer.
+    if (facilityFilter && t.fromFacility.id !== facilityFilter && t.toFacility.id !== facilityFilter) return false;
+    const day = t.createdAt.slice(0, 10);
+    if (fromDate && day < fromDate) return false;
+    if (toDate && day > toDate) return false;
+    if (q) {
+      const hay = [
+        t.transferCode,
+        t.fromFacility.name,
+        t.toFacility.name,
+        t.medicine?.medicineName ?? "",
+        ...t.lines.map((l) => l.medicine.medicineName),
+      ].join(" ").toLowerCase();
+      if (!hay.includes(q)) return false;
+    }
     return true;
   });
 
@@ -125,14 +155,48 @@ export default function TransfersPage() {
         </div>
       </div>
 
-      {/* View filter */}
-      <div className="flex flex-wrap gap-2">
-        {([["all", "All"], ["outgoing", "Outgoing"], ["incoming", "Incoming"]] as const).map(([v, label]) => (
-          <button key={v} onClick={() => setView(v)}
-            className={`rounded-full px-4 py-1 text-sm font-medium ${view === v ? "bg-medflow-600 text-white" : "bg-slate-100 text-slate-600 hover:bg-slate-200"}`}>
-            {label}
+      {/* Filters */}
+      <div className="space-y-3">
+        <div className="relative max-w-md">
+          <Input
+            placeholder="Search by transfer code, facility, or medicine…"
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+          />
+        </div>
+        <div className="flex flex-wrap items-end gap-3 rounded-xl border bg-slate-50/60 p-3">
+          {isAdmin && (
+            <div>
+              <label className="mb-1 block text-sm font-medium text-slate-600">Facility</label>
+              <select value={facilityFilter} onChange={(e) => setFacilityFilter(e.target.value)} className="h-9 rounded-lg border bg-white px-2 text-sm">
+                <option value="">All Facilities</option>
+                {facilityOptions.map((f) => <option key={f.id} value={f.id}>{f.name} ({f.code})</option>)}
+              </select>
+            </div>
+          )}
+          <div>
+            <label className="mb-1 block text-sm font-medium text-slate-600">Status</label>
+            <select value={statusFilter} onChange={(e) => setStatusFilter(e.target.value)} className="h-9 rounded-lg border bg-white px-2 text-sm">
+              <option value="">All Statuses</option>
+              {Object.keys(STATUS_COLORS).map((s) => <option key={s} value={s}>{s.replace(/_/g, " ")}</option>)}
+            </select>
+          </div>
+          <div>
+            <label className="mb-1 block text-sm font-medium text-slate-600">From</label>
+            <Input type="date" className="h-9 w-40" value={fromDate} onChange={(e) => setFromDate(e.target.value)} />
+          </div>
+          <div>
+            <label className="mb-1 block text-sm font-medium text-slate-600">To</label>
+            <Input type="date" className="h-9 w-40" value={toDate} onChange={(e) => setToDate(e.target.value)} />
+          </div>
+          <button
+            type="button"
+            onClick={() => { setSearch(""); setStatusFilter(""); setFacilityFilter(""); setFromDate(""); setToDate(""); }}
+            className="h-9 self-end rounded-lg border border-slate-200 px-3 text-sm text-slate-600 hover:bg-white"
+          >
+            Clear
           </button>
-        ))}
+        </div>
       </div>
 
       <Card>

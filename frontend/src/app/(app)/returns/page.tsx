@@ -33,20 +33,14 @@ interface ReturnRecord {
   batchNumber?: string | null;
   createdAt: string;
   medicine: { medicineName: string };
+  facility?: { id: string; name: string; code: string } | null;
   patient?: { firstName: string; lastName: string; patientId: string } | null;
   processedBy?: { firstName: string; lastName: string } | null;
 }
 
 const STORE_TYPES = ["AMS_CENTRAL", "MEDICAL_STORE", "WAREHOUSE", "REGIONAL_STORE"];
 
-const TYPE_LABEL: Record<string, string> = {
-  FACILITY_TO_AMS: "→ AMS",
-  INTER_FACILITY: "Transfer Return",
-};
-const TYPE_COLOR: Record<string, string> = {
-  FACILITY_TO_AMS: "bg-purple-100 text-purple-700",
-  INTER_FACILITY: "bg-teal-100 text-teal-700",
-};
+const RETURN_REASONS = ["Near expiry", "Surplus stock", "Product recall", "Damaged", "Other"];
 
 const emptyAms = { receivingFacilityId: "", medicineId: "", batchId: "", quantity: 0, returnReason: "Near expiry" };
 
@@ -61,6 +55,10 @@ export default function ReturnsPage() {
   const [loadingReturns, setLoadingReturns] = useState(true);
   const [allFacilities, setAllFacilities] = useState<Facility[]>([]);
   const [facilityFilter, setFacilityFilter] = useState("");
+  const [search, setSearch] = useState("");
+  const [reasonFilter, setReasonFilter] = useState("");
+  const [fromDate, setFromDate] = useState("");
+  const [toDate, setToDate] = useState("");
 
   const [showForm, setShowForm] = useState(false);
   const [msg, setMsg] = useState("");
@@ -74,7 +72,7 @@ export default function ReturnsPage() {
   const [batches, setBatches] = useState<Batch[]>([]);
 
   // Sorting for the returns history table
-  const [sortBy, setSortBy] = useState<"returnType" | "medicine" | "quantity" | "returnReason" | "processedBy" | "createdAt">("createdAt");
+  const [sortBy, setSortBy] = useState<"facility" | "medicine" | "quantity" | "returnReason" | "processedBy" | "createdAt">("createdAt");
   const [sortDir, setSortDir] = useState<"asc" | "desc">("desc");
   const toggleSort = (field: typeof sortBy) => {
     if (sortBy === field) setSortDir((d) => (d === "asc" ? "desc" : "asc"));
@@ -152,11 +150,30 @@ export default function ReturnsPage() {
 
   const personName = (p?: { firstName: string; lastName: string } | null) => (p ? `${p.firstName} ${p.lastName}` : "—");
 
-  const sortedReturns = [...returns].sort((a, b) => {
+  const q = search.trim().toLowerCase();
+  const filteredReturns = returns.filter((r) => {
+    if (reasonFilter && r.returnReason !== reasonFilter) return false;
+    const day = r.createdAt.slice(0, 10);
+    if (fromDate && day < fromDate) return false;
+    if (toDate && day > toDate) return false;
+    if (q) {
+      const hay = [
+        r.medicine?.medicineName ?? "",
+        r.facility?.name ?? "",
+        r.batchNumber ?? "",
+        r.returnReason,
+        personName(r.processedBy),
+      ].join(" ").toLowerCase();
+      if (!hay.includes(q)) return false;
+    }
+    return true;
+  });
+
+  const sortedReturns = [...filteredReturns].sort((a, b) => {
     const dir = sortDir === "asc" ? 1 : -1;
     let cmp = 0;
     switch (sortBy) {
-      case "returnType": cmp = a.returnType.localeCompare(b.returnType); break;
+      case "facility": cmp = (a.facility?.name ?? "").localeCompare(b.facility?.name ?? ""); break;
       case "medicine": cmp = (a.medicine?.medicineName ?? "").localeCompare(b.medicine?.medicineName ?? ""); break;
       case "quantity": cmp = a.quantity - b.quantity; break;
       case "returnReason": cmp = a.returnReason.localeCompare(b.returnReason); break;
@@ -186,12 +203,6 @@ export default function ReturnsPage() {
           </p>
         </div>
         <div className="flex flex-wrap items-center gap-2">
-          {isAdmin && (
-            <select className="h-10 rounded-lg border bg-white px-3 text-sm" value={facilityFilter} onChange={(e) => setFacilityFilter(e.target.value)}>
-              <option value="">All Facilities</option>
-              {allFacilities.map((f) => <option key={f.id} value={f.id}>{f.name} ({f.code})</option>)}
-            </select>
-          )}
           {canCreate && (
             <Button
               size="lg"
@@ -278,11 +289,7 @@ export default function ReturnsPage() {
               <div>
                 <Label>Return Reason *</Label>
                 <select className="mt-1 h-10 w-full rounded-lg border bg-white px-3 text-sm" value={ams.returnReason} onChange={(e) => setAms({ ...ams, returnReason: e.target.value })}>
-                  <option>Near expiry</option>
-                  <option>Surplus stock</option>
-                  <option>Product recall</option>
-                  <option>Damaged</option>
-                  <option>Other</option>
+                  {RETURN_REASONS.map((r) => <option key={r}>{r}</option>)}
                 </select>
               </div>
               <p className="text-sm text-slate-500">Stock will be immediately decremented from your facility and credited to the AMS.</p>
@@ -292,13 +299,57 @@ export default function ReturnsPage() {
         </Card>
       )}
 
+      {/* Filters */}
+      <div className="space-y-3">
+        <div className="relative max-w-md">
+          <Input
+            placeholder="Search by medicine, facility, batch, or staff…"
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+          />
+        </div>
+        <div className="flex flex-wrap items-end gap-3 rounded-xl border bg-slate-50/60 p-3">
+          {isAdmin && (
+            <div>
+              <label className="mb-1 block text-sm font-medium text-slate-600">Facility</label>
+              <select value={facilityFilter} onChange={(e) => setFacilityFilter(e.target.value)} className="h-9 rounded-lg border bg-white px-2 text-sm">
+                <option value="">All Facilities</option>
+                {allFacilities.map((f) => <option key={f.id} value={f.id}>{f.name} ({f.code})</option>)}
+              </select>
+            </div>
+          )}
+          <div>
+            <label className="mb-1 block text-sm font-medium text-slate-600">Reason</label>
+            <select value={reasonFilter} onChange={(e) => setReasonFilter(e.target.value)} className="h-9 rounded-lg border bg-white px-2 text-sm">
+              <option value="">All Reasons</option>
+              {RETURN_REASONS.map((r) => <option key={r} value={r}>{r}</option>)}
+            </select>
+          </div>
+          <div>
+            <label className="mb-1 block text-sm font-medium text-slate-600">From</label>
+            <Input type="date" className="h-9 w-40" value={fromDate} onChange={(e) => setFromDate(e.target.value)} />
+          </div>
+          <div>
+            <label className="mb-1 block text-sm font-medium text-slate-600">To</label>
+            <Input type="date" className="h-9 w-40" value={toDate} onChange={(e) => setToDate(e.target.value)} />
+          </div>
+          <button
+            type="button"
+            onClick={() => { setSearch(""); setReasonFilter(""); setFromDate(""); setToDate(""); setFacilityFilter(""); }}
+            className="h-9 self-end rounded-lg border border-slate-200 px-3 text-sm text-slate-600 hover:bg-white"
+          >
+            Clear
+          </button>
+        </div>
+      </div>
+
       {/* Returns history */}
       <Card>
         <CardContent className="overflow-x-auto p-0">
           <table className="w-full min-w-[700px] text-sm">
             <thead>
               <tr className="border-b bg-slate-50 text-left">
-                <th className="p-3"><SortButton field="returnType" label="Type" /></th>
+                <th className="p-3"><SortButton field="facility" label="Facility" /></th>
                 <th className="p-3"><SortButton field="medicine" label="Medicine" /></th>
                 <th className="p-3 text-right"><SortButton field="quantity" label="Qty" /></th>
                 <th className="p-3"><SortButton field="returnReason" label="Reason" /></th>
@@ -311,11 +362,7 @@ export default function ReturnsPage() {
                 <SkeletonRows rows={5} cols={6} />
               ) : sortedReturns.map((r) => (
                 <tr key={r.id} className="border-b align-middle">
-                  <td className="p-3">
-                    <span className={`rounded-full px-2 py-0.5 text-sm font-medium ${TYPE_COLOR[r.returnType] ?? "bg-slate-100 text-slate-600"}`}>
-                      {TYPE_LABEL[r.returnType] ?? r.returnType.replace(/_/g, " ")}
-                    </span>
-                  </td>
+                  <td className="p-3 font-medium">{r.facility?.name ?? "—"}</td>
                   <td className="p-3 font-medium">{r.medicine?.medicineName ?? "—"}</td>
                   <td className="p-3 text-right">{r.quantity}</td>
                   <td className="p-3 text-slate-600">{r.returnReason}</td>
@@ -323,8 +370,8 @@ export default function ReturnsPage() {
                   <td className="p-3 whitespace-nowrap text-slate-500">{formatDateTime(r.createdAt)}</td>
                 </tr>
               ))}
-              {!loadingReturns && returns.length === 0 && (
-                <tr><td colSpan={6} className="p-6 text-center text-muted-foreground">No returns recorded yet.</td></tr>
+              {!loadingReturns && sortedReturns.length === 0 && (
+                <tr><td colSpan={6} className="p-6 text-center text-muted-foreground">No returns match the current filters.</td></tr>
               )}
             </tbody>
           </table>

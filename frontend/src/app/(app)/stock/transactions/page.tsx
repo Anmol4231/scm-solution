@@ -173,11 +173,13 @@ export default function TransactionsPage() {
           <label htmlFor="txn-to" className="mb-1 block text-sm font-medium text-slate-600">To</label>
           <DateInput id="txn-to" value={to} min={from || dateInputMin()} max={dateInputMax()} onChange={(e) => { setTo(e.target.value); setPage(0); }} className="h-9 w-36" />
         </div>
-        {(type || medicineId || from || to || facilityId) && (
-          <Button variant="outline" size="sm" onClick={() => { setType(""); setMedicineId(""); setFrom(""); setTo(""); setFacilityId(""); setPage(0); }}>
-            Clear
-          </Button>
-        )}
+        <button
+          type="button"
+          onClick={() => { setType(""); setMedicineId(""); setFrom(""); setTo(""); setFacilityId(""); setPage(0); }}
+          className="h-9 self-end rounded-lg border border-slate-200 px-3 text-sm text-slate-600 hover:bg-white"
+        >
+          Clear
+        </button>
       </div>
 
       {data && (

@@ -316,9 +316,6 @@ router.post("/:id/reset-password", requirePermission("users", "edit"), async (re
     res.json({
       temporaryPassword,
       emailSent: emailResult.sent,
-      ...(emailResult.error
-        ? { emailWarning: "Password reset but the notification email could not be delivered. Share this password manually." }
-        : {}),
     });
   } catch (e) {
     next(e);

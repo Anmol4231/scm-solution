@@ -15,10 +15,7 @@ import { AdminSummaryCards, type AdminSummary } from "@/components/admin/summary
 import { FacilityComparison, ExpiryHeatmapTable, type FacilityStat } from "@/components/admin/facility-comparison";
 import { AdminTrendCharts } from "@/components/admin/trend-charts";
 import { TransferRecommendationsPanel } from "@/components/admin/transfer-recommendations";
-import {
-  PendingSyncWidget,
-  GlobalActivityFeed,
-} from "@/components/admin/admin-widgets";
+import { GlobalActivityFeed } from "@/components/admin/admin-widgets";
 import { Input } from "@/components/ui/input";
 
 type DurationRange = "today" | "7" | "30" | "90" | "custom";
@@ -183,10 +180,7 @@ export default function AdminDashboardPage() {
         <>
           <AdminSummaryCards summary={data.summary} />
           <FacilityComparison stats={data.facilityStats} />
-          <div className="grid gap-4 md:grid-cols-2">
-            <GlobalActivityFeed activity={recentActivity} />
-            <PendingSyncWidget nonReportingCount={data.nonReportingFacilities?.length ?? 0} />
-          </div>
+          <GlobalActivityFeed activity={recentActivity} />
           <TransferRecommendationsPanel facilityFilter={locationId} />
           {data.trends && <AdminTrendCharts trends={data.trends} />}
           <ExpiryHeatmapTable rows={data.expiryHeatmap} />

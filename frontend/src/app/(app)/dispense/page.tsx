@@ -15,6 +15,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Card, CardContent } from "@/components/ui/card";
+import { ModalPortal } from "@/components/ui/modal-portal";
 import { sanitizePersonName, sanitizePhone, validators } from "@/lib/validation";
 import { OperationsTabs } from "@/components/layout/operations-tabs";
 import { MedicineCombobox } from "@/components/ui/medicine-combobox";
@@ -938,6 +939,7 @@ function DispenseWorkflow() {
 
       {/* ── Prescription image viewer (zoom / fullscreen) ── */}
       {previewModalOpen && imgSrc && (
+        <ModalPortal>
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-3">
           <div className="flex w-full max-w-4xl flex-col rounded-xl bg-white shadow-2xl" style={{ height: "min(92vh, 760px)" }}>
             <div className="flex shrink-0 items-center justify-between border-b px-4 py-3">
@@ -959,6 +961,7 @@ function DispenseWorkflow() {
             </div>
           </div>
         </div>
+        </ModalPortal>
       )}
     </div>
   );

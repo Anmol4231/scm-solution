@@ -264,6 +264,20 @@ export default function StockInHandPage() {
                 ))}
               </select>
             </div>
+            <button
+              type="button"
+              onClick={() => {
+                setSearch("");
+                setMedicineId("");
+                setBatchNumber("");
+                setCategoryId("");
+                setExpiryFilter("");
+                setFacilityId("");
+              }}
+              className="h-9 self-end rounded-lg border border-slate-200 px-3 text-sm text-slate-600 hover:bg-white"
+            >
+              Clear
+            </button>
           </div>
       </div>
 

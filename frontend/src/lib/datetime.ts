@@ -40,6 +40,12 @@ export function dateInputMax(): string {
   return `${maxYear()}-12-31`;
 }
 
+/** Returns YYYY-MM-DD for the local current date. Use as max on inputs that must not accept future dates. */
+export function todayStr(): string {
+  const d = new Date();
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+}
+
 /**
  * Clamp a YYYY-MM-DD string into [min, max]. Returns "" for empty/invalid input.
  * The single source of truth used by DateInput, calendars, and submit/filter guards.

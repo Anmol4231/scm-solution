@@ -41,7 +41,7 @@ export function TransferRecommendationsPanel({ facilityFilter }: { facilityFilte
           <div
             key={i}
             className={`rounded-lg border p-3 text-sm transition hover:shadow-sm ${
-              r.priority === "high" ? "border-red-200 bg-red-50/50" : "border-slate-100 bg-slate-50/80"
+              r.priority === "high" ? "border-sky-200 bg-sky-50/60" : "border-slate-100 bg-slate-50/80"
             }`}
           >
             <p className="font-semibold text-slate-900">{r.medicineName}</p>
