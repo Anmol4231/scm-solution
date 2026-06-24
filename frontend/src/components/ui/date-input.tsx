@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { CalendarDays, ChevronLeft, ChevronRight } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { clampDateStr, dateInputMin, dateInputMax, minYear, maxYear } from "@/lib/datetime";
@@ -95,6 +96,9 @@ export function DateInput({
   const [open, setOpen] = useState(false);
   const focusedRef = useRef(false);
   const wrapRef = useRef<HTMLDivElement>(null);
+  // The calendar is portaled to <body>, so the outside-click check must also
+  // treat clicks inside it as "inside" (it's not a DOM child of wrapRef).
+  const calRef = useRef<HTMLDivElement>(null);
 
   // Sync display from the controlled value when the field is NOT being edited
   // (e.g. a parent "Clear" button, or an external reset). Never clobber while typing.
@@ -106,7 +110,8 @@ export function DateInput({
   useEffect(() => {
     if (!open) return;
     const onDown = (e: MouseEvent) => {
-      if (wrapRef.current && !wrapRef.current.contains(e.target as Node)) setOpen(false);
+      const t = e.target as Node;
+      if (!wrapRef.current?.contains(t) && !calRef.current?.contains(t)) setOpen(false);
     };
     document.addEventListener("mousedown", onDown);
     return () => document.removeEventListener("mousedown", onDown);
@@ -227,6 +232,8 @@ export function DateInput({
       </button>
       {open && !disabled && (
         <CalendarPopup
+          anchorRef={wrapRef}
+          popRef={calRef}
           value={value}
           min={effectiveMin}
           max={effectiveMax}
@@ -238,11 +245,15 @@ export function DateInput({
 }
 
 function CalendarPopup({
+  anchorRef,
+  popRef,
   value,
   min,
   max,
   onSelect,
 }: {
+  anchorRef: React.RefObject<HTMLElement>;
+  popRef: React.RefObject<HTMLDivElement>;
   value: string;
   min: string;
   max: string;
@@ -291,33 +302,98 @@ function CalendarPopup({
   const prevDisabled = vy < minP.y || (vy === minP.y && vm <= minP.m);
   const nextDisabled = vy > maxP.y || (vy === maxP.y && vm >= maxP.m);
 
-  // Edge-aware placement: render at the default anchor, measure, then flip
-  // horizontally/vertically if it would overflow the viewport. Runs before
-  // paint (useLayoutEffect) to avoid a visible jump.
-  const popRef = useRef<HTMLDivElement>(null);
-  const [pos, setPos] = useState<{ alignRight: boolean; openUp: boolean }>({ alignRight: false, openUp: false });
+  // Anchored, fixed-position portal: measure the trigger and place the popup
+  // directly BELOW it, with the popup's LEFT edge aligned to the field's left
+  // edge — the same below/left-aligned behavior the Dashboard date range picker
+  // shows (both use this component). Portaling to <body> (below) keeps the
+  // calendar from being clipped by a scrollable/overflow ancestor (e.g. the
+  // receive-stock table's overflow-x-auto wrapper, which was cutting it off).
+  //
+  // Placement rules:
+  //  - Horizontal: left edge = field's left edge. If that would overflow the
+  //    RIGHT viewport edge (field sits near the right of the page), shift the
+  //    whole popup left by just enough to stay fully visible — it still opens
+  //    below the field, never re-anchored to the right or flipped sideways.
+  //    Finally clamp so it never crosses the left edge either.
+  //  - Vertical: open below. Only when there is genuinely no room below but
+  //    there is above (very short viewport) flip above as a last resort, then
+  //    clamp the top into view.
+  //
+  // The real popup dimensions are measured from popRef once it has rendered;
+  // before that we fall back to the design size (w-64 = 256px). Measuring keeps
+  // the logic correct across browser zoom levels, where the rendered pixel size
+  // of the calendar changes.
+  const FALLBACK_WIDTH = 256;
+  const FALLBACK_HEIGHT = 320;
+  const MARGIN = 8;
+  const [coords, setCoords] = useState<{ top: number; left: number } | null>(null);
   useLayoutEffect(() => {
-    const el = popRef.current;
-    if (!el) return;
-    const r = el.getBoundingClientRect();
-    const vw = document.documentElement.clientWidth;
-    const vh = window.innerHeight;
-    setPos({
-      alignRight: r.right > vw - 8 && r.width <= vw - 8,
-      openUp: r.bottom > vh - 8 && r.top - r.height - 8 > 0,
-    });
-  }, []);
+    const anchor = anchorRef.current;
+    if (!anchor) return;
+    const place = () => {
+      const a = anchor.getBoundingClientRect();
+      const pop = popRef.current;
+      // The app sets `body { zoom: 1.1 }` (globals.css). The popup is portaled
+      // into <body>, so its inline `left`/`top` are interpreted in that ZOOMED
+      // coordinate space (the browser multiplies them by the zoom when painting).
+      // getBoundingClientRect()/clientWidth/innerHeight, however, report REAL
+      // (already-zoomed) pixels. Assigning real pixels to a zoomed element double-
+      // applies the zoom and pushes the popup off-screen. Derive the effective
+      // zoom from the anchor (rect width vs. its unzoomed offsetWidth) and convert
+      // every real-pixel measurement into the popup's local space. offsetWidth/
+      // offsetHeight are already in local space, so they need no conversion.
+      const z = anchor.offsetWidth && a.width ? a.width / anchor.offsetWidth : 1;
+      const w = pop?.offsetWidth || FALLBACK_WIDTH;
+      const h = pop?.offsetHeight || FALLBACK_HEIGHT;
+      const aLeft = a.left / z;
+      const aRight = a.right / z;
+      const aTop = a.top / z;
+      const aBottom = a.bottom / z;
+      // clientWidth excludes the vertical scrollbar, so we never position the
+      // popup under it (innerWidth would include the scrollbar gutter).
+      const vw = document.documentElement.clientWidth / z;
+      const vh = window.innerHeight / z;
 
-  return (
+      // Left edge aligned to the field's left edge (the default, matching the
+      // Dashboard picker). If that would overflow the right viewport edge,
+      // anchor to the field's RIGHT edge instead so the popup opens leftward
+      // but stays VISUALLY ATTACHED to the field — never pinned to an arbitrary
+      // viewport coordinate (which is what made it look "detached"). This mirrors
+      // how the browser's native date picker (Orders page) repositions. Finally
+      // clamp to the left margin for very narrow viewports.
+      let left = aLeft;
+      if (left + w > vw - MARGIN) left = aRight - w;
+      if (left < MARGIN) left = MARGIN;
+
+      // Below the field; flip above only if it cannot fit below at all.
+      let top = aBottom + 4;
+      if (top + h > vh - MARGIN && aTop - 4 - h >= MARGIN) top = aTop - 4 - h;
+      if (top < MARGIN) top = MARGIN;
+
+      setCoords({ top, left });
+    };
+    place();
+    // Re-measure after the popup has painted so width/height reflect the real
+    // (zoom-adjusted) size, then refine placement.
+    const raf = requestAnimationFrame(place);
+    window.addEventListener("scroll", place, true);
+    window.addEventListener("resize", place);
+    return () => {
+      cancelAnimationFrame(raf);
+      window.removeEventListener("scroll", place, true);
+      window.removeEventListener("resize", place);
+    };
+  }, [anchorRef, popRef]);
+
+  if (!coords) return null;
+
+  return createPortal(
     <div
       ref={popRef}
       role="dialog"
       aria-label="Choose date"
-      className={cn(
-        "absolute z-50 w-64 max-w-[calc(100vw-1rem)] rounded-lg border border-slate-200 bg-white p-3 shadow-lg",
-        pos.alignRight ? "right-0" : "left-0",
-        pos.openUp ? "bottom-full mb-1" : "top-full mt-1"
-      )}
+      style={{ position: "fixed", top: coords.top, left: coords.left }}
+      className="z-[60] w-64 max-w-[calc(100vw-1rem)] origin-top rounded-lg border border-slate-200 bg-white p-3 shadow-lg duration-150 ease-out animate-in fade-in-0 zoom-in-95 slide-in-from-top-1"
     >
       <div className="mb-2 flex items-center gap-1">
         <button
@@ -381,6 +457,7 @@ function CalendarPopup({
           );
         })}
       </div>
-    </div>
+    </div>,
+    document.body
   );
 }
