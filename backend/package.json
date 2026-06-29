@@ -12,6 +12,7 @@
     "db:seed": "tsx prisma/seed.ts",
     "db:reset-demo": "tsx prisma/seed.ts",
     "db:backfill": "tsx prisma/backfill.ts",
+    "create-admin": "tsx prisma/create-admin.ts",
     "db:studio": "prisma studio"
   },
   "dependencies": {
