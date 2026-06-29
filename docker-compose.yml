@@ -28,8 +28,8 @@ services:
     environment:
       DATABASE_URL: ${DATABASE_URL}
       PORT: 4000
-      NODE_ENV: production
-      JWT_SECRET: ${JWT_SECRET:-change-me-in-production}
+      NODE_ENV: ${NODE_ENV}
+      JWT_SECRET: ${JWT_SECRET}
       JWT_EXPIRES_IN: 7d
       CORS_ORIGIN: ${CORS_ORIGIN}
       WHATSAPP_API_URL: ${WHATSAPP_API_URL:-https://graph.facebook.com/v18.0}
