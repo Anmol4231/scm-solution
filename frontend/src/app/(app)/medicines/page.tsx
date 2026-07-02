@@ -44,6 +44,18 @@ interface Medicine {
   category?: Category | null;
 }
 
+type PaginatedResponse<T> = { data?: T[]; total?: number; page?: number; pageSize?: number };
+
+function unwrapPaginatedResponse<T>(response: PaginatedResponse<T> | T[], label: string) {
+  if (Array.isArray(response)) {
+    return { data: response, total: response.length };
+  }
+  if (Array.isArray(response.data) && typeof response.total === "number") {
+    return { data: response.data, total: response.total };
+  }
+  throw new Error(`Invalid ${label} API response`);
+}
+
 // ─── Form defaults ────────────────────────────────────────────────────────────
 
 interface MedForm {
@@ -343,8 +355,13 @@ function MedicinesInner() {
     if (q) params.set("q", q);
     params.set("page", String(pg));
     params.set("pageSize", String(PAGE_SIZE));
-    api<{ data: Medicine[]; total: number; page: number; pageSize: number }>(`/medicines?${params.toString()}`)
-      .then((r) => { setMedicines(r.data); setTotal(r.total); setMedLoading(false); })
+    api<PaginatedResponse<Medicine> | Medicine[]>(`/medicines?${params.toString()}`)
+      .then((r) => {
+        const { data, total } = unwrapPaginatedResponse(r, "medicines");
+        setMedicines(data);
+        setTotal(total);
+        setMedLoading(false);
+      })
       .catch((err) => {
         setMedError(err instanceof Error ? err.message : "Failed to load medicines");
         setMedLoading(false);

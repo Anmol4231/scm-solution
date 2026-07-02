@@ -44,6 +44,17 @@ interface MedicineOption {
 
 type SortField = "medicineName" | "category" | "facility" | "quantity" | "expiryDate" | "batchNumber";
 type ExpiryFilter = "" | "expired" | "not-expired" | "expiring" | "ok";
+type PaginatedResponse<T> = { data?: T[]; total?: number; page?: number; pageSize?: number };
+
+function unwrapPaginatedResponse<T>(response: PaginatedResponse<T> | T[], label: string) {
+  if (Array.isArray(response)) {
+    return { data: response, total: response.length };
+  }
+  if (Array.isArray(response.data) && typeof response.total === "number") {
+    return { data: response.data, total: response.total };
+  }
+  throw new Error(`Invalid ${label} API response`);
+}
 
 // ─── Status badge ─────────────────────────────────────────────────────────────
 
@@ -138,8 +149,13 @@ export default function StockInHandPage() {
     const params = buildParams();
     params.set("page", String(pg));
     params.set("pageSize", String(PAGE_SIZE));
-    api<{ data: StockBatchRow[]; total: number; page: number; pageSize: number }>(`/stock/in-hand?${params}`)
-      .then((r) => { setRows(r.data); setTotal(r.total); setLoading(false); })
+    api<PaginatedResponse<StockBatchRow> | StockBatchRow[]>(`/stock/in-hand?${params}`)
+      .then((r) => {
+        const { data, total } = unwrapPaginatedResponse(r, "stock in hand");
+        setRows(data);
+        setTotal(total);
+        setLoading(false);
+      })
       .catch((err) => { setError(err instanceof Error ? err.message : "Failed to load stock data"); setLoading(false); });
   }, [buildParams]);
 

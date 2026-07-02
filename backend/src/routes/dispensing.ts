@@ -872,8 +872,17 @@ router.get("/", dispenseView, async (req, res, next) => {
       dispensedAt.lte = end;
     }
 
-    const take = Math.min(Math.max(parseInt((req.query.take as string) ?? "50", 10) || 50, 1), 200);
-    const skip = Math.max(parseInt((req.query.skip as string) ?? "0", 10) || 0, 0);
+    const pageParam = req.query.page as string | undefined;
+    const pageSizeParam = req.query.pageSize as string | undefined;
+    const pageSize = Math.min(Math.max(parseInt(pageSizeParam ?? (req.query.take as string) ?? "50", 10) || 50, 1), 200);
+    const page = Math.max(
+      1,
+      parseInt(pageParam ?? "", 10) || Math.floor((parseInt((req.query.skip as string) ?? "0", 10) || 0) / pageSize) + 1
+    );
+    const skip = pageParam !== undefined || pageSizeParam !== undefined
+      ? (page - 1) * pageSize
+      : Math.max(parseInt((req.query.skip as string) ?? "0", 10) || 0, 0);
+    const take = pageSize;
 
     const sortBy = (req.query.sortBy as string) ?? "dispensedAt";
     const sortDir: "asc" | "desc" = req.query.sortDir === "asc" ? "asc" : "desc";
@@ -936,7 +945,7 @@ router.get("/", dispenseView, async (req, res, next) => {
       }),
       prisma.dispensingRecord.count({ where }),
     ]);
-    res.json({ records, total });
+    res.json({ data: records, total, page, pageSize, skip, take, records });
   } catch (e) {
     next(e);
   }
@@ -1030,8 +1039,17 @@ router.get("/by-prescription", dispenseView, async (req, res, next) => {
       const end = new Date(to); end.setHours(23, 59, 59, 999); dispensedAt.lte = end;
     }
 
-    const take = Math.min(Math.max(parseInt((req.query.take as string) ?? "50", 10) || 50, 1), 100);
-    const skip = Math.max(parseInt((req.query.skip as string) ?? "0", 10) || 0, 0);
+    const pageParam = req.query.page as string | undefined;
+    const pageSizeParam = req.query.pageSize as string | undefined;
+    const pageSize = Math.min(Math.max(parseInt(pageSizeParam ?? (req.query.take as string) ?? "50", 10) || 50, 1), 100);
+    const page = Math.max(
+      1,
+      parseInt(pageParam ?? "", 10) || Math.floor((parseInt((req.query.skip as string) ?? "0", 10) || 0) / pageSize) + 1
+    );
+    const skip = pageParam !== undefined || pageSizeParam !== undefined
+      ? (page - 1) * pageSize
+      : Math.max(parseInt((req.query.skip as string) ?? "0", 10) || 0, 0);
+    const take = pageSize;
     const sortDir: "asc" | "desc" = req.query.sortDir === "asc" ? "asc" : "desc";
 
     const recordWhere: Prisma.DispensingRecordWhereInput = {
@@ -1100,7 +1118,7 @@ router.get("/by-prescription", dispenseView, async (req, res, next) => {
       };
     });
 
-    res.json({ records, total });
+    res.json({ data: records, total, page, pageSize, skip, take, records });
   } catch (e) {
     next(e);
   }

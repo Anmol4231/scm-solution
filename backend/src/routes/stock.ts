@@ -382,8 +382,17 @@ router.get("/transactions", stockView, async (req, res, next) => {
     const medicineId = req.query.medicineId as string | undefined;
     const from = req.query.from as string | undefined;
     const to = req.query.to as string | undefined;
-    const skip = parseInt((req.query.skip as string) ?? "0", 10) || 0;
-    const take = Math.min(parseInt((req.query.take as string) ?? "50", 10) || 50, 200);
+    const pageParam = req.query.page as string | undefined;
+    const pageSizeParam = req.query.pageSize as string | undefined;
+    const pageSize = Math.min(Math.max(parseInt(pageSizeParam ?? (req.query.take as string) ?? "50", 10) || 50, 1), 200);
+    const page = Math.max(
+      1,
+      parseInt(pageParam ?? "", 10) || Math.floor((parseInt((req.query.skip as string) ?? "0", 10) || 0) / pageSize) + 1
+    );
+    const skip = pageParam !== undefined || pageSizeParam !== undefined
+      ? (page - 1) * pageSize
+      : Math.max(parseInt((req.query.skip as string) ?? "0", 10) || 0, 0);
+    const take = pageSize;
     const sortBy = req.query.sortBy as string | undefined;
     const sortDir = req.query.sortDir === "asc" ? "asc" : "desc";
 
@@ -447,7 +456,7 @@ router.get("/transactions", stockView, async (req, res, next) => {
       };
     });
 
-    res.json({ total, skip, take, transactions });
+    res.json({ data: transactions, total, page, pageSize, skip, take, transactions });
   } catch (e) {
     next(e);
   }

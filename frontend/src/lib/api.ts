@@ -107,6 +107,7 @@ export async function api<T = any>(path: string, options: RequestInit = {}): Pro
   try {
     const res = await fetch(`${resolveApiUrl()}${path}`, { ...options, headers });
     const data = await res.json().catch(() => ({}));
+
     if (res.status === 401) {
       if (path !== "/auth/login") {
         clearAuth();
